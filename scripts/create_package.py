@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -158,12 +159,17 @@ int main(int argc, char ** argv)
     (pkg / "test" / f"test_{name}.cpp").write_text(f"""#include <gtest/gtest.h>
 #include "{name}/{name}_node.hpp"
 
-TEST({class_name}Test, NodeCreation)
+class {class_name}Test : public ::testing::Test
 {{
-  rclcpp::init(0, nullptr);
+protected:
+  void SetUp() override {{ rclcpp::init(0, nullptr); }}
+  void TearDown() override {{ rclcpp::shutdown(); }}
+}};
+
+TEST_F({class_name}Test, NodeCreation)
+{{
   auto node = std::make_shared<{name}::{class_name}Node>();
   ASSERT_NE(node, nullptr);
-  rclcpp::shutdown();
 }}
 """)
 
@@ -208,9 +214,13 @@ class {class_name}Node(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = {class_name}Node()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
@@ -347,6 +357,12 @@ def main():
                         default="cpp", help="Package type")
     parser.add_argument("--dest", default=".", help="Destination directory")
     args = parser.parse_args()
+
+    if not re.match(r'^[a-z][a-z0-9_]*$', args.name):
+        print(f"Error: Package name '{args.name}' is invalid. "
+              "Use snake_case (lowercase letters, digits, underscores; "
+              "must start with a letter).", file=sys.stderr)
+        sys.exit(1)
 
     dest = Path(args.dest)
     if not dest.exists():

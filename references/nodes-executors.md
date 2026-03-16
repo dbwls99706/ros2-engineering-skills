@@ -106,9 +106,13 @@ class JointPublisher(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = JointPublisher()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 ```
 
 **Key differences:**
@@ -219,10 +223,10 @@ explicitly assign a `Reentrant` group.
 
 ```cpp
 // Group 1: sensor callbacks (reentrant — they read different sensors)
-auto sensor_group = create_callback_group(CallbackGroupType::Reentrant);
+auto sensor_group = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
 
 // Group 2: state machine callbacks (mutually exclusive — shared state)
-auto state_group = create_callback_group(CallbackGroupType::MutuallyExclusive);
+auto state_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
 // Assign explicitly
 rclcpp::SubscriptionOptions sensor_opts;
@@ -302,7 +306,7 @@ must preempt others.
 ### Launch-time composition (recommended)
 
 ```python
-from launch_ros.actions import ComposableNodeContainer, LoadComposableNode
+from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 
 container = ComposableNodeContainer(

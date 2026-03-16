@@ -82,8 +82,21 @@ public:
 
     // Extract parameters from URDF <hardware><param>
     // info_ is still available as a member variable
-    port_ = info_.hardware_parameters["serial_port"];
-    baud_ = std::stoi(info_.hardware_parameters["baud_rate"]);
+    auto it_port = info_.hardware_parameters.find("serial_port");
+    auto it_baud = info_.hardware_parameters.find("baud_rate");
+    if (it_port == info_.hardware_parameters.end() ||
+        it_baud == info_.hardware_parameters.end()) {
+      RCLCPP_FATAL(get_logger(), "Missing required <param> in URDF: serial_port, baud_rate");
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    port_ = it_port->second;
+    try {
+      baud_ = std::stoi(it_baud->second);
+    } catch (const std::exception & e) {
+      RCLCPP_FATAL(get_logger(), "Invalid baud_rate '%s': %s",
+                   it_baud->second.c_str(), e.what());
+      return hardware_interface::CallbackReturn::ERROR;
+    }
 
     // Validate joint configuration from URDF
     for (const auto & joint : info_.joints) {
@@ -116,9 +129,10 @@ public:
     }
 
     // Initialize commands to current positions to prevent jumps on activation.
-    // set_command() and get_state() use the fully qualified interface name
-    // (the map key), e.g. "joint_1/position".
-    for (const auto & [name, descr] : joint_state_interfaces_) {
+    // Iterate command interfaces (not state interfaces) — there may be fewer
+    // command interfaces than state interfaces (e.g. position cmd vs position+velocity state).
+    // The map key is the fully qualified name, e.g. "joint_1/position".
+    for (const auto & [name, descr] : joint_command_interfaces_) {
       set_command(name, get_state(name));
     }
 
@@ -139,13 +153,21 @@ public:
   {
     // Read encoder data from serial/CAN/EtherCAT
     auto data = read_encoders(serial_);
+    if (!data.valid) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
+                            "Failed to read encoder data");
+      return hardware_interface::return_type::ERROR;
+    }
 
     // Write values into framework-managed interfaces using set_state().
-    // The name is the fully qualified interface name from the map key,
-    // e.g. "joint_1/position", "joint_1/velocity".
-    size_t i = 0;
-    for (const auto & [name, descr] : joint_state_interfaces_) {
-      set_state(name, data.values[i++]);
+    // IMPORTANT: joint_state_interfaces_ is an unordered_map — iteration order
+    // is NOT guaranteed. Always use explicit fully-qualified names to avoid
+    // mixing up position/velocity data.
+    for (size_t i = 0; i < info_.joints.size(); i++) {
+      set_state(info_.joints[i].name + "/" + hardware_interface::HW_IF_POSITION,
+                data.positions[i]);
+      set_state(info_.joints[i].name + "/" + hardware_interface::HW_IF_VELOCITY,
+                data.velocities[i]);
     }
     return hardware_interface::return_type::OK;
   }
@@ -159,7 +181,11 @@ public:
     for (const auto & [name, descr] : joint_command_interfaces_) {
       commands.push_back(get_command(name));
     }
-    send_commands(serial_, commands);
+    if (!send_commands(serial_, commands)) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
+                            "Failed to send commands to hardware");
+      return hardware_interface::return_type::ERROR;
+    }
     return hardware_interface::return_type::OK;
   }
 
@@ -356,20 +382,25 @@ public:
   bool init(const std::string & interface)
   {
     sock_ = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    if (sock_ < 0) { return false; }
     // Set non-blocking
-    fcntl(sock_, F_SETFL, O_NONBLOCK);
+    if (fcntl(sock_, F_SETFL, O_NONBLOCK) < 0) { close(sock_); sock_ = -1; return false; }
     // Bind to interface
-    struct ifreq ifr;
-    std::strncpy(ifr.ifr_name, interface.c_str(), IFNAMSIZ);
-    ioctl(sock_, SIOCGIFINDEX, &ifr);
+    struct ifreq ifr{};
+    std::strncpy(ifr.ifr_name, interface.c_str(), IFNAMSIZ - 1);
+    if (ioctl(sock_, SIOCGIFINDEX, &ifr) < 0) { close(sock_); sock_ = -1; return false; }
     struct sockaddr_can addr{};
     addr.can_family = AF_CAN;
     addr.can_ifindex = ifr.ifr_ifindex;
-    return bind(sock_, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+    if (bind(sock_, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+      close(sock_); sock_ = -1; return false;
+    }
+    return true;
   }
 
   bool send(uint32_t id, const uint8_t * data, uint8_t len)
   {
+    if (len > CAN_MAX_DLEN) { return false; }  // Prevent buffer overflow
     struct can_frame frame{};
     frame.can_id = id;
     frame.can_dlc = len;
@@ -381,8 +412,9 @@ public:
   {
     struct can_frame frame{};
     auto n = ::read(sock_, &frame, sizeof(frame));
-    if (n == sizeof(frame)) return frame;
-    return std::nullopt;
+    if (n < 0) { return std::nullopt; }         // Error (EAGAIN for non-blocking = no data)
+    if (n != sizeof(frame)) { return std::nullopt; }  // Partial read
+    return frame;
   }
 };
 ```
