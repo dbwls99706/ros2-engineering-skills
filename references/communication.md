@@ -314,10 +314,10 @@ ros2 topic echo /rosout --qos-reliability reliable | grep -i qos
     <General>
       <NetworkInterfaceAddress>eth0</NetworkInterfaceAddress>
       <AllowMulticast>true</AllowMulticast>
+      <MaxMessageSize>65500B</MaxMessageSize>
     </General>
     <Internal>
       <SocketReceiveBufferSize min="10MB"/>
-      <MaxMessageSize>65500B</MaxMessageSize>
     </Internal>
     <Tracing>
       <OutputFile>/tmp/cdds.log</OutputFile>
