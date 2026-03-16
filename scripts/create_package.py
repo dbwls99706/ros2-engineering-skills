@@ -44,6 +44,8 @@ target_include_directories(${{PROJECT_NAME}}_lib PUBLIC
   $<INSTALL_INTERFACE:include/${{PROJECT_NAME}}>
 )
 ament_target_dependencies(${{PROJECT_NAME}}_lib rclcpp rclcpp_lifecycle)
+# NOTE: ament_target_dependencies() is deprecated from Kilted (May 2025).
+# For forward compat, prefer: target_link_libraries(${{PROJECT_NAME}}_lib PUBLIC rclcpp::rclcpp ...)
 
 add_executable({name}_node src/main.cpp)
 target_link_libraries({name}_node ${{PROJECT_NAME}}_lib)
@@ -222,7 +224,8 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', []),
+        # launch files will be added here when created, e.g.:
+        # ('share/' + package_name + '/launch', ['launch/bringup.launch.py']),
         ('share/' + package_name + '/config', ['config/params.yaml']),
     ],
     install_requires=['setuptools'],

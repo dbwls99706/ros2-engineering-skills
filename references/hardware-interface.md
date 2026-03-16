@@ -48,7 +48,15 @@ never talk to hardware directly.
 
 ## 2. Writing a hardware interface plugin
 
-### System interface (Jazzy API)
+### System interface (Jazzy 4.x API)
+
+In Jazzy, Command-/StateInterfaces are **automatically created and exported** by the
+framework based on the `<ros2_control>` URDF tag. You no longer need to override
+`export_state_interfaces()` / `export_command_interfaces()` or manage memory manually.
+
+The framework provides maps to access interfaces:
+- `joint_state_interfaces_` / `joint_command_interfaces_` — keyed by fully qualified name
+- `sensor_state_interfaces_` / `gpio_command_interfaces_` — for sensors and GPIO
 
 ```cpp
 #include <hardware_interface/system_interface.hpp>
@@ -74,37 +82,16 @@ public:
     port_ = info_.hardware_parameters["serial_port"];
     baud_ = std::stoi(info_.hardware_parameters["baud_rate"]);
 
-    // Resize state/command vectors to match joint count
-    hw_positions_.resize(info_.joints.size(), 0.0);
-    hw_velocities_.resize(info_.joints.size(), 0.0);
-    hw_commands_.resize(info_.joints.size(), 0.0);
+    // No need to resize vectors — the framework manages interface memory
+    // State/command values are stored inside the interface handles themselves
 
     return hardware_interface::CallbackReturn::SUCCESS;
   }
 
-  // Declare what state interfaces this hardware provides
-  std::vector<hardware_interface::StateInterface> export_state_interfaces() override
-  {
-    std::vector<hardware_interface::StateInterface> interfaces;
-    for (size_t i = 0; i < info_.joints.size(); i++) {
-      interfaces.emplace_back(
-        info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_positions_[i]);
-      interfaces.emplace_back(
-        info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_velocities_[i]);
-    }
-    return interfaces;
-  }
-
-  // Declare what command interfaces this hardware accepts
-  std::vector<hardware_interface::CommandInterface> export_command_interfaces() override
-  {
-    std::vector<hardware_interface::CommandInterface> interfaces;
-    for (size_t i = 0; i < info_.joints.size(); i++) {
-      interfaces.emplace_back(
-        info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_commands_[i]);
-    }
-    return interfaces;
-  }
+  // NOTE: export_state_interfaces() and export_command_interfaces() are
+  // NO LONGER needed in Jazzy 4.x. The framework auto-generates them
+  // from the <ros2_control> URDF tag. Only override on_export_*_interfaces()
+  // if you need custom behavior.
 
   // Open hardware connection
   hardware_interface::CallbackReturn on_activate(
@@ -113,6 +100,15 @@ public:
     serial_ = open_serial(port_, baud_);
     if (!serial_.is_open()) {
       return hardware_interface::CallbackReturn::ERROR;
+    }
+    // Initialize commands to current positions to prevent jumps
+    for (const auto & [name, descr] : joint_state_interfaces_) {
+      if (descr.get_interface_name() == hardware_interface::HW_IF_POSITION) {
+        auto pos = descr.get_optional();
+        if (pos.has_value()) {
+          set_command(descr.get_prefix_name(), hardware_interface::HW_IF_POSITION, pos.value());
+        }
+      }
     }
     return hardware_interface::CallbackReturn::SUCCESS;
   }
@@ -131,9 +127,10 @@ public:
   {
     // Read encoder positions from serial/CAN/EtherCAT
     auto data = read_encoders(serial_);
-    for (size_t i = 0; i < hw_positions_.size(); i++) {
-      hw_positions_[i] = data.positions[i];
-      hw_velocities_[i] = data.velocities[i];
+    for (size_t i = 0; i < info_.joints.size(); i++) {
+      // Use set_state() to write values into framework-managed interfaces
+      set_state(info_.joints[i].name, hardware_interface::HW_IF_POSITION, data.positions[i]);
+      set_state(info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, data.velocities[i]);
     }
     return hardware_interface::return_type::OK;
   }
@@ -142,8 +139,13 @@ public:
   hardware_interface::return_type write(
     const rclcpp::Time &, const rclcpp::Duration &) override
   {
-    // Send position commands to actuators
-    send_commands(serial_, hw_commands_);
+    // Read commands from framework-managed interfaces
+    std::vector<double> commands;
+    for (size_t i = 0; i < info_.joints.size(); i++) {
+      auto cmd = get_command(info_.joints[i].name, hardware_interface::HW_IF_POSITION);
+      commands.push_back(cmd.value_or(0.0));
+    }
+    send_commands(serial_, commands);
     return hardware_interface::return_type::OK;
   }
 
@@ -151,7 +153,6 @@ private:
   std::string port_;
   int baud_;
   SerialPort serial_;
-  std::vector<double> hw_positions_, hw_velocities_, hw_commands_;
 };
 
 }  // namespace my_robot_driver
@@ -159,6 +160,27 @@ private:
 #include <pluginlib/class_list_macros.hpp>
 PLUGINLIB_EXPORT_CLASS(my_robot_driver::MyRobotHardware,
                        hardware_interface::SystemInterface)
+```
+
+### Humble (2.x) compatibility
+
+If targeting Humble, you must still manually override `export_state_interfaces()` and
+`export_command_interfaces()` and manage your own `std::vector<double>` for storage:
+
+```cpp
+// Humble 2.x — manual interface export (not needed in Jazzy 4.x)
+std::vector<hardware_interface::StateInterface> export_state_interfaces() override
+{
+  std::vector<hardware_interface::StateInterface> interfaces;
+  for (size_t i = 0; i < info_.joints.size(); i++) {
+    interfaces.emplace_back(
+      info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_positions_[i]);
+    interfaces.emplace_back(
+      info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_velocities_[i]);
+  }
+  return interfaces;
+}
+// Also store: std::vector<double> hw_positions_, hw_velocities_, hw_commands_;
 ```
 
 ### Plugin registration (CMakeLists.txt addition)
@@ -188,7 +210,7 @@ pluginlib_export_plugin_description_file(
 | `forward_command_controller` | position/velocity/effort | Direct pass-through, simple control |
 | `diff_drive_controller` | velocity | Differential drive mobile base |
 | `joint_state_broadcaster` | (none — reads only) | Publish joint states for TF/visualization |
-| `gripper_action_controller` | position | Parallel gripper with action interface |
+| `parallel_gripper_action_controller` | position | Parallel gripper with action interface (Jazzy+; replaces deprecated `gripper_action_controller`) |
 | `pid_controller` | effort | Low-level PID for torque control |
 | `admittance_controller` | position | Force-compliant manipulation |
 

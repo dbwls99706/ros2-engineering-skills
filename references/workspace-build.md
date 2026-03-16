@@ -118,6 +118,12 @@ target_include_directories(${PROJECT_NAME}_lib PUBLIC
 ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp rclcpp_lifecycle sensor_msgs my_robot_interfaces
 )
+# NOTE: ament_target_dependencies() is deprecated starting from Kilted (May 2025).
+# For forward compatibility, prefer target_link_libraries() with modern CMake targets:
+#   target_link_libraries(${PROJECT_NAME}_lib PUBLIC
+#     rclcpp::rclcpp rclcpp_lifecycle::rclcpp_lifecycle
+#     ${sensor_msgs_TARGETS} ${my_robot_interfaces_TARGETS}
+#   )
 
 # Executable (thin wrapper around library)
 add_executable(driver_node src/driver_node_main.cpp)

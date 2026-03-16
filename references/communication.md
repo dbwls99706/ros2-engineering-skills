@@ -332,6 +332,26 @@ export ROS_DOMAIN_ID=42  # Isolate from other ROS 2 systems on the network
 </Discovery>
 ```
 
+### Zenoh as an alternative middleware
+
+Zenoh (`rmw_zenoh_cpp`) is an emerging ROS 2 middleware option — Tier 2 in Jazzy,
+Tier 1 in Kilted (May 2025). It offers lower wire overhead and better performance
+in challenging network conditions compared to DDS.
+
+```bash
+# Install (available as binary in Jazzy+)
+sudo apt install ros-jazzy-rmw-zenoh-cpp
+
+# Use Zenoh instead of CycloneDDS
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+```
+
+**Note:** Zenoh requires a Zenoh router for discovery (multicast is disabled by
+default). Start the router before launching nodes:
+```bash
+ros2 run rmw_zenoh_cpp rmw_zenohd
+```
+
 ### Localhost-only communication (for development)
 
 ```bash

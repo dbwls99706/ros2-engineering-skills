@@ -82,10 +82,17 @@ ros2-engineering-skills/
 └── README.md
 ```
 
+## Current status
+
+**Phase 1 (complete):** 4 fully written reference files — workspace-build, nodes-executors, communication, hardware-interface — plus the core SKILL.md decision router and `create_package.py` scaffolder.
+
+**Phase 2 (in progress):** 11 additional reference files planned — lifecycle-components, launch-system, tf2-urdf, realtime, navigation, manipulation, perception, testing, debugging, deployment, migration-ros1.
+
 ## Supported ROS 2 distributions
 
 - **Jazzy Jalisco** (LTS, recommended) — primary target
 - **Humble Hawksbill** (LTS) — fully supported
+- **Foxy Fitzroy** (LTS, EOL June 2023) — referenced for legacy migration
 - **Rolling Ridley** — latest features, noted where they diverge
 
 ## Contributing
