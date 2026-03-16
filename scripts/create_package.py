@@ -15,9 +15,55 @@ import sys
 from pathlib import Path
 
 
-def _generate_launch_file(name: str) -> str:
+def _generate_launch_file(name: str, lifecycle: bool = False) -> str:
     """Generate a basic bringup.launch.py file for the package."""
-    return f"""from launch import LaunchDescription
+    if lifecycle:
+        return f"""from launch import LaunchDescription
+from launch_ros.actions import LifecycleNode
+from launch_ros.event_handlers import OnStateTransition
+from launch.actions import EmitEvent, RegisterEventHandler
+from launch_ros.events.lifecycle import ChangeState
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
+import lifecycle_msgs.msg
+
+def generate_launch_description():
+    config = PathJoinSubstitution([
+        FindPackageShare('{name}'), 'config', 'params.yaml'
+    ])
+    node = LifecycleNode(
+        package='{name}',
+        executable='{name}_node',
+        name='{name}',
+        namespace='',
+        parameters=[config],
+        output='screen',
+    )
+    # Auto-configure on launch
+    configure_event = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=lambda info: info,
+            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
+        )
+    )
+    # Auto-activate after configure succeeds
+    activate_event = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=node,
+            start_state='configuring',
+            goal_state='inactive',
+            entities=[
+                EmitEvent(event=ChangeState(
+                    lifecycle_node_matcher=lambda info: info,
+                    transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+                )),
+            ],
+        )
+    )
+    return LaunchDescription([node, configure_event, activate_event])
+"""
+    else:
+        return f"""from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.substitutions import PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
@@ -238,8 +284,9 @@ TEST_F({class_name}Test, NodeCreation)
 }}
 """)
 
-    # Generate launch file
-    (pkg / "launch" / "bringup.launch.py").write_text(_generate_launch_file(name))
+    # Generate launch file (lifecycle=True since C++ template uses LifecycleNode)
+    (pkg / "launch" / "bringup.launch.py").write_text(
+        _generate_launch_file(name, lifecycle=True))
 
     # Generate README
     (pkg / "README.md").write_text(_generate_readme(name))

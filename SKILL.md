@@ -69,7 +69,7 @@ Always ask which ROS 2 distribution the user targets. Key differences:
 | EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Nov 2025           | Rolling            |
 | Ubuntu                    | 20.04               | 22.04              | 24.04              | 24.04              | Latest             |
 | Default DDS               | Fast DDS             | CycloneDDS         | CycloneDDS         | CycloneDDS         | CycloneDDS         |
-| Default middleware        | —                    | —                  | —                  | Zenoh (Tier 1)     | Zenoh (Tier 1)     |
+| Zenoh support             | —                    | —                  | —                  | Tier 1             | Tier 1             |
 | Type description support  | No                   | No                 | Yes                | Yes                | Yes                |
 | Service introspection     | No                   | No                 | Yes                | Yes                | Yes                |
 | EventsExecutor            | No                   | No                 | Experimental       | Stable (+ rclpy)   | Stable (+ rclpy)   |
@@ -296,7 +296,7 @@ When upgrading between distributions, check these breaking changes first:
 - **`ament_target_dependencies()` deprecated** — use `target_link_libraries()` with
   modern CMake targets (e.g. `rclcpp::rclcpp`, `std_msgs::std_msgs__rosidl_typesupport_cpp`).
 - Multi-bag replay support in `ros2 bag play`.
-- Gazebo **Jetty** is the paired simulator (replaces Harmonic).
+- Gazebo **Harmonic** remains the paired simulator (same LTS pairing as Jazzy).
 
 **ROS 1 → ROS 2:**
 - See `references/migration-ros1.md` for a step-by-step strategy.

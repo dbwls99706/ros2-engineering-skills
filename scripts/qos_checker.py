@@ -263,12 +263,16 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
             "depth=0 with KEEP_LAST is undefined behavior in some DDS implementations."
         )
 
-    # Deadline compatibility
-    if pub.deadline_ms > 0 and sub.deadline_ms > 0 and sub.deadline_ms < pub.deadline_ms:
-        warnings.append(
-            f"Subscriber deadline ({sub.deadline_ms}ms) is stricter than publisher "
-            f"deadline ({pub.deadline_ms}ms). The subscriber may report missed "
-            f"deadlines if the publisher cannot keep up."
+    # Deadline compatibility (DDS RxO: offered_deadline <= requested_deadline)
+    if pub.deadline_ms > 0 and sub.deadline_ms > 0 and pub.deadline_ms > sub.deadline_ms:
+        issues.append(
+            f"INCOMPATIBLE DEADLINE: Publisher offered deadline ({pub.deadline_ms}ms) "
+            f"exceeds subscriber requested deadline ({sub.deadline_ms}ms). "
+            f"DDS requires offered <= requested. Connection will silently fail."
+        )
+        suggestions.append(
+            f"Fix: Either decrease the publisher deadline to <= {sub.deadline_ms}ms, "
+            f"or increase the subscriber deadline to >= {pub.deadline_ms}ms."
         )
 
     # Lifespan vs deadline check
@@ -279,7 +283,7 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
             f"subscriber's deadline triggers, causing missed deadline events."
         )
 
-    # Liveliness compatibility
+    # Liveliness compatibility (kind)
     if (pub.liveliness == Liveliness.AUTOMATIC
             and sub.liveliness == Liveliness.MANUAL_BY_TOPIC):
         issues.append(
@@ -291,6 +295,20 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         suggestions.append(
             "Fix: Either change the publisher to MANUAL_BY_TOPIC, or change the "
             "subscriber to AUTOMATIC."
+        )
+
+    # Liveliness lease duration (DDS RxO: offered_lease <= requested_lease)
+    if (pub.liveliness_lease_ms > 0 and sub.liveliness_lease_ms > 0
+            and pub.liveliness_lease_ms > sub.liveliness_lease_ms):
+        issues.append(
+            f"INCOMPATIBLE LIVELINESS LEASE: Publisher lease ({pub.liveliness_lease_ms}ms) "
+            f"exceeds subscriber lease ({sub.liveliness_lease_ms}ms). "
+            f"DDS requires offered lease <= requested lease. Connection will silently fail."
+        )
+        suggestions.append(
+            f"Fix: Either decrease the publisher liveliness lease to "
+            f"<= {sub.liveliness_lease_ms}ms, or increase the subscriber lease "
+            f"to >= {pub.liveliness_lease_ms}ms."
         )
 
     compatible = len(issues) == 0
