@@ -20,8 +20,8 @@
 |---|---|---|---|
 | Humble | Fortress (LTS) | `ros-humble-ros-gz-*` (or `ros-humble-ros-ign-*` legacy) | Last release using Ignition branding |
 | Jazzy | Harmonic (LTS) | `ros-jazzy-ros-gz-*` | Recommended for new projects |
-| Kilted | Harmonic | `ros-kilted-ros-gz-*` | Non-LTS distro, same Gazebo LTS as Jazzy |
-| Rolling | Ionic / latest | `ros-rolling-ros-gz-*` | Tracks latest Gazebo |
+| Kilted | Ionic | `ros-kilted-ros-gz-*` | Non-LTS distro |
+| Rolling | Jetty / latest | `ros-rolling-ros-gz-*` | Tracks latest Gazebo |
 
 **Critical**: Do NOT mix Gazebo versions with the wrong ROS 2 distro. The `ros_gz`
 packages are built against a specific Gazebo major version. Linking against the wrong
