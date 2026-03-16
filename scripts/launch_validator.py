@@ -118,9 +118,11 @@ class LaunchFileVisitor(ast.NodeVisitor):
                       f"Add output='screen' to see node logs in terminal.")
 
         # Track node names for duplicate detection
+        # Skip duplicate check if namespace is dynamic (LaunchConfiguration etc.)
         name_str = self._get_string_value(name_node) if name_node else None
         ns_str = self._get_string_value(ns_node) if ns_node else ""
-        if name_str:
+        ns_is_dynamic = ns_node is not None and ns_str is None
+        if name_str and not ns_is_dynamic:
             self.node_names.append((name_str, ns_str or "", node.lineno))
 
         # Check for deprecated 'node_name' instead of 'name'
