@@ -1,0 +1,435 @@
+# Hardware Interface (ros2_control)
+
+## Table of contents
+1. ros2_control architecture
+2. Writing a hardware interface plugin
+3. Controller types and selection
+4. URDF integration
+5. Serial and CAN communication patterns
+6. Configuration and parameter loading
+7. Real hardware bring-up workflow
+8. Common failures and fixes
+
+---
+
+## 1. ros2_control architecture
+
+```
+                  ┌──────────────────────┐
+                  │   Controller Manager  │
+                  │  (reads/writes at     │
+                  │   fixed frequency)    │
+                  └───────┬──────────────┘
+                          │
+              ┌───────────┼───────────────┐
+              ▼           ▼               ▼
+     ┌──────────────┐ ┌──────────┐ ┌──────────────┐
+     │ Controller A  │ │ Ctrl B   │ │ Controller C  │
+     │ (JointTraj)   │ │ (Diff)   │ │ (Gripper)     │
+     └──────┬───────┘ └────┬─────┘ └──────┬───────┘
+            │              │              │
+            ▼              ▼              ▼
+     ┌─────────────────────────────────────────┐
+     │           Hardware Interface             │
+     │  (your plugin: reads sensors,            │
+     │   writes actuator commands)              │
+     └─────────────────────────────────────────┘
+            │              │              │
+            ▼              ▼              ▼
+     ┌──────────┐  ┌──────────┐  ┌──────────┐
+     │  Motor 1  │  │  Motor 2  │  │  Gripper  │
+     │ (serial)  │  │ (CAN)    │  │ (GPIO)    │
+     └──────────┘  └──────────┘  └──────────┘
+```
+
+**Key concept:** The hardware interface is the bridge between ros2_control's
+abstract command/state model and physical hardware communication. Controllers
+never talk to hardware directly.
+
+## 2. Writing a hardware interface plugin
+
+### System interface (Jazzy API)
+
+```cpp
+#include <hardware_interface/system_interface.hpp>
+#include <hardware_interface/types/hardware_interface_type_values.hpp>
+
+namespace my_robot_driver
+{
+
+class MyRobotHardware : public hardware_interface::SystemInterface
+{
+public:
+  // Called once at startup — parse URDF, validate config
+  hardware_interface::CallbackReturn on_init(
+    const hardware_interface::HardwareInfo & info) override
+  {
+    if (hardware_interface::SystemInterface::on_init(info) !=
+        hardware_interface::CallbackReturn::SUCCESS)
+    {
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+
+    // Extract parameters from URDF <hardware><param>
+    port_ = info_.hardware_parameters["serial_port"];
+    baud_ = std::stoi(info_.hardware_parameters["baud_rate"]);
+
+    // Resize state/command vectors to match joint count
+    hw_positions_.resize(info_.joints.size(), 0.0);
+    hw_velocities_.resize(info_.joints.size(), 0.0);
+    hw_commands_.resize(info_.joints.size(), 0.0);
+
+    return hardware_interface::CallbackReturn::SUCCESS;
+  }
+
+  // Declare what state interfaces this hardware provides
+  std::vector<hardware_interface::StateInterface> export_state_interfaces() override
+  {
+    std::vector<hardware_interface::StateInterface> interfaces;
+    for (size_t i = 0; i < info_.joints.size(); i++) {
+      interfaces.emplace_back(
+        info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_positions_[i]);
+      interfaces.emplace_back(
+        info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_velocities_[i]);
+    }
+    return interfaces;
+  }
+
+  // Declare what command interfaces this hardware accepts
+  std::vector<hardware_interface::CommandInterface> export_command_interfaces() override
+  {
+    std::vector<hardware_interface::CommandInterface> interfaces;
+    for (size_t i = 0; i < info_.joints.size(); i++) {
+      interfaces.emplace_back(
+        info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_commands_[i]);
+    }
+    return interfaces;
+  }
+
+  // Open hardware connection
+  hardware_interface::CallbackReturn on_activate(
+    const rclcpp_lifecycle::State &) override
+  {
+    serial_ = open_serial(port_, baud_);
+    if (!serial_.is_open()) {
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    return hardware_interface::CallbackReturn::SUCCESS;
+  }
+
+  // Close hardware connection
+  hardware_interface::CallbackReturn on_deactivate(
+    const rclcpp_lifecycle::State &) override
+  {
+    serial_.close();
+    return hardware_interface::CallbackReturn::SUCCESS;
+  }
+
+  // Called at controller_manager frequency — READ from hardware
+  hardware_interface::return_type read(
+    const rclcpp::Time &, const rclcpp::Duration &) override
+  {
+    // Read encoder positions from serial/CAN/EtherCAT
+    auto data = read_encoders(serial_);
+    for (size_t i = 0; i < hw_positions_.size(); i++) {
+      hw_positions_[i] = data.positions[i];
+      hw_velocities_[i] = data.velocities[i];
+    }
+    return hardware_interface::return_type::OK;
+  }
+
+  // Called at controller_manager frequency — WRITE to hardware
+  hardware_interface::return_type write(
+    const rclcpp::Time &, const rclcpp::Duration &) override
+  {
+    // Send position commands to actuators
+    send_commands(serial_, hw_commands_);
+    return hardware_interface::return_type::OK;
+  }
+
+private:
+  std::string port_;
+  int baud_;
+  SerialPort serial_;
+  std::vector<double> hw_positions_, hw_velocities_, hw_commands_;
+};
+
+}  // namespace my_robot_driver
+
+#include <pluginlib/class_list_macros.hpp>
+PLUGINLIB_EXPORT_CLASS(my_robot_driver::MyRobotHardware,
+                       hardware_interface::SystemInterface)
+```
+
+### Plugin registration (CMakeLists.txt addition)
+
+```cmake
+pluginlib_export_plugin_description_file(
+  hardware_interface my_robot_hardware_plugin.xml)
+```
+
+### Plugin descriptor (my_robot_hardware_plugin.xml)
+
+```xml
+<library path="my_robot_driver">
+  <class name="my_robot_driver/MyRobotHardware"
+         type="my_robot_driver::MyRobotHardware"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>Hardware interface for My Robot</description>
+  </class>
+</library>
+```
+
+## 3. Controller types and selection
+
+| Controller | Command interface | Use case |
+|---|---|---|
+| `joint_trajectory_controller` | position/velocity | Smooth multi-joint trajectories |
+| `forward_command_controller` | position/velocity/effort | Direct pass-through, simple control |
+| `diff_drive_controller` | velocity | Differential drive mobile base |
+| `joint_state_broadcaster` | (none — reads only) | Publish joint states for TF/visualization |
+| `gripper_action_controller` | position | Parallel gripper with action interface |
+| `pid_controller` | effort | Low-level PID for torque control |
+| `admittance_controller` | position | Force-compliant manipulation |
+
+### Controller configuration (YAML)
+
+```yaml
+controller_manager:
+  ros__parameters:
+    update_rate: 500  # Hz — must match or exceed your control loop needs
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+arm_controller:
+  ros__parameters:
+    joints:
+      - joint_1
+      - joint_2
+      - joint_3
+      - joint_4
+      - joint_5
+      - joint_6
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+```
+
+## 4. URDF integration
+
+```xml
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="my_robot">
+
+  <ros2_control name="MyRobotSystem" type="system">
+    <hardware>
+      <plugin>my_robot_driver/MyRobotHardware</plugin>
+      <param name="serial_port">/dev/ttyUSB0</param>
+      <param name="baud_rate">115200</param>
+    </hardware>
+
+    <joint name="joint_1">
+      <command_interface name="position">
+        <param name="min">-3.14</param>
+        <param name="max">3.14</param>
+      </command_interface>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <joint name="joint_2">
+      <command_interface name="position">
+        <param name="min">-1.57</param>
+        <param name="max">1.57</param>
+      </command_interface>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+</robot>
+```
+
+## 5. Serial and CAN communication patterns
+
+### Serial protocol best practices
+
+```cpp
+class SerialTransport
+{
+public:
+  // Non-blocking read with timeout
+  std::optional<Frame> read_frame(std::chrono::milliseconds timeout)
+  {
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < timeout) {
+      if (auto byte = serial_.read_byte()) {
+        parser_.feed(*byte);
+        if (parser_.has_frame()) {
+          return parser_.extract_frame();
+        }
+      }
+    }
+    return std::nullopt;  // Timeout — caller decides how to handle
+  }
+
+  // Batched write — send all joint commands in one frame
+  bool write_commands(const std::vector<double> & commands)
+  {
+    auto frame = protocol_.encode_position_commands(commands);
+    return serial_.write(frame.data(), frame.size()) == frame.size();
+  }
+
+private:
+  Serial serial_;
+  FrameParser parser_;
+  Protocol protocol_;
+};
+```
+
+**Timing discipline:**
+- The ros2_control `read()` and `write()` are called by the controller manager
+  at a fixed rate. Your serial communication must complete within one cycle.
+- If serial read takes longer than the cycle period, you get jitter. Solutions:
+  - Use a separate thread for serial I/O with a shared buffer
+  - Increase baud rate
+  - Reduce message size
+  - Lower the controller manager update rate
+
+### CAN bus pattern (SocketCAN)
+
+```cpp
+#include <linux/can.h>
+#include <linux/can/raw.h>
+#include <sys/socket.h>
+
+class CanBus
+{
+public:
+  bool init(const std::string & interface)
+  {
+    sock_ = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    // Set non-blocking
+    fcntl(sock_, F_SETFL, O_NONBLOCK);
+    // Bind to interface
+    struct ifreq ifr;
+    std::strncpy(ifr.ifr_name, interface.c_str(), IFNAMSIZ);
+    ioctl(sock_, SIOCGIFINDEX, &ifr);
+    struct sockaddr_can addr{};
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+    return bind(sock_, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+  }
+
+  bool send(uint32_t id, const uint8_t * data, uint8_t len)
+  {
+    struct can_frame frame{};
+    frame.can_id = id;
+    frame.can_dlc = len;
+    std::memcpy(frame.data, data, len);
+    return ::write(sock_, &frame, sizeof(frame)) == sizeof(frame);
+  }
+
+  std::optional<can_frame> receive()
+  {
+    struct can_frame frame{};
+    auto n = ::read(sock_, &frame, sizeof(frame));
+    if (n == sizeof(frame)) return frame;
+    return std::nullopt;
+  }
+};
+```
+
+## 6. Configuration and parameter loading
+
+### Launch file for ros2_control
+
+```python
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch.substitutions import Command, PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
+
+def generate_launch_description():
+    robot_description = Command([
+        'xacro ',
+        PathJoinSubstitution([
+            FindPackageShare('my_robot_description'),
+            'urdf', 'robot.urdf.xacro'
+        ])
+    ])
+
+    controller_params = PathJoinSubstitution([
+        FindPackageShare('my_robot_control'),
+        'config', 'controllers.yaml'
+    ])
+
+    return LaunchDescription([
+        Node(
+            package='controller_manager',
+            executable='ros2_control_node',
+            parameters=[
+                {'robot_description': robot_description},
+                controller_params,
+            ],
+            output='screen',
+        ),
+        Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager'],
+        ),
+        Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['arm_controller', '--controller-manager', '/controller_manager'],
+        ),
+    ])
+```
+
+## 7. Real hardware bring-up workflow
+
+1. **Start with mock hardware** — ros2_control has a built-in mock system:
+   ```xml
+   <plugin>mock_components/GenericSystem</plugin>
+   <param name="mock_sensor_commands">true</param>
+   ```
+   Verify controllers and TF work before touching real hardware.
+
+2. **Implement `on_init` + `export_*_interfaces`** — test that URDF parsing
+   and interface setup work without connecting to hardware.
+
+3. **Implement `on_activate`** — open the hardware connection. Test that
+   the connection succeeds and fails gracefully.
+
+4. **Implement `read()`** — start reading real sensor data. Verify values
+   in RViz with `joint_state_broadcaster`.
+
+5. **Implement `write()`** — send commands. Start with very slow, small
+   movements. Have an emergency stop within reach.
+
+6. **Tune update rate** — start low (100 Hz), increase until you hit
+   serial/CAN bandwidth limits or jitter thresholds.
+
+## 8. Common failures and fixes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Controller manager fails to load HW interface | Plugin not registered or not installed | Check `pluginlib_export_plugin_description_file`, rebuild, `source install/setup.bash` |
+| `command_interface not found` | URDF joint name doesn't match controller config | Exact string match required — check for typos and namespaces |
+| Controller reports "hardware not activated" | Lifecycle not transitioned | Use `ros2 control set_controller_state` or spawner |
+| Jitter in control loop | `read()` or `write()` takes too long | Profile with `ros2 control list_hardware_interfaces`, offload I/O to thread |
+| Robot jumps on activation | Initial command is 0.0, not current position | In `on_activate`, set `hw_commands_[i] = hw_positions_[i]` |
+| Emergency stop doesn't work | `write()` still sends last command | Check for `is_active()` in write, send zero-velocity on deactivate |
+| Permission denied on serial port | User not in dialout group | `sudo usermod -aG dialout $USER`, re-login |
