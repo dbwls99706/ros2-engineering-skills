@@ -75,18 +75,18 @@ ros2-engineering-skills/
 │   ├── deployment.md               # Docker, cross-compile, fleet management
 │   └── migration-ros1.md           # ROS 1 → ROS 2 strategy, ros1_bridge
 ├── scripts/
-│   ├── create_package.py           # Scaffold a package with best-practice structure
-│   ├── qos_checker.py              # Verify QoS compatibility between pub/sub pairs
-│   └── launch_validator.py         # Static analysis for launch file issues
+│   ├── create_package.py           # Scaffold a package with best-practice structure (cpp/python/interfaces)
+│   ├── qos_checker.py              # Verify QoS compatibility between pub/sub pairs with fix suggestions
+│   └── launch_validator.py         # AST-based static analysis for Python launch files
 ├── LICENSE
 └── README.md
 ```
 
 ## Current status
 
-**Phase 1 (complete):** 4 fully written reference files — workspace-build, nodes-executors, communication, hardware-interface — plus the core SKILL.md decision router and `create_package.py` scaffolder.
-
-**Phase 2 (in progress):** 11 additional reference files planned — lifecycle-components, launch-system, tf2-urdf, realtime, navigation, manipulation, perception, testing, debugging, deployment, migration-ros1.
+**Complete.** All 15 reference files are fully written with production-grade code examples,
+distro-aware guidance, anti-pattern documentation, and troubleshooting tables. All 3 utility
+scripts are implemented and functional.
 
 ## Supported ROS 2 distributions
 
