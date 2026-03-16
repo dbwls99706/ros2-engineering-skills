@@ -298,8 +298,8 @@ auto custom_qos = rclcpp::QoS(1)
 # Show full QoS settings for all publishers and subscribers on a topic
 ros2 topic info /cmd_vel -v
 
-# Check for incompatible QoS events
-ros2 topic echo /rosout --qos-reliability reliable | grep -i qos
+# Check for incompatible QoS events (logged to /rosout)
+ros2 topic echo /rosout --qos-reliability reliable --field msg | grep -i "incompatible"
 ```
 
 ## 7. DDS configuration

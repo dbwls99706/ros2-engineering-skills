@@ -341,6 +341,8 @@ public:
         if (parser_.has_frame()) {
           return parser_.extract_frame();
         }
+      } else {
+        std::this_thread::sleep_for(std::chrono::microseconds(100));  // Avoid busy-wait
       }
     }
     return std::nullopt;  // Timeout — caller decides how to handle
@@ -384,6 +386,8 @@ private:
 class CanBus
 {
 public:
+  ~CanBus() { if (sock_ >= 0) { close(sock_); sock_ = -1; } }
+
   bool init(const std::string & interface)
   {
     sock_ = socket(PF_CAN, SOCK_RAW, CAN_RAW);
