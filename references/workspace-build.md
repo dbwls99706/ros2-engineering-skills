@@ -81,7 +81,8 @@ colcon builds each package in isolation by default. This means:
 - CMake cannot accidentally see headers from sibling packages
 - Missing `find_package()` or `package.xml` deps break the build immediately (good)
 
-To disable isolation (not recommended, but sometimes needed for debugging):
+To merge all packages into a single install prefix (not recommended — hides
+missing `package.xml` dependencies, but useful for Docker image size):
 ```bash
 colcon build --merge-install
 ```
@@ -337,10 +338,14 @@ MAKEFLAGS="-j2" colcon build
 ### Selective builds in CI
 
 ```bash
-# Only build packages changed since last commit
-colcon list --packages-above-depth 0 \
-  --packages-select-by-dep $(git diff --name-only HEAD~1 | \
-  xargs -I{} colcon list --packages-above {})
+# Only build packages affected by changes since last commit.
+# Step 1: find which packages contain changed files
+CHANGED_PKGS=$(colcon list --packages-select-by-dep \
+  --packages-up-to $(colcon list -n --base-paths \
+  $(git diff --name-only HEAD~1 | xargs -I{} dirname {} | sort -u)) 2>/dev/null)
+
+# Step 2: build only those packages and their dependents
+colcon build --packages-up-to $CHANGED_PKGS
 ```
 
 ## 8. Dependency management
