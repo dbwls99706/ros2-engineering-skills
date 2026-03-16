@@ -162,7 +162,7 @@ and timers (no dynamic creation/destruction at runtime).
 ### EventsExecutor (Jazzy+)
 
 ```cpp
-rclcpp::executors::EventsExecutor executor;
+rclcpp::experimental::executors::EventsExecutor executor;
 executor.add_node(node);
 executor.spin();
 ```
