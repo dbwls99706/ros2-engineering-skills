@@ -106,25 +106,29 @@ namespace {name}
   RCLCPP_INFO(get_logger(), "Node created");
 }}
 
-CallbackReturn {class_name}Node::on_configure(const rclcpp_lifecycle::State &)
+{class_name}Node::CallbackReturn
+{class_name}Node::on_configure(const rclcpp_lifecycle::State &)
 {{
   RCLCPP_INFO(get_logger(), "Configuring...");
   return CallbackReturn::SUCCESS;
 }}
 
-CallbackReturn {class_name}Node::on_activate(const rclcpp_lifecycle::State &)
+{class_name}Node::CallbackReturn
+{class_name}Node::on_activate(const rclcpp_lifecycle::State &)
 {{
   RCLCPP_INFO(get_logger(), "Activating...");
   return CallbackReturn::SUCCESS;
 }}
 
-CallbackReturn {class_name}Node::on_deactivate(const rclcpp_lifecycle::State &)
+{class_name}Node::CallbackReturn
+{class_name}Node::on_deactivate(const rclcpp_lifecycle::State &)
 {{
   RCLCPP_INFO(get_logger(), "Deactivating...");
   return CallbackReturn::SUCCESS;
 }}
 
-CallbackReturn {class_name}Node::on_cleanup(const rclcpp_lifecycle::State &)
+{class_name}Node::CallbackReturn
+{class_name}Node::on_cleanup(const rclcpp_lifecycle::State &)
 {{
   RCLCPP_INFO(get_logger(), "Cleaning up...");
   return CallbackReturn::SUCCESS;

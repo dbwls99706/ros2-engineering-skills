@@ -61,6 +61,7 @@ The framework provides maps to access interfaces:
 ```cpp
 #include <hardware_interface/system_interface.hpp>
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
+#include "rclcpp/rclcpp.hpp"
 
 namespace my_robot_driver
 {
@@ -69,21 +70,33 @@ class MyRobotHardware : public hardware_interface::SystemInterface
 {
 public:
   // Called once at startup — parse URDF, validate config
+  // NOTE: Jazzy changed the signature from HardwareInfo to HardwareComponentInterfaceParams
   hardware_interface::CallbackReturn on_init(
-    const hardware_interface::HardwareInfo & info) override
+    const hardware_interface::HardwareComponentInterfaceParams & params) override
   {
-    if (hardware_interface::SystemInterface::on_init(info) !=
+    if (hardware_interface::SystemInterface::on_init(params) !=
         hardware_interface::CallbackReturn::SUCCESS)
     {
       return hardware_interface::CallbackReturn::ERROR;
     }
 
     // Extract parameters from URDF <hardware><param>
+    // info_ is still available as a member variable
     port_ = info_.hardware_parameters["serial_port"];
     baud_ = std::stoi(info_.hardware_parameters["baud_rate"]);
 
-    // No need to resize vectors — the framework manages interface memory
-    // State/command values are stored inside the interface handles themselves
+    // Validate joint configuration from URDF
+    for (const auto & joint : info_.joints) {
+      if (joint.command_interfaces.size() != 1 ||
+          joint.command_interfaces[0].name != hardware_interface::HW_IF_POSITION) {
+        RCLCPP_FATAL(get_logger(), "Joint '%s' needs exactly 1 position command interface",
+                     joint.name.c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      }
+    }
+
+    // No need to allocate std::vector<double> for states/commands —
+    // the framework manages interface memory in Jazzy 4.x
 
     return hardware_interface::CallbackReturn::SUCCESS;
   }
@@ -91,7 +104,7 @@ public:
   // NOTE: export_state_interfaces() and export_command_interfaces() are
   // NO LONGER needed in Jazzy 4.x. The framework auto-generates them
   // from the <ros2_control> URDF tag. Only override on_export_*_interfaces()
-  // if you need custom behavior.
+  // if you need custom behavior beyond what the URDF defines.
 
   // Open hardware connection
   hardware_interface::CallbackReturn on_activate(
@@ -101,15 +114,14 @@ public:
     if (!serial_.is_open()) {
       return hardware_interface::CallbackReturn::ERROR;
     }
-    // Initialize commands to current positions to prevent jumps
+
+    // Initialize commands to current positions to prevent jumps on activation.
+    // set_command() and get_state() use the fully qualified interface name
+    // (the map key), e.g. "joint_1/position".
     for (const auto & [name, descr] : joint_state_interfaces_) {
-      if (descr.get_interface_name() == hardware_interface::HW_IF_POSITION) {
-        auto pos = descr.get_optional();
-        if (pos.has_value()) {
-          set_command(descr.get_prefix_name(), hardware_interface::HW_IF_POSITION, pos.value());
-        }
-      }
+      set_command(name, get_state(name));
     }
+
     return hardware_interface::CallbackReturn::SUCCESS;
   }
 
@@ -125,12 +137,15 @@ public:
   hardware_interface::return_type read(
     const rclcpp::Time &, const rclcpp::Duration &) override
   {
-    // Read encoder positions from serial/CAN/EtherCAT
+    // Read encoder data from serial/CAN/EtherCAT
     auto data = read_encoders(serial_);
-    for (size_t i = 0; i < info_.joints.size(); i++) {
-      // Use set_state() to write values into framework-managed interfaces
-      set_state(info_.joints[i].name, hardware_interface::HW_IF_POSITION, data.positions[i]);
-      set_state(info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, data.velocities[i]);
+
+    // Write values into framework-managed interfaces using set_state().
+    // The name is the fully qualified interface name from the map key,
+    // e.g. "joint_1/position", "joint_1/velocity".
+    size_t i = 0;
+    for (const auto & [name, descr] : joint_state_interfaces_) {
+      set_state(name, data.values[i++]);
     }
     return hardware_interface::return_type::OK;
   }
@@ -139,11 +154,10 @@ public:
   hardware_interface::return_type write(
     const rclcpp::Time &, const rclcpp::Duration &) override
   {
-    // Read commands from framework-managed interfaces
+    // Read commands from framework-managed interfaces using get_command()
     std::vector<double> commands;
-    for (size_t i = 0; i < info_.joints.size(); i++) {
-      auto cmd = get_command(info_.joints[i].name, hardware_interface::HW_IF_POSITION);
-      commands.push_back(cmd.value_or(0.0));
+    for (const auto & [name, descr] : joint_command_interfaces_) {
+      commands.push_back(get_command(name));
     }
     send_commands(serial_, commands);
     return hardware_interface::return_type::OK;
@@ -429,8 +443,9 @@ def generate_launch_description():
    ```
    Verify controllers and TF work before touching real hardware.
 
-2. **Implement `on_init` + `export_*_interfaces`** — test that URDF parsing
-   and interface setup work without connecting to hardware.
+2. **Implement `on_init`** — validate URDF parsing and joint configuration.
+   In Jazzy 4.x, interface export is automatic; in Humble, also implement
+   `export_*_interfaces`.
 
 3. **Implement `on_activate`** — open the hardware connection. Test that
    the connection succeeds and fails gracefully.
@@ -452,6 +467,6 @@ def generate_launch_description():
 | `command_interface not found` | URDF joint name doesn't match controller config | Exact string match required — check for typos and namespaces |
 | Controller reports "hardware not activated" | Lifecycle not transitioned | Use `ros2 control set_controller_state` or spawner |
 | Jitter in control loop | `read()` or `write()` takes too long | Profile with `ros2 control list_hardware_interfaces`, offload I/O to thread |
-| Robot jumps on activation | Initial command is 0.0, not current position | In `on_activate`, set `hw_commands_[i] = hw_positions_[i]` |
+| Robot jumps on activation | Initial command is 0.0, not current position | In `on_activate`, sync commands to state: `set_command(name, get_state(name))` (Jazzy) or `hw_commands_[i] = hw_positions_[i]` (Humble) |
 | Emergency stop doesn't work | `write()` still sends last command | Check for `is_active()` in write, send zero-velocity on deactivate |
 | Permission denied on serial port | User not in dialout group | `sudo usermod -aG dialout $USER`, re-login |

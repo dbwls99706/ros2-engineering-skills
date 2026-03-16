@@ -61,7 +61,7 @@ Always ask which ROS 2 distribution the user targets. Key differences:
 |---------------------------|----------------------|--------------------|--------------------|--------------------|
 | EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Rolling            |
 | Ubuntu                    | 20.04               | 22.04              | 24.04              | Latest             |
-| Default DDS               | CycloneDDS           | CycloneDDS         | CycloneDDS         | CycloneDDS         |
+| Default DDS               | Fast-RTPS            | CycloneDDS         | CycloneDDS         | CycloneDDS         |
 | Default build type        | ament_cmake          | ament_cmake        | ament_cmake        | ament_cmake        |
 | Type description support  | No                   | No                 | Yes                | Yes                |
 | Service introspection     | No                   | No                 | Yes                | Yes                |
