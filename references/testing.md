@@ -352,8 +352,8 @@ colcon test --packages-select my_robot_driver
 # View test results
 colcon test-result --verbose
 
-# Run specific test
-ros2 launch launch_testing test/test_driver_integration.launch.py
+# Run specific launch test directly
+launch_test test/test_driver_integration.launch.py
 ```
 
 ## 4. Mock hardware for ros2_control

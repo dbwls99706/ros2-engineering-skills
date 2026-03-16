@@ -429,8 +429,8 @@ P = [fx'  0  cx' Tx]
     [ 0  fy' cy' Ty]
     [ 0   0   1   0]
 ```
-- For monocular cameras: `Tx = 0`, `Ty = 0`, and `fx' = fx`, `cy' = cy`
-  after rectification.
+- For monocular cameras: `Tx = 0`, `Ty = 0`, and `fx' = fx`, `fy' = fy`,
+  `cx' = cx`, `cy' = cy` after rectification.
 - For stereo cameras: `Tx = -fx' * baseline` (left-right baseline in meters).
 
 **R (Rectification matrix, 3×3):**

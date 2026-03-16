@@ -90,8 +90,6 @@ services:
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0  # Serial device passthrough
     privileged: false
-    volumes:
-      - /dev:/dev
     environment:
       - ROS_DOMAIN_ID=42
       - CYCLONEDDS_URI=file:///config/cyclonedds.xml
@@ -245,9 +243,8 @@ docker push registry.example.com/my_robot:v2.1.0
 docker pull registry.example.com/my_robot:v2.1.0
 docker-compose up -d --force-recreate
 
-# Rollback if needed
-docker-compose up -d --force-recreate \
-  -e IMAGE_TAG=v2.0.0
+# Rollback if needed (set IMAGE_TAG in .env or docker-compose.yml)
+IMAGE_TAG=v2.0.0 docker-compose up -d --force-recreate
 ```
 
 ### Version management
