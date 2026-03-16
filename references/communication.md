@@ -585,6 +585,18 @@ auto sub_qos = rclcpp::QoS(1).reliable()
   .liveliness_lease_duration(std::chrono::seconds(2));
 ```
 
+**When to use each liveliness mode:**
+
+| Mode | Behavior | Use case |
+|---|---|---|
+| `Automatic` (default) | DDS middleware asserts liveliness based on any activity | General purpose — detects process crash |
+| `ManualByTopic` | Publisher must explicitly call `assert_liveliness()` periodically | Safety-critical — detects software hang (node alive but stuck) |
+| `ManualByParticipant` | Any write on any topic counts as alive | Less granular than ManualByTopic |
+
+**Rule:** Use `ManualByTopic` for safety-critical heartbeats where you need to detect
+not just process death but also software deadlocks or frozen threads. Use `Automatic`
+for general "is this publisher still alive?" checks.
+
 ### QoS event callbacks
 
 Register callbacks to react to QoS events programmatically instead of checking logs.
@@ -720,10 +732,15 @@ enabling zero-copy communication for nodes on the same host without iceoryx.
 | License | Eclipse Public 2.0 | Apache 2.0 | Commercial | Eclipse Public 2.0 |
 | ROS 2 default | Humble+ | Foxy (was default) | Tier 2 | Tier 1 (Kilted+) |
 | Shared memory | iceoryx plugin (Jazzy+) | Built-in DataSharing | Built-in | SHM plugin |
-| Latency (loopback) | ~30-60 us | ~40-80 us | ~20-40 us | ~20-40 us |
+| Latency (loopback, 1KB) | ~30-60 us | ~40-80 us | ~20-40 us | ~20-40 us |
 | Discovery | SPDP/SEDP (multicast) | SPDP/SEDP (multicast) | SPDP/SEDP + Discovery Server | Zenoh router/scouting |
 | Configuration | XML file | XML profile | XML + QoS file | JSON5 config |
 | Best for | General purpose, most tested | Large data + SHM | Safety-critical, certified | Constrained networks, WiFi, WAN |
+
+**Large message warning:** The latency numbers above are for small (~1 KB) messages.
+For `PointCloud2` (~1.5 MB) or `Image` (~900 KB), expect **50–100x worse latency**
+due to serialization, UDP fragmentation, and reassembly. For high-bandwidth data on
+latency-sensitive paths, use intra-process zero-copy or shared memory transport.
 
 ### Linux kernel tuning for DDS
 
@@ -812,8 +829,13 @@ support topic-level QoS overrides in its XML config — set QoS programmatically
 ### Localhost-only communication (for development)
 
 ```bash
-export ROS_LOCALHOST_ONLY=1
-# Or in CycloneDDS:
+# Jazzy+ (preferred):
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+
+# Humble (or Jazzy backward-compatible):
+export ROS_LOCALHOST_ONLY=1  # Deprecated in Jazzy+, still functional
+
+# Or in CycloneDDS (all distros):
 # <General><AllowMulticast>false</AllowMulticast></General>
 # and only list 127.0.0.1 in Peers
 ```
@@ -837,6 +859,21 @@ For high-bandwidth data (images, point clouds):
 - Use `image_transport` with compression
 - Use intra-process communication within the same process
 - Consider shared memory transport (Jazzy+)
+- **Message pre-allocation for high-throughput:** In tight loops (>100 Hz), avoid
+  creating new message objects per publish cycle. Pre-allocate the message once and
+  reuse it, only updating the fields that change:
+  ```cpp
+  // Pre-allocate once in constructor
+  auto msg = std::make_unique<sensor_msgs::msg::PointCloud2>();
+  msg->data.reserve(MAX_POINTS * POINT_STEP);  // Reserve max capacity
+
+  // In publish loop — reuse the same allocation
+  msg->header.stamp = now();
+  msg->data.resize(actual_points * POINT_STEP);  // No realloc if <= reserved
+  pub_->publish(std::move(msg));
+  msg = std::make_unique<sensor_msgs::msg::PointCloud2>();  // Reallocate for next cycle
+  // For true zero-allocation, use intra-process with a message pool pattern
+  ```
 - **Agnocast (2025 research):** A publish-subscribe framework enabling true zero-copy
   for variable-size messages (`PointCloud2`, `Image`) without serialization. Unlike
   standard intra-process which requires `unique_ptr` ownership transfer, Agnocast uses

@@ -193,12 +193,13 @@ sudo usermod -aG tracing $USER
 
 ```bash
 # Start tracing
-ros2 trace start my_trace -e ros2:callback_start ros2:callback_end
+# Start tracing (all ROS 2 tracepoints enabled by default)
+ros2 trace start my_trace
 
 # Run your system
 ros2 launch my_robot_bringup robot.launch.py
 
-# Stop tracing
+# Stop tracing (Iron+; on Humble, use Ctrl+C on the interactive `ros2 trace`)
 ros2 trace stop my_trace
 
 # Traces are stored in ~/.ros/tracing/my_trace/
@@ -207,7 +208,9 @@ ros2 trace stop my_trace
 ### Analyzing traces
 
 ```python
-# Using tracetools_analysis
+# Using tracetools_analysis (API is illustrative — verify against
+# your distro's tracetools_analysis source; the internal data model
+# may use different attribute names across versions)
 from tracetools_analysis.loading import load_file
 from tracetools_analysis.processor.ros2 import Ros2Handler
 
@@ -414,9 +417,9 @@ while reader.has_next():
         print(f't={timestamp/1e9:.3f}s, ranges={len(msg.ranges)} points')
 ```
 
-### MCAP format features (Jazzy+)
+### MCAP format features (Iron+)
 
-MCAP is the default bag format since Jazzy, replacing SQLite3. It offers faster writes, better compression, and indexed random access.
+MCAP became the default bag format in Iron (and continues in Jazzy/Kilted/Rolling), replacing SQLite3. It offers faster writes, better compression, and indexed random access.
 
 ```bash
 # Record with MCAP (default in Jazzy+)
@@ -428,8 +431,14 @@ ros2 bag record -a -o my_bag --compression-mode file --compression-format zstd
 # Inspect MCAP file
 ros2 bag info my_bag
 
-# Convert SQLite3 bag to MCAP
-ros2 bag convert -i old_bag -o new_bag -s mcap
+# Convert SQLite3 bag to MCAP (requires a YAML config file)
+# 1. Create convert_config.yaml:
+#    output_bags:
+#      - uri: new_bag
+#        storage_id: mcap
+#        all: true
+# 2. Run:
+ros2 bag convert -i old_bag -o convert_config.yaml
 ```
 
 Compression comparison:
@@ -539,7 +548,10 @@ export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterfac
 
 ```bash
 # Isolate from other ROS 2 systems
-export ROS_LOCALHOST_ONLY=1
+# Jazzy+ (preferred):
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+# Humble (or Jazzy backward-compatible):
+# export ROS_LOCALHOST_ONLY=1  # Deprecated in Jazzy+
 export ROS_DOMAIN_ID=42
 ```
 

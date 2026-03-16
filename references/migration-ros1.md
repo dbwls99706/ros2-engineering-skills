@@ -117,17 +117,19 @@ services:
 ### Docker-based bridge setup
 
 ```dockerfile
-# Dockerfile.bridge — uses multi-stage to copy ROS 1 into a ROS 2 image
+# Dockerfile.bridge — multi-stage: build bridge in Focal (Noetic+Humble coexist)
+# NOTE: Noetic packages only exist for Ubuntu 20.04 (Focal), NOT 22.04 (Jammy).
+# The recommended approach is to build ros1_bridge from source in a Focal container
+# that has both Noetic and Humble installed from source or mixed repos.
 FROM ros:noetic AS ros1_stage
 
-FROM ros:humble AS bridge
-# Add ROS 1 apt repository for Ubuntu 22.04
-RUN sh -c 'echo "deb http://packages.ros.org/ros/ubuntu jammy main" > /etc/apt/sources.list.d/ros-latest.list' && \
-    apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654 && \
-    apt-get update && apt-get install -y \
-    ros-noetic-ros-base \
-    ros-humble-ros1-bridge && \
+# Use Focal-based image where both Noetic (binary) and Humble (source) coexist
+FROM ubuntu:20.04 AS bridge
+RUN apt-get update && apt-get install -y \
+    ros-noetic-ros-base && \
     rm -rf /var/lib/apt/lists/*
+# Build Humble and ros1_bridge from source in this container
+# See: https://github.com/ros2/ros1_bridge for detailed build instructions
 
 COPY bridge_entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
@@ -265,7 +267,8 @@ def generate_launch_description():
             'baud_rate': 115200,
         }],
         remappings=[
-            ('joint_states', ['/robot/', LaunchConfiguration('robot_name'), '/joint_states']),
+            # Note: namespace already prefixes topics, so typically just remap the base name
+            ('joint_states', 'joint_states'),  # or use absolute: /my_robot/joint_states
         ],
         output='screen',
     )

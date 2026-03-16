@@ -61,7 +61,10 @@ ros2 security create_enclave ~/sros2_keystore /my_robot/controller
 ### Step 2: Generate policy from runtime introspection
 
 ```bash
-# Option A: Auto-generate from running system (run system WITHOUT security first)
+# Option A: Auto-generate from running system (run system WITHOUT security first).
+# IMPORTANT: This captures only currently-active communications. Run it while
+# the system exercises ALL code paths (all topics, services, actions in use).
+# Ephemeral communications (service calls during startup) are easily missed.
 ros2 security generate_policy policy.xml
 
 # Option B: Write policy manually (recommended for production — more precise)
@@ -555,7 +558,14 @@ Development          Testing              Production
 +-----------+     +------------+     +---------------+
 ```
 
-**Development:** No security enabled. Use `ROS_LOCALHOST_ONLY=1` and domain IDs for isolation.
+**Development:** No security enabled. Use `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`
+(Jazzy+) or `ROS_LOCALHOST_ONLY=1` (Humble) and domain IDs for isolation.
+
+**Zenoh note (Kilted+):** SROS2/DDS Security plugins only apply when using a DDS-based
+RMW (`rmw_cyclonedds_cpp`, `rmw_fastdds_cpp`). When using `rmw_zenoh_cpp` (Tier 1
+in Kilted), security is handled via Zenoh's own TLS configuration, NOT SROS2.
+If you switch to Zenoh without configuring Zenoh TLS, your system is unprotected
+even with `ROS_SECURITY_ENABLE=true`.
 
 **Testing:** `ROS_SECURITY_STRATEGY=Permissive` first (logs violations but does not block), then `Enforce` with auto-generated broad permissions to catch missing enclaves.
 

@@ -10,7 +10,8 @@
 6. [Isaac Sim integration](#6-isaac-sim-integration)
 7. [Sim-to-real transfer strategies](#7-sim-to-real-transfer-strategies)
 8. [Headless simulation for CI](#8-headless-simulation-for-ci)
-9. [Common failures and fixes](#9-common-failures-and-fixes)
+9. [Simulation reproducibility](#9-simulation-reproducibility)
+10. [Common failures and fixes](#10-common-failures-and-fixes)
 
 ---
 
@@ -445,20 +446,79 @@ from collections import deque
 import numpy as np
 
 class ActuatorModel:
-    """Models delay, backlash, and velocity limits of real actuators."""
-    def __init__(self, delay_steps=3, backlash_rad=0.005, vel_limit=2.0):
+    """Models delay, backlash, stiction, and velocity limits of real actuators.
+
+    Real actuators exhibit:
+    - Transport delay (communication + processing latency)
+    - Backlash (mechanical play in gears)
+    - Stiction (static friction threshold before motion begins)
+    - Velocity limits (motor saturation)
+    - Temperature-dependent behavior (not modeled here — use sysid for this)
+    """
+    def __init__(self, delay_steps=3, backlash_rad=0.005,
+                 stiction_torque=0.1, vel_limit=2.0):
         self.delay_buffer = deque([0.0] * delay_steps, maxlen=delay_steps)
         self.backlash = backlash_rad
+        self.stiction = stiction_torque
         self.vel_limit = vel_limit
         self.last_pos = 0.0
+        self.last_dir = 0  # Track direction for backlash hysteresis
 
     def apply(self, cmd: float, dt: float = 0.01) -> float:
         self.delay_buffer.append(cmd)
         delayed = self.delay_buffer[0]
+
+        # Stiction: no movement if command delta is below stiction threshold
+        error = delayed - self.last_pos
+        if abs(error) < self.stiction:
+            return self.last_pos
+
+        # Backlash: dead zone on direction reversal
+        new_dir = 1 if error > 0 else -1
+        if new_dir != self.last_dir:
+            error = max(0.0, abs(error) - self.backlash) * new_dir
+            self.last_dir = new_dir
+
+        # Velocity limit
         max_step = self.vel_limit * dt
-        delta = np.clip(delayed - self.last_pos, -max_step, max_step)
+        delta = np.clip(error, -max_step, max_step)
         self.last_pos += delta
         return self.last_pos
+```
+
+### Domain randomization with Gazebo SDF parameters
+
+Python-side randomization alone is insufficient — the most impactful parameters
+(inertia, friction, damping) must be set in the physics engine via SDF.
+
+```python
+import subprocess, tempfile, os
+
+def launch_with_randomized_physics(base_sdf: str, randomize_fn):
+    """Generate a randomized SDF and launch Gazebo with it."""
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(base_sdf)
+    root = tree.getroot()
+    params = randomize_fn()
+
+    # Randomize surface friction on all collision elements
+    for surface in root.iter('surface'):
+        friction = surface.find('.//mu')
+        if friction is not None:
+            friction.text = str(params['friction'])
+
+    # Randomize inertial properties
+    for inertial in root.iter('inertial'):
+        mass = inertial.find('mass')
+        if mass is not None:
+            mass.text = str(float(mass.text) * params['mass_scale'])
+
+    with tempfile.NamedTemporaryFile(suffix='.sdf', delete=False, mode='w') as f:
+        tree.write(f, xml_declaration=True)
+        randomized_sdf = f.name
+
+    subprocess.run(['gz', 'sim', '-s', '-r', randomized_sdf])
+    os.unlink(randomized_sdf)
 ```
 
 ---
@@ -546,7 +606,67 @@ class TestSimulation(unittest.TestCase):
 
 ---
 
-## 9. Common failures and fixes
+## 9. Simulation reproducibility
+
+### The determinism problem
+
+Gazebo simulations are **not perfectly deterministic** across runs due to:
+- Thread scheduling order affecting physics solver convergence
+- Floating-point operation ordering differences
+- DDS discovery timing affecting when nodes start publishing
+
+For debugging and regression testing, maximize reproducibility:
+
+```xml
+<!-- Force deterministic mode: single-threaded physics, fixed seed -->
+<physics name="deterministic" type="dart">
+  <real_time_factor>0</real_time_factor>   <!-- Run as fast as possible, no wall clock sync -->
+  <max_step_size>0.001</max_step_size>     <!-- Fixed step size -->
+</physics>
+```
+
+```bash
+# Fixed seed for any plugin randomization (e.g., sensor noise)
+export GZ_SIM_SEED=42
+
+# Run in server mode with deterministic stepping
+gz sim -s -r --iterations 10000 world.sdf  # Run exactly 10000 steps
+```
+
+**For regression tests:** Record a rosbag of the "golden" run, then compare future
+runs against it. Use `ros2 bag play` with `--clock` to reproduce timing exactly.
+
+### Physics step size vs sensor update rate
+
+The relationship between `max_step_size` and sensor `update_rate` is critical:
+
+| Setting | Effect |
+|---|---|
+| `max_step_size > 1/update_rate` | Sensor may fire 0 or 1 times per physics step — data loss |
+| `max_step_size = 1/update_rate` | Exactly one sensor reading per step — ideal for determinism |
+| `max_step_size << 1/update_rate` | Multiple physics steps between sensor updates — realistic but slower |
+
+```xml
+<!-- GOOD: step_size (1ms) < sensor period (10ms = 100Hz) -->
+<physics name="good" type="dart">
+  <max_step_size>0.001</max_step_size>
+</physics>
+<sensor type="imu" update_rate="100">...</sensor>
+
+<!-- BAD: step_size (20ms) > sensor period (10ms) — sensor updates are missed -->
+<physics name="bad" type="dart">
+  <max_step_size>0.02</max_step_size>
+</physics>
+<sensor type="imu" update_rate="100">...</sensor>
+```
+
+**Anti-pattern: `real_time_factor > 10` with large `max_step_size`:**
+Setting `real_time_factor=100` with `max_step_size=0.01` means each physics step
+covers 10ms of sim time but the solver takes only one iteration. Contact dynamics
+become unstable, objects tunnel through walls, and joints explode. Keep
+`max_step_size <= 0.002` even when accelerating time.
+
+## 10. Common failures and fixes
 
 | Symptom | Cause | Fix |
 |---|---|---|

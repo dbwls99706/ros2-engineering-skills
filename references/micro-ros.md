@@ -47,7 +47,8 @@ Always match the micro-ROS branch to your ROS 2 distro. Mixing versions causes s
 | ROS 2 Distro | micro-ROS Branch | Status      |
 |--------------|------------------|-------------|
 | Humble       | humble           | LTS, stable |
-| Jazzy        | jazzy            | Current LTS |
+| Jazzy        | jazzy            | Latest LTS  |
+| Kilted       | kilted           | Non-LTS, current |
 | Rolling      | rolling          | Development |
 
 ---
@@ -397,6 +398,7 @@ The agent can disconnect (USB unplug, network failure, host reboot). Detect and 
 ```c
 typedef enum { AGENT_WAIT, AGENT_AVAILABLE, AGENT_CONNECTED, AGENT_DISCONNECTED } AgentState;
 static AgentState state = AGENT_WAIT;
+static uint32_t ping_counter = 0;
 
 bool is_agent_connected(void) {
     return rmw_uros_ping_agent(100, 1) == RMW_RET_OK;
@@ -424,8 +426,11 @@ void micro_ros_task(void * arg)
             break;
         case AGENT_CONNECTED:
             RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100)));
-            // Check connectivity periodically, not every spin
-            if (!is_agent_connected()) { state = AGENT_DISCONNECTED; }
+            // Check connectivity every 100 cycles, NOT every spin (ping adds ~100ms)
+            if (++ping_counter >= 100) {
+                ping_counter = 0;
+                if (!is_agent_connected()) { state = AGENT_DISCONNECTED; }
+            }
             vTaskDelay(pdMS_TO_TICKS(1));
             break;
         case AGENT_DISCONNECTED:
@@ -450,11 +455,13 @@ int64_t time_ns = rmw_uros_epoch_nanos();
 
 ```c
 #include <esp_task_wdt.h>
-// ESP-IDF v5+ API (used by current micro-ROS builds)
+// ESP-IDF v5+ API (Jazzy/Kilted micro-ROS builds)
 esp_task_wdt_config_t wdt_config = {
     .timeout_ms = 10000, .idle_core_mask = 0, .trigger_panic = true,
 };
 esp_task_wdt_init(&wdt_config);
+// ESP-IDF v4.x (Humble): esp_task_wdt_init(10, true);
+// Check version: idf.py --version
 esp_task_wdt_add(xTaskGetCurrentTaskHandle());
 // In spin loop:
 esp_task_wdt_reset();  // Feed watchdog each iteration

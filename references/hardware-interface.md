@@ -10,7 +10,8 @@
 7. Serial, CAN, and EtherCAT communication patterns
 8. Configuration and parameter loading
 9. Real hardware bring-up workflow
-10. Common failures and fixes
+10. Hardware error recovery patterns
+11. Common failures and fixes
 
 ---
 
@@ -117,8 +118,20 @@ public:
 
   // NOTE: export_state_interfaces() and export_command_interfaces() are
   // NO LONGER needed in Jazzy 4.x. The framework auto-generates them
-  // from the <ros2_control> URDF tag. Only override on_export_*_interfaces()
-  // if you need custom behavior beyond what the URDF defines.
+  // from the <ros2_control> URDF tag.
+  //
+  // To ADD custom interfaces beyond what the URDF defines (e.g., internal
+  // temperature, bus voltage), override on_export_state_interfaces():
+  //
+  //   std::vector<hardware_interface::InterfaceDescription>
+  //   on_export_state_interfaces() override {
+  //     auto interfaces = SystemInterface::on_export_state_interfaces();
+  //     interfaces.push_back({"internal/temperature", ...});
+  //     return interfaces;
+  //   }
+  //
+  // The base class implementation returns the auto-generated interfaces.
+  // Your override should call the base and extend, not replace.
 
   // Open hardware connection
   hardware_interface::CallbackReturn on_activate(
@@ -744,7 +757,98 @@ def generate_launch_description():
 6. **Tune update rate** — start low (100 Hz), increase until you hit
    serial/CAN bandwidth limits or jitter thresholds.
 
-## 10. Common failures and fixes
+## 10. Hardware error recovery patterns
+
+### Transient vs fatal errors
+
+Not all hardware errors are equal. Distinguish between transient (retry-safe) and
+fatal (requires operator intervention) errors in `read()` and `write()`:
+
+```cpp
+hardware_interface::return_type MyHardware::read(
+  const rclcpp::Time &, const rclcpp::Duration &)
+{
+  auto data = read_encoders(serial_);
+  if (!data.valid) {
+    consecutive_read_failures_++;
+
+    if (consecutive_read_failures_ <= MAX_TRANSIENT_FAILURES) {
+      // Transient: use last known values (stale data is safer than no data)
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+        "Read failed (%d/%d) — using last known values",
+        consecutive_read_failures_, MAX_TRANSIENT_FAILURES);
+      return hardware_interface::return_type::OK;  // Don't crash the loop
+    }
+
+    // Fatal: too many consecutive failures — hardware is unreachable
+    RCLCPP_ERROR(get_logger(),
+      "Hardware unreachable after %d consecutive failures — requesting error transition",
+      consecutive_read_failures_);
+    return hardware_interface::return_type::ERROR;  // Triggers on_error()
+  }
+
+  consecutive_read_failures_ = 0;  // Reset on success
+  // ... update state interfaces ...
+  return hardware_interface::return_type::OK;
+}
+```
+
+### on_error() recovery strategy
+
+```cpp
+hardware_interface::CallbackReturn on_error(
+  const rclcpp_lifecycle::State & previous_state) override
+{
+  RCLCPP_ERROR(get_logger(), "Hardware error from state: %s", previous_state.label().c_str());
+
+  // 1. Safe the hardware — send zero velocity / disable torque
+  send_safe_command(serial_);
+
+  // 2. Close and reopen the connection
+  serial_.close();
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+  if (serial_.reopen(port_, baud_)) {
+    RCLCPP_INFO(get_logger(), "Hardware reconnected — transitioning to Unconfigured");
+    consecutive_read_failures_ = 0;
+    return hardware_interface::CallbackReturn::SUCCESS;  // → Unconfigured (can reconfigure)
+  }
+
+  RCLCPP_FATAL(get_logger(), "Hardware reconnection failed — manual intervention required");
+  return hardware_interface::CallbackReturn::ERROR;  // → Finalized (dead)
+}
+```
+
+### Resource leak prevention
+
+Hardware interfaces must cleanly release resources even on abnormal shutdown:
+
+```cpp
+hardware_interface::CallbackReturn on_deactivate(
+  const rclcpp_lifecycle::State &) override
+{
+  // ALWAYS send safe commands before closing — prevents motors
+  // from holding last command when the controller stops.
+  send_zero_velocity(serial_);
+  serial_.close();
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+// Destructor as safety net — on_deactivate may not be called on crash
+~MyRobotHardware() override
+{
+  if (serial_.is_open()) {
+    try { send_zero_velocity(serial_); } catch (...) {}
+    serial_.close();
+  }
+}
+```
+
+**Anti-pattern:** Relying solely on `on_deactivate` for cleanup. If the controller
+manager crashes or `SIGKILL` is sent, `on_deactivate` is never called. The destructor
+should be a safety net that also attempts to safe the hardware.
+
+## 11. Common failures and fixes
 
 | Symptom | Cause | Fix |
 |---|---|---|

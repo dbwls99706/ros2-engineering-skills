@@ -56,6 +56,12 @@ framework; detailed patterns, code templates, and anti-patterns live in the
 When a task spans multiple domains, read all relevant files and reconcile
 conflicting recommendations by favoring safety, then determinism, then simplicity.
 
+**Cross-cutting concern — Security:** Security is not isolated to `references/security.md`.
+Every domain should consider its security implications: hardware interfaces need safe
+shutdown on auth failure, DDS topics may need encryption, deployment images need supply
+chain verification, and fleet communication must use TLS. When reviewing code in any
+domain, check whether the data path crosses a trust boundary.
+
 ## Core engineering principles
 
 These apply to every ROS 2 artifact you produce, regardless of domain.
@@ -68,7 +74,7 @@ Always ask which ROS 2 distribution the user targets. Key differences:
 |---------------------------|----------------------|--------------------|--------------------|--------------------|--------------------|
 | EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Nov 2025           | Rolling            |
 | Ubuntu                    | 20.04               | 22.04              | 24.04              | 24.04              | Latest             |
-| Default DDS               | Fast DDS             | CycloneDDS         | CycloneDDS         | Fast DDS           | CycloneDDS         |
+| Default DDS               | Fast DDS             | CycloneDDS         | CycloneDDS         | CycloneDDS         | CycloneDDS         |
 | Zenoh support             | —                    | —                  | —                  | Tier 1             | Tier 1             |
 | Type description support  | No                   | No                 | Yes                | Yes                | Yes                |
 | Service introspection     | No                   | No                 | Yes                | Yes                | Yes                |
@@ -156,17 +162,23 @@ packages can depend on interfaces without pulling in implementation.
 
 Start from these profiles and adjust per use case:
 
-| Use case              | Reliability   | Durability       | History | Depth | Deadline    |
-|-----------------------|---------------|------------------|---------|-------|-------------|
-| Sensor stream         | BEST_EFFORT   | VOLATILE         | KEEP_LAST | 5   | —           |
-| Command velocity      | RELIABLE      | VOLATILE         | KEEP_LAST | 1   | 100 ms      |
-| Map (latched)         | RELIABLE      | TRANSIENT_LOCAL  | KEEP_LAST | 1   | —           |
-| Diagnostics           | RELIABLE      | VOLATILE         | KEEP_LAST | 10  | —           |
-| Parameter events      | RELIABLE      | VOLATILE         | KEEP_LAST | 1000| —           |
-| Action feedback       | RELIABLE      | VOLATILE         | KEEP_LAST | 1   | —           |
+| Use case              | Reliability   | Durability       | History | Depth | Deadline    | Lifespan    |
+|-----------------------|---------------|------------------|---------|-------|-------------|-------------|
+| Sensor stream         | BEST_EFFORT   | VOLATILE         | KEEP_LAST | 5   | —           | —           |
+| Command velocity      | RELIABLE      | VOLATILE         | KEEP_LAST | 1   | 100 ms      | 200 ms      |
+| Map (latched)         | RELIABLE      | TRANSIENT_LOCAL  | KEEP_LAST | 1   | —           | —           |
+| Diagnostics           | RELIABLE      | VOLATILE         | KEEP_LAST | 10  | —           | —           |
+| Parameter events      | RELIABLE      | VOLATILE         | KEEP_LAST | 1000| —           | —           |
+| Action feedback       | RELIABLE      | VOLATILE         | KEEP_LAST | 1   | —           | —           |
+| Safety heartbeat      | RELIABLE      | VOLATILE         | KEEP_LAST | 1   | 500 ms      | 1 s         |
 
 QoS mismatches are the #1 cause of "I published but nobody receives."
 Always check compatibility with `ros2 topic info -v` when debugging.
+
+**DEADLINE and LIFESPAN** are critical for safety-critical systems. DEADLINE fires an
+event when no message arrives within the specified period (detect stale data). LIFESPAN
+discards messages older than the specified duration before delivery (prevent acting on
+stale data). See `references/communication.md` section 9 for full API and examples.
 
 ### 7. Naming conventions
 
@@ -260,6 +272,9 @@ and how it shuts down. It also makes error recovery predictable.
 | Creating timers/subs in callbacks | Resource leak, unpredictable behavior | Create all entities in constructor or `on_configure` |
 | Synchronous service call in callback | Deadlocks the executor thread | Use `async_send_request` with a callback or dedicated thread |
 | Service client in same callback group as caller | Deadlocks even with async in `MultiThreadedExecutor` | Put service client in a separate `MutuallyExclusiveCallbackGroup` |
+| No safe command on shutdown | Motors hold last velocity after node exits | Send zero-velocity in `on_deactivate` AND destructor (see `references/hardware-interface.md`) |
+| Dynamic subscriptions with `StaticSingleThreadedExecutor` | New subs are never picked up after `spin()` | Use `SingleThreadedExecutor` or `MultiThreadedExecutor` for dynamic entities |
+| CPU frequency governor left on `powersave`/`ondemand` | 10-100 ms latency spikes in RT path | Set `performance` governor, disable turbo boost (see `references/realtime.md`) |
 
 ## Distro-specific migration notes
 

@@ -17,7 +17,7 @@
 ## 1. Lifecycle node state machine
 
 Lifecycle (managed) nodes follow the ROS 2 managed node state machine defined
-in [REP-2007](https://www.ros.org/reps/rep-2007.html). Every node that owns
+in the [Managed Nodes design article](https://design.ros2.org/articles/node_lifecycle.html). Every node that owns
 resources (hardware drivers, sensor pipelines, planners, controllers) should
 be a lifecycle node.
 
@@ -65,6 +65,7 @@ be a lifecycle node.
 ```cpp
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 
 namespace my_robot_perception
@@ -197,20 +198,17 @@ after deactivation.
 // This publisher only works when the node is Active
 auto pub = create_publisher<Msg>("topic", qos);  // LifecyclePublisher
 
-// Standard publisher (always works) — for diagnostics/heartbeats that must publish
-// regardless of lifecycle state. Use the node's underlying publisher directly:
-auto diag_pub = create_publisher<Msg>("diagnostics", qos);
-// Note: In a lifecycle node, create_publisher returns a LifecyclePublisher.
-// For a truly always-active publisher, publish on a non-lifecycle sub-node or
-// use a separate rclcpp::Node dedicated to diagnostics.
+// Note: In a lifecycle node, ALL publishers from create_publisher() are
+// LifecyclePublishers that are silenced outside Active state.
+// For always-active publishing (diagnostics, heartbeats), use a separate
+// rclcpp::Node dedicated to diagnostics running in the same process.
 ```
 
 ## 3. Implementing lifecycle transitions (rclpy)
 
 ```python
 import rclpy
-from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
-from rclpy.lifecycle import LifecyclePublisher
+from rclpy.lifecycle import LifecycleNode, State, TransitionCallbackReturn
 from sensor_msgs.msg import LaserScan
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
@@ -223,7 +221,7 @@ class LidarProcessor(LifecycleNode):
         self._scan_pub = None
         self._scan_sub = None
 
-    def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+    def on_configure(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info('Configuring...')
         self._min_range = self.get_parameter('min_range').value
         self._max_range = self.get_parameter('max_range').value
@@ -235,15 +233,15 @@ class LidarProcessor(LifecycleNode):
 
         return TransitionCallbackReturn.SUCCESS
 
-    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+    def on_activate(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info('Activating...')
         return super().on_activate(state)
 
-    def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
+    def on_deactivate(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info('Deactivating...')
         return super().on_deactivate(state)
 
-    def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+    def on_cleanup(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info('Cleaning up...')
         self.destroy_publisher(self._scan_pub)
         self.destroy_subscription(self._scan_sub)
@@ -251,7 +249,7 @@ class LidarProcessor(LifecycleNode):
         self._scan_sub = None
         return TransitionCallbackReturn.SUCCESS
 
-    def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+    def on_shutdown(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info(f'Shutting down from {state.label}')
         if self._scan_pub:
             self.destroy_publisher(self._scan_pub)

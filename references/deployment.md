@@ -9,7 +9,8 @@
 6. Environment variable management
 7. Security (SROS2)
 8. Monitoring and health checks
-9. Common failures and fixes
+9. Graceful shutdown
+10. Common failures and fixes
 
 ---
 
@@ -67,6 +68,12 @@ CMD ["ros2", "launch", "my_robot_bringup", "robot.launch.py"]
 #!/bin/bash
 # docker/entrypoint.sh
 set -e
+
+# Validate ROS 2 installation exists before sourcing
+if [ ! -f /opt/ros/jazzy/setup.bash ]; then
+  echo "ERROR: /opt/ros/jazzy/setup.bash not found. Check base image." >&2
+  exit 1
+fi
 
 # Source ROS 2 and workspace
 source /opt/ros/jazzy/setup.bash
@@ -253,8 +260,8 @@ sudo apt install ros-jazzy-ros-base  # No desktop on headless Pi
 colcon build --parallel-workers 2 \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 
-# Reduce DDS overhead
-export ROS_LOCALHOST_ONLY=1  # If single-machine
+# Reduce DDS overhead (Jazzy+: use ROS_AUTOMATIC_DISCOVERY_RANGE instead of ROS_LOCALHOST_ONLY)
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST  # If single-machine
 export CYCLONEDDS_URI='<CycloneDDS><Domain><Internal><MinimumSocketReceiveBufferSize>64KB</MinimumSocketReceiveBufferSize></Internal></Domain></CycloneDDS>'
 ```
 
@@ -291,12 +298,33 @@ export CYCLONEDDS_URI='<CycloneDDS><Domain><Internal><MinimumSocketReceiveBuffer
 docker build -t registry.example.com/my_robot:v2.1.0 .
 docker push registry.example.com/my_robot:v2.1.0
 
-# On each robot — pull and restart (via agent or SSH)
-docker pull registry.example.com/my_robot:v2.1.0
-docker-compose up -d --force-recreate
+# On each robot — pull with integrity verification and health check
+#!/bin/bash
+set -e
+NEW_TAG="v2.1.0"
+OLD_TAG=$(docker inspect --format='{{.Config.Image}}' my_robot_driver 2>/dev/null || echo "none")
 
-# Rollback if needed (set IMAGE_TAG in .env or docker-compose.yml)
-IMAGE_TAG=v2.0.0 docker-compose up -d --force-recreate
+# 1. Pull new image
+docker pull "registry.example.com/my_robot:${NEW_TAG}"
+
+# 2. Pre-flight: verify the image can at least start and pass a health check
+docker run --rm --timeout 30 "registry.example.com/my_robot:${NEW_TAG}" \
+  ros2 doctor --report > /dev/null 2>&1 || {
+    echo "ERROR: New image failed pre-flight check. Aborting OTA." >&2
+    exit 1
+  }
+
+# 3. Deploy
+IMAGE_TAG="${NEW_TAG}" docker-compose up -d --force-recreate
+
+# 4. Post-deploy health check (wait for ROS nodes to come up)
+sleep 15
+if ! docker exec my_robot_driver ros2 topic list > /dev/null 2>&1; then
+  echo "WARN: Post-deploy health check failed. Rolling back to ${OLD_TAG}" >&2
+  IMAGE_TAG="${OLD_TAG}" docker-compose up -d --force-recreate
+  exit 1
+fi
+echo "OTA update to ${NEW_TAG} successful."
 ```
 
 ### Version management
@@ -520,7 +548,72 @@ error_count = Counter('ros2_errors_total', 'Total error count', ['node', 'type']
 start_http_server(9090)
 ```
 
-## 9. Common failures and fixes
+## 9. Graceful shutdown
+
+### The problem
+
+When systemd restarts a ROS 2 service (`systemctl restart ros2-robot`), it sends
+`SIGTERM` and waits `TimeoutStopSec` (default 90s) before `SIGKILL`. Lifecycle
+nodes need time to transition through `deactivate → cleanup → shutdown`. If the
+shutdown is too slow, `SIGKILL` leaves hardware in an unsafe state (motors running,
+grippers open, sensor streams active).
+
+### systemd configuration
+
+```ini
+# Add to [Service] section
+TimeoutStopSec=15          # Give ROS 15s to shut down gracefully
+KillSignal=SIGINT          # SIGINT triggers rclcpp::shutdown() cleanly
+SendSIGKILL=yes            # Force-kill after TimeoutStopSec if still alive
+```
+
+### Signal handling in launch files
+
+```python
+import signal
+from launch import LaunchDescription
+from launch.actions import RegisterEventHandler, Shutdown
+from launch.event_handlers import OnProcessExit
+
+def generate_launch_description():
+    # Ensure all nodes shut down when the main process exits
+    return LaunchDescription([
+        # ... your nodes ...,
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=driver_node,
+                on_exit=[Shutdown(reason='Driver exited')],
+            )
+        ),
+    ])
+```
+
+### Hardware safety on shutdown
+
+For lifecycle nodes that control hardware, the `on_deactivate` callback must:
+1. Send a safe command (zero velocity, disable torque, close gripper to safe position)
+2. Wait for acknowledgement from hardware (with timeout)
+3. Close communication channels
+
+```cpp
+CallbackReturn on_deactivate(const rclcpp_lifecycle::State &) override {
+  // 1. Safe the hardware BEFORE closing the connection
+  if (serial_.is_open()) {
+    send_zero_velocity(serial_);
+    // 2. Brief wait for hardware to acknowledge
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  // 3. Close
+  serial_.close();
+  return CallbackReturn::SUCCESS;
+}
+```
+
+**Anti-pattern:** Not sending a safe command in `on_deactivate`. If the last `write()`
+command was `velocity=1.0` and the node shuts down, the motor may continue at that
+velocity until hardware watchdog times out (if one exists).
+
+## 10. Common failures and fixes
 
 | Symptom | Cause | Fix |
 |---|---|---|

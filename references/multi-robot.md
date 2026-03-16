@@ -29,7 +29,7 @@ export ROS_DOMAIN_ID=1  # Robot A
 export ROS_DOMAIN_ID=2  # Robot B
 ```
 
-Limitation: domain IDs above 232 cause port overflow (`port = 7400 + 250 * domain_id + offset` exceeds 16-bit range). In practice, keep domain IDs below 100 to avoid conflicts with system services. For fleets > 100 robots, use namespacing or Zenoh instead of domain IDs.
+Limitation: ROS 2 restricts domain IDs to 0-101 on Linux and 0-166 on macOS/Windows (the raw DDS maximum is 232, but ROS 2 uses additional port offsets per participant that overflow the 16-bit port range earlier). In practice, keep domain IDs below 100. For fleets > 100 robots, use namespacing or Zenoh instead of domain IDs.
 
 ### Namespace strategy (recommended for most cases)
 
@@ -195,6 +195,16 @@ class Nav2FleetAdapter(Node):
         future.add_done_callback(lambda f, n=robot_name: self._nav_done(n, f))
 
     def _nav_done(self, robot_name, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn(f'{robot_name}: goal rejected')
+            self.robots[robot_name]['mode'] = RobotMode.MODE_IDLE
+            return
+        # Wait for actual navigation completion before marking IDLE
+        goal_handle.get_result_async().add_done_callback(
+            lambda f, n=robot_name: self._on_nav_result(n, f))
+
+    def _on_nav_result(self, robot_name, future):
         self.robots[robot_name]['mode'] = RobotMode.MODE_IDLE
 ```
 
@@ -361,7 +371,8 @@ fastdds discovery -i 0 -l 192.168.1.1 -p 11811   # start server
 ```
 
 ```bash
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp  # Humble, Jazzy
+# export RMW_IMPLEMENTATION=rmw_fastdds_cpp  # Kilted, Rolling (renamed)
 export FASTRTPS_DEFAULT_PROFILES_FILE=/path/to/fastdds_client_profile.xml
 ```
 

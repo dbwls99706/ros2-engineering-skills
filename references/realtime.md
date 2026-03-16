@@ -10,7 +10,8 @@
 7. DDS tuning for real-time
 8. ros2_control real-time considerations
 9. Measuring jitter and latency
-10. Common failures and fixes
+10. Hardware-level RT pitfalls (CPU freq, clock sources, NUMA, IRQ affinity)
+11. Common failures and fixes
 
 ---
 
@@ -69,11 +70,20 @@ sudo usermod -aG realtime $USER
 ### CPU isolation (dedicated cores for RT)
 
 ```bash
+# x86/amd64 (GRUB bootloader):
 # /etc/default/grub — isolate CPUs 2 and 3 for RT
 GRUB_CMDLINE_LINUX="isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3"
 sudo update-grub && sudo reboot
 
-# Verify isolation
+# NVIDIA Jetson (U-Boot/extlinux):
+# Edit /boot/extlinux/extlinux.conf, add to APPEND line:
+# isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3
+
+# Raspberry Pi (config.txt + cmdline.txt):
+# Edit /boot/firmware/cmdline.txt, append:
+# isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3
+
+# Verify isolation (all platforms)
 cat /sys/devices/system/cpu/isolated  # Should show "2-3"
 ```
 
@@ -156,9 +166,21 @@ public:
     cmd_msg_->positions.resize(NUM_JOINTS);
     cmd_msg_->velocities.resize(NUM_JOINTS);
 
-    // Lock memory pages to prevent page faults
+    // Lock memory pages to prevent page faults.
+    // WARNING: MCL_FUTURE locks ALL future allocations. If the process exceeds
+    // the RLIMIT_MEMLOCK limit, mlockall fails and subsequent mmap/malloc may
+    // also fail. Always check limits before calling.
+    struct rlimit mem_limit;
+    getrlimit(RLIMIT_MEMLOCK, &mem_limit);
+    if (mem_limit.rlim_cur != RLIM_INFINITY) {
+      RCLCPP_WARN(get_logger(),
+        "RLIMIT_MEMLOCK is %lu bytes (not unlimited). "
+        "Set memlock=unlimited in /etc/security/limits.d/ for RT.",
+        mem_limit.rlim_cur);
+    }
     if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
-      RCLCPP_WARN(get_logger(), "mlockall failed — RT performance may be degraded");
+      RCLCPP_WARN(get_logger(), "mlockall failed (errno=%d) — RT performance may be degraded",
+                  errno);
     }
   }
 
@@ -407,7 +429,8 @@ In the RT path, avoid mutexes entirely where possible:
 
 - Use `BEST_EFFORT` QoS for sensor data (no ACK overhead)
 - Use intra-process communication for co-located nodes
-- Limit discovery scope with `ROS_DOMAIN_ID` and `ROS_LOCALHOST_ONLY`
+- Limit discovery scope with `ROS_DOMAIN_ID` and `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`
+  (Jazzy+; replaces deprecated `ROS_LOCALHOST_ONLY`)
 - Use shared memory transport (Jazzy+) to bypass the network stack entirely
 
 ## 8. ros2_control real-time considerations
@@ -520,7 +543,10 @@ ros2 trace stop my_trace
 
 ### Benchmark reference numbers
 
-These are order-of-magnitude numbers from published benchmarks on typical hardware (Intel i7-12700, Ubuntu 24.04):
+These are **order-of-magnitude reference numbers** from published benchmarks on
+specific hardware (Intel i7-12700, Ubuntu 24.04). Your numbers **will differ** based
+on CPU, kernel version, BIOS settings, and workload. Always benchmark on your target
+platform — never assume these numbers transfer directly.
 
 | Metric | Without PREEMPT_RT | With PREEMPT_RT |
 |---|---|---|
@@ -528,7 +554,7 @@ These are order-of-magnitude numbers from published benchmarks on typical hardwa
 | cyclictest avg latency | 2-5 us | 1-3 us |
 | Worst-case jitter (p99.9) | 200-2000 us | 10-20 us |
 
-DDS transport latency (loopback, 1KB message):
+DDS transport latency (loopback, **1 KB message** — small messages only):
 
 | Middleware | Avg latency | p99 latency |
 |---|---|---|
@@ -536,6 +562,11 @@ DDS transport latency (loopback, 1KB message):
 | FastDDS | ~40-80 us | ~150-300 us |
 | Zenoh | ~20-40 us | ~60-120 us |
 | Intra-process (zero-copy) | ~1-5 us | ~5-10 us |
+
+**Large message scaling:** For `PointCloud2` (~1.5 MB) or `Image` (~900 KB), multiply
+the above numbers by 50–100x due to serialization, fragmentation, and reassembly.
+For large messages on the RT path, intra-process or shared memory transport is
+effectively mandatory.
 
 ### Tail latency (p99/p999)
 
@@ -547,7 +578,103 @@ sudo cyclictest -l 100000 -m -S -p 90 -i 1000 -h 400 -q > histogram.txt
 # Analyze: sort histogram, find the latency at 99.9th percentile
 ```
 
-## 10. Common failures and fixes
+## 10. Hardware-level RT pitfalls
+
+These low-level factors are invisible in application code but dominate tail latency
+in production. A 20-year veteran will check these before any software optimization.
+
+### CPU frequency scaling and turbo boost
+
+Dynamic frequency scaling introduces **10–100 ms** latency spikes when the CPU
+transitions between P-states. Turbo Boost causes frequency drops when thermal
+limits are hit, creating non-deterministic jitter.
+
+```bash
+# Lock CPU frequency to maximum — REQUIRED for RT
+sudo cpupower frequency-set -g performance
+
+# Disable turbo boost (Intel)
+echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
+
+# Disable turbo boost (AMD)
+echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost
+
+# Verify — all cores should show the same fixed frequency
+cpupower frequency-info | grep "current CPU frequency"
+
+# Make persistent via systemd service or /etc/rc.local
+```
+
+**Why this matters:** Without this, a 1 kHz control loop that normally hits 5 µs
+jitter will randomly spike to 10+ ms when the governor transitions. This is the
+**single most common cause** of "works on the bench, fails in production" RT issues.
+
+### Clock sources
+
+The kernel clock source affects timestamp accuracy and `clock_gettime()` latency,
+which directly impacts `cyclictest` results and ROS 2 timer precision.
+
+```bash
+# Check current clock source
+cat /sys/devices/system/clocksource/clocksource0/current_clocksource
+# Typically: tsc (best), hpet (acceptable), acpi_pm (slow)
+
+# Check available sources
+cat /sys/devices/system/clocksource/clocksource0/available_clocksource
+
+# Force TSC if available (lowest overhead, ~20ns per read)
+# In GRUB: GRUB_CMDLINE_LINUX="... clocksource=tsc tsc=reliable"
+```
+
+| Clock source | Read latency | Notes |
+|---|---|---|
+| TSC | ~20 ns | Best choice. Requires invariant TSC (all modern x86 CPUs) |
+| HPET | ~500 ns | Acceptable fallback. Some BIOSes disable it |
+| ACPI_PM | ~1000 ns | Slow. Avoid for RT |
+| `arch_sys_counter` (ARM) | ~40 ns | Default on ARM64, good for Jetson/Pi |
+
+If `cyclictest` shows good latency but your ROS 2 nodes show jitter, check the
+clock source first — a slow clock source adds overhead to every `now()` call.
+
+### NUMA awareness (multi-socket systems)
+
+On dual-socket servers (common in industrial controllers), memory access across
+NUMA nodes adds **50–200 ns per access**. If the RT thread runs on CPU socket 0
+but its data (state interfaces, command buffers) is allocated on socket 1, every
+`read()`/`write()` cycle pays this penalty, creating 10x worse jitter.
+
+```bash
+# Check NUMA topology
+numactl --hardware
+
+# Pin RT process to a specific NUMA node
+numactl --cpunodebind=0 --membind=0 ros2 launch my_robot control.launch.py
+
+# In code: allocate RT buffers on the same node as the RT thread
+#include <numa.h>
+void* rt_buffer = numa_alloc_onnode(size, 0);  // Allocate on node 0
+```
+
+**Rule of thumb:** Pin the RT executor thread and all its data to the same NUMA
+node. This is irrelevant on single-socket systems (most robots), but critical for
+server-grade or multi-socket industrial controllers.
+
+### IRQ affinity
+
+Hardware interrupts (especially from network cards and serial controllers) can
+preempt RT threads, causing latency spikes. Move IRQs off isolated RT cores:
+
+```bash
+# Move all IRQs to CPU 0 (non-RT core)
+for irq in /proc/irq/*/smp_affinity_list; do
+  echo 0 | sudo tee "$irq" 2>/dev/null || true
+done
+
+# Verify no IRQs are firing on isolated cores
+watch -n 1 cat /proc/interrupts
+```
+
+## 11. Common failures and fixes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -559,3 +686,7 @@ sudo cyclictest -l 100000 -m -S -p 90 -i 1000 -h 400 -q > histogram.txt
 | DDS adds unpredictable latency | Network stack interference | Use intra-process or shared memory transport for local communication |
 | Logging causes jitter | `RCLCPP_INFO` allocates strings | Use `RCLCPP_INFO_THROTTLE` or log from non-RT thread via lock-free queue |
 | USB serial drops frames | USB polling interval too high | Set `usbcore.autosuspend=-1`, use low-latency serial settings |
+| Random 10-100 ms spikes | CPU frequency scaling / turbo boost | Set governor to `performance`, disable turbo (see section 10) |
+| Good cyclictest but bad ROS jitter | Slow clock source (HPET/ACPI_PM) | Switch to TSC: `clocksource=tsc tsc=reliable` in kernel cmdline |
+| Latency worse on multi-socket server | NUMA cross-node memory access | Pin RT thread + data to same NUMA node with `numactl` |
+| Sporadic spikes from network IRQs | IRQs firing on isolated RT cores | Move IRQ affinity off RT cores (see section 10) |

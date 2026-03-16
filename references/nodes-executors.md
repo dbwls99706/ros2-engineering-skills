@@ -192,6 +192,11 @@ Like `SingleThreadedExecutor` but pre-computes the callback schedule at startup.
 Lower overhead per spin iteration — use for nodes with a fixed set of subscriptions
 and timers (no dynamic creation/destruction at runtime).
 
+**Critical constraint:** Adding or removing subscriptions, timers, or services after
+`spin()` is called will **not** be picked up. The executor's internal schedule is
+frozen at the first `spin()` call. If you need dynamic subscription management, use
+`SingleThreadedExecutor` or `MultiThreadedExecutor` instead.
+
 ### EventsExecutor (Jazzy+)
 
 Event-driven instead of polling-based. Lower CPU usage when idle, faster wake-up
@@ -204,6 +209,14 @@ In Kilted, `EventsExecutor` was also ported to rclpy as `rclpy.executors.EventsE
 **Benchmark note:** Per the iRobot 2023 paper, `EventsExecutor` achieves approximately
 90% reduction in wake-up latency compared to polling-based `SingleThreadedExecutor`
 under idle-to-active transition.
+
+**Trade-off warning:** `EventsExecutor` excels at idle-to-active wake-up but can exhibit
+**higher p99 latency variance** under sustained high-throughput scenarios compared to
+`SingleThreadedExecutor`. In tight control loops (>500 Hz) where worst-case jitter matters
+more than average latency, benchmark both executors on your target hardware before
+committing. For mixed workloads (some idle nodes, some high-frequency), the two-executor
+pattern (section 5) lets you use `SingleThreadedExecutor` on the RT path and
+`EventsExecutor` on the non-RT path.
 
 ```cpp
 // Jazzy — experimental namespace
@@ -330,8 +343,13 @@ private:
   void handle_accepted(
     const std::shared_ptr<rclcpp_action::ServerGoalHandle<MyAction>> goal_handle)
   {
-    // Execute in a new thread to avoid blocking the executor
-    std::thread([this, goal_handle]() { execute(goal_handle); }).detach();
+    // Join any previously running execution thread before starting a new one.
+    // NEVER use .detach() — detached threads risk accessing destroyed resources
+    // after the node shuts down, causing segfaults or undefined behavior.
+    if (execution_thread_.joinable()) {
+      execution_thread_.join();
+    }
+    execution_thread_ = std::thread([this, goal_handle]() { execute(goal_handle); });
   }
 
   void execute(
@@ -350,8 +368,15 @@ private:
     goal_handle->succeed(std::make_shared<MyAction::Result>());
   }
 
+  ~MultiGoalActionServer() {
+    if (execution_thread_.joinable()) {
+      execution_thread_.join();
+    }
+  }
+
   rclcpp::CallbackGroup::SharedPtr action_group_;
   rclcpp_action::Server<MyAction>::SharedPtr action_server_;
+  std::thread execution_thread_;
 };
 ```
 
@@ -471,7 +496,12 @@ executor deadlocks — the callback is waiting for the service response, but the
 executor cannot process the response because the callback group is occupied.
 
 ```cpp
-// WRONG — deadlocks with SingleThreadedExecutor or same MutuallyExclusive group
+// WRONG — deadlocks in ANY of these conditions:
+//   1. SingleThreadedExecutor (only one thread — cannot deliver response while blocked)
+//   2. MultiThreadedExecutor when client and caller share a MutuallyExclusive group
+//      (group lock prevents response delivery)
+// Even with MultiThreadedExecutor + separate groups, spin_until_future_complete
+// creates a nested spin that can cause subtle reentrancy bugs. Avoid entirely.
 void timer_callback() {
   auto future = client_->async_send_request(request);
   auto result = rclcpp::spin_until_future_complete(shared_from_this(), future);

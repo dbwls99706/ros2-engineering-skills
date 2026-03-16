@@ -217,8 +217,23 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0     # Higher = cost drops faster with distance
+        cost_scaling_factor: 3.0     # Higher = cost drops faster (exponential decay)
         inflation_radius: 0.55       # Must be > robot_radius
+
+# Inflation cost formula (exponential decay):
+#   cost(d) = INSCRIBED_INFLATED_OBSTACLE * e^(-cost_scaling_factor * (d - inscribed_radius))
+#
+# where d = distance from obstacle, inscribed_radius = robot_radius
+#
+# Key insight: doubling cost_scaling_factor does NOT double the safe zone.
+# It makes the cost DROP FASTER, meaning the robot navigates CLOSER to obstacles.
+#   cost_scaling_factor=1.0 → gradual falloff, robot stays far from walls
+#   cost_scaling_factor=5.0 → steep falloff, robot cuts close to obstacles
+#   cost_scaling_factor=10.0 → almost binary (lethal vs free), robot hugs walls
+#
+# Tune inflation_radius first (sets the maximum inflation range), then
+# adjust cost_scaling_factor to control how aggressively cost decays within
+# that range.
 
 local_costmap:
   local_costmap:
@@ -408,9 +423,33 @@ recoveries_server:
 4. Back up 0.3 m (escape tight spaces)
 5. Replan
 
+### Dynamic obstacle handling
+
+Nav2's costmap handles static and semi-static obstacles well, but fast-moving
+obstacles (humans walking at 1.5 m/s, forklifts) require additional strategies:
+
+| Strategy | When to use | Implementation |
+|---|---|---|
+| **Higher costmap update rate** | Moderate dynamics (warehouse) | `local_costmap.update_frequency: 10-20` Hz |
+| **Collision monitor** | Last-line safety (see below) | Separate node, geometry-based |
+| **MPPI controller** | Predictive avoidance | `MPPIController` with obstacle cost critic |
+| **Costmap filters** | Known dynamic zones | `KeepoutFilter` for exclusion zones |
+| **People tracking** | Dense crowds | External tracker → costmap layer via plugin |
+
+**Limitation:** The standard `ObstacleLayer` uses a clearing/marking model that
+assumes obstacles are static between scans. Fast-moving objects can leave "ghost
+trails" in the costmap. For populated environments, consider:
+1. Reducing `obstacle_max_range` to limit stale markings
+2. Using the `VoxelLayer` with 3D clearing
+3. Adding a people-tracking costmap layer
+
 ### Nav2 Collision Monitor
 
-The collision monitor (Jazzy+) is an independent safety node that monitors sensor data and can stop the robot before collision, independent of the costmap and controller. It runs at its own rate and provides a last-line-of-defense safety layer.
+The collision monitor (Jazzy+) is an independent safety node that monitors sensor
+data and **directly overrides `cmd_vel`** — it is NOT just a warning system. When
+an obstacle enters the stop polygon, the monitor publishes zero velocity regardless
+of what the controller commands. This provides a last-line-of-defense safety layer
+independent of the costmap and controller.
 
 ```yaml
 collision_monitor:
@@ -557,6 +596,22 @@ For multi-robot navigation patterns including fleet management and Open-RMF inte
    - Test in narrow passages, dead ends, dynamic obstacles
    - Tune spin distance and backup distance for your robot
 
+### Goal tolerance and oscillation
+
+A common production issue: the robot oscillates near the goal. This happens when
+`xy_goal_tolerance` is too tight relative to the controller frequency and robot
+inertia. The robot overshoots, replans, overshoots in the opposite direction, and
+loops.
+
+**Rules:**
+- `xy_goal_tolerance` should be ≥ `max_vel_x / controller_frequency` (minimum
+  stopping distance at max speed). E.g., 0.5 m/s at 20 Hz → tolerance ≥ 0.025 m.
+- If using `RegulatedPurePursuitController`, its `regulated_linear_scaling_min_speed`
+  reduces speed near goals, allowing tighter tolerances.
+- Set `yaw_goal_tolerance` generously (0.1–0.3 rad) unless orientation matters.
+- If the robot stops, rotates, overshoots, repeats — increase tolerances or reduce
+  `max_vel_theta`.
+
 ### Key parameters to tune first
 
 | Parameter | Effect | Start value |
@@ -579,3 +634,6 @@ For multi-robot navigation patterns including fleet management and Open-RMF inte
 | Costmap shows phantom obstacles | Stale sensor data or wrong TF | Check sensor topic rate, verify TF timestamps |
 | Robot takes very long paths | Costmap inflation too high | Reduce `cost_scaling_factor` (higher value = cost drops faster) |
 | Recovery spin doesn't complete | Insufficient space to rotate | Reduce `spin_dist`, or add `BackUp` before `Spin` in BT |
+| Robot oscillates at goal | Goal tolerance too tight for speed/inertia | Increase `xy_goal_tolerance`, reduce `max_vel_theta` near goal |
+| Ghost obstacles in costmap | Fast-moving people/objects leave stale marks | Reduce `obstacle_max_range`, increase `update_frequency`, use VoxelLayer |
+| Collision monitor stops robot unexpectedly | Stop polygon too large for robot | Shrink `PolygonStop` points to match actual footprint + small margin |

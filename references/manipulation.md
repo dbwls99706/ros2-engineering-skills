@@ -342,7 +342,9 @@ retreat, place) that can be configured independently.
 #include <moveit/task_constructor/solvers.h>
 
 auto task = std::make_unique<moveit::task_constructor::Task>();
-task->setRobotModel(node->getRobotModel());
+// Load robot model via RobotModelLoader (node->getRobotModel() does not exist)
+auto robot_model_loader = std::make_shared<robot_model_loader::RobotModelLoader>(node);
+task->setRobotModel(robot_model_loader->getModel());
 
 // Pipeline planner for free-space motion
 auto pipeline = std::make_shared<moveit::task_constructor::solvers::PipelinePlanner>(node);
@@ -398,32 +400,33 @@ useful for teleoperation, visual servoing, and force-guided motions.
 ### Configuration
 
 ```yaml
-# servo_params.yaml
+# servo_params.yaml — Humble (Servo API changed significantly in Jazzy)
+# Jazzy+ uses a redesigned parameter structure; check the MoveIt Servo
+# migration guide when upgrading.
 moveit_servo:
   ros__parameters:
+    ## Humble parameters:
     use_gazebo: false
     planning_frame: "base_link"
     ee_frame_name: "tool0"
     robot_link_command_frame: "base_link"
-
-    # Incoming command type
     command_in_type: "speed_units"  # or "unitless"
     scale:
       linear: 0.3      # m/s per unit
       rotational: 0.5   # rad/s per unit
       joint: 0.5        # rad/s per unit
-
-    # Publishing rate
     publish_period: 0.01  # 100 Hz
-
-    # Safety
     check_collisions: true
     collision_check_rate: 50.0
     self_collision_proximity_threshold: 0.01
     scene_collision_proximity_threshold: 0.02
-
-    # Joint limits
     joint_limit_margin: 0.1  # radians from limit
+
+    ## Jazzy+ key differences:
+    #  - `use_gazebo` removed
+    #  - `publish_period` → `publish_frequency: 100.0`
+    #  - `command_in_type` removed; use topic type directly
+    #  - See moveit2/moveit_servo/config/ for current defaults
 ```
 
 ### Sending Servo commands

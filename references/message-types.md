@@ -222,25 +222,25 @@ geometry_msgs/TwistWithCovariance twist
 ### `geometry_msgs/msg/Quaternion`
 
 ```
-float64 x    # default: 0.0
-float64 y    # default: 0.0
-float64 z    # default: 0.0
-float64 w    # default: 0.0  ← THIS IS THE PROBLEM
+float64 x 0
+float64 y 0
+float64 z 0
+float64 w 1   # Changed to 1.0 in Galactic+ (Humble, Jazzy, Kilted, Rolling)
 ```
 
 - **Must always be normalized:** `x² + y² + z² + w² = 1`
-- **Uninitialized quaternions are `(0,0,0,0)`** — this is **invalid** and will
-  crash tf2 with a "Quaternion has length close to zero" error.
-- **Identity rotation is `(0,0,0,1)`** — always initialize `w = 1.0`.
+- **Humble+ default is `(0,0,0,1)` (identity)** — safe to use directly.
+  In Foxy (EOL), the default was `(0,0,0,0)` which crashed tf2.
+- **Still explicitly initialize `w = 1.0`** when constructing quaternions in
+  code that may run on mixed distros or when clarity matters.
 
 ```cpp
-// BAD — all zeros, will crash tf2
-geometry_msgs::msg::Quaternion q;
-// q is (0,0,0,0) — INVALID
+// Humble+: default-constructed Quaternion is (0,0,0,1) — valid identity
+geometry_msgs::msg::Quaternion q;  // q.w is already 1.0
 
-// GOOD — explicit identity
+// Still recommended: explicit initialization for clarity
 geometry_msgs::msg::Quaternion q;
-q.w = 1.0;
+q.w = 1.0;  // redundant on Humble+ but clear and safe
 
 // GOOD — from yaw angle
 tf2::Quaternion tf_q;
@@ -659,7 +659,7 @@ $$x^2 + y^2 + z^2 + w^2 = 1$$
 | Anti-pattern | Why it fails | Fix |
 |---|---|---|
 | Using `0.0` for missing LiDAR data | Looks like an obstacle at zero distance | Use `Infinity` or `NaN` (or value outside `[range_min, range_max]`) |
-| Leaving Quaternion as all zeros | Crashes tf2 ("Quaternion has length close to zero") | Initialize to `w=1.0, x=0.0, y=0.0, z=0.0` |
+| Leaving Quaternion uninitialized (Foxy) | Crashes tf2 ("Quaternion has length close to zero") | Humble+ defaults to `w=1.0`; still explicit-init for safety |
 | Image published in `camera_link` | Point clouds and detections rotated 90° | Publish in `camera_optical_frame` |
 | Setting IMU covariance to all `0.0` when no data | EKF treats it as "perfectly accurate" → filter diverges | Set `covariance[0] = -1.0` to signal "data unavailable" |
 | Using `time.time()` for `header.stamp` | Fails during rosbag playback or Gazebo simulation | Use `node.get_clock().now()` (C++) or `.to_msg()` (Python) |
