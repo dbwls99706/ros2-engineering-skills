@@ -82,7 +82,7 @@ colcon builds each package in isolation by default. This means:
 - Missing `find_package()` or `package.xml` deps break the build immediately (good)
 
 To merge all packages into a single install prefix (not recommended — hides
-missing `package.xml` dependencies, but useful for Docker image size):
+missing `package.xml` dependencies, but simplifies Docker `PATH`/`LD_LIBRARY_PATH`):
 ```bash
 colcon build --merge-install
 ```
@@ -261,8 +261,8 @@ or utilities in the same package.
   <depend>sensor_msgs</depend>
   <depend>my_robot_interfaces</depend>
 
-  <!-- Build-only deps -->
-  <build_depend>rclcpp_components</build_depend>
+  <!-- Needed at build and runtime (component container loads the shared lib) -->
+  <depend>rclcpp_components</depend>
 
   <!-- Test deps -->
   <test_depend>ament_lint_auto</test_depend>
@@ -381,18 +381,18 @@ rosdep update
 ```yaml
 # repos.yaml
 repositories:
-  src/my_robot_driver:
+  my_robot_driver:
     type: git
     url: https://github.com/org/my_robot_driver.git
     version: jazzy
-  src/my_robot_interfaces:
+  my_robot_interfaces:
     type: git
     url: https://github.com/org/my_robot_interfaces.git
     version: jazzy
 ```
 
 ```bash
-vcs import src < repos.yaml
+vcs import src < repos.yaml   # clones into src/my_robot_driver, src/my_robot_interfaces
 vcs pull src
 ```
 
