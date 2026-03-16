@@ -137,30 +137,33 @@ auto server = rclcpp_action::create_server<MoveToPosition>(
   {
     return rclcpp_action::CancelResponse::ACCEPT;
   },
-  // Execute callback — runs in a separate thread
+  // Accepted callback — called when goal is accepted.
+  // Spawn a thread for long-running execution to avoid blocking the executor.
   [this](const std::shared_ptr<GoalHandle> goal_handle)
   {
-    auto feedback = std::make_shared<MoveToPosition::Feedback>();
-    auto result = std::make_shared<MoveToPosition::Result>();
+    std::thread{[this, goal_handle]() {
+      auto feedback = std::make_shared<MoveToPosition::Feedback>();
+      auto result = std::make_shared<MoveToPosition::Result>();
 
-    try {
-      while (rclcpp::ok() && !at_target()) {
-        if (goal_handle->is_canceling()) {
-          result->success = false;
-          goal_handle->canceled(result);
-          return;
+      try {
+        while (rclcpp::ok() && !at_target()) {
+          if (goal_handle->is_canceling()) {
+            result->success = false;
+            goal_handle->canceled(result);
+            return;
+          }
+          feedback->progress = compute_progress();
+          goal_handle->publish_feedback(feedback);
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        feedback->progress = compute_progress();
-        goal_handle->publish_feedback(feedback);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        result->success = true;
+        goal_handle->succeed(result);
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(get_logger(), "Action execution failed: %s", e.what());
+        result->success = false;
+        goal_handle->abort(result);
       }
-      result->success = true;
-      goal_handle->succeed(result);
-    } catch (const std::exception & e) {
-      RCLCPP_ERROR(get_logger(), "Action execution failed: %s", e.what());
-      result->success = false;
-      goal_handle->abort(result);
-    }
+    }}.detach();
   });
 ```
 

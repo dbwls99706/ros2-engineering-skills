@@ -328,7 +328,10 @@ colcon build --mixin ccache
 
 ```bash
 # Limit parallel link jobs (linking is memory-heavy)
-colcon build --cmake-args -DCMAKE_JOB_POOL_LINK=2
+# Use --parallel-workers to reduce package-level parallelism
+colcon build --parallel-workers 2
+# Or set MAKEFLAGS to limit make-level parallelism
+MAKEFLAGS="-j2" colcon build
 ```
 
 ### Selective builds in CI

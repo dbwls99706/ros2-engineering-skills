@@ -144,7 +144,10 @@ namespace {name}
 int main(int argc, char ** argv)
 {{
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<{name}::{class_name}Node>());
+  auto node = std::make_shared<{name}::{class_name}Node>();
+  rclcpp::executors::SingleThreadedExecutor exe;
+  exe.add_node(node->get_node_base_interface());
+  exe.spin();
   rclcpp::shutdown();
   return 0;
 }}
@@ -157,13 +160,14 @@ int main(int argc, char ** argv)
 """)
 
     (pkg / "test" / f"test_{name}.cpp").write_text(f"""#include <gtest/gtest.h>
+#include <rclcpp/rclcpp.hpp>
 #include "{name}/{name}_node.hpp"
 
 class {class_name}Test : public ::testing::Test
 {{
 protected:
-  void SetUp() override {{ rclcpp::init(0, nullptr); }}
-  void TearDown() override {{ rclcpp::shutdown(); }}
+  static void SetUpTestSuite() {{ rclcpp::init(0, nullptr); }}
+  static void TearDownTestSuite() {{ rclcpp::shutdown(); }}
 }};
 
 TEST_F({class_name}Test, NodeCreation)
@@ -305,7 +309,8 @@ ament_package()
 """)
 
     _write_package_xml(pkg, name, "ament_cmake",
-                       ["rosidl_default_generators", "std_msgs", "geometry_msgs"],
+                       ["std_msgs", "geometry_msgs"],
+                       extra_buildtool=["rosidl_default_generators"],
                        extra_exec=["rosidl_default_runtime"],
                        extra_member=["rosidl_interface_packages"])
     print(f"Created interfaces package: {pkg}")
@@ -313,12 +318,17 @@ ament_package()
 
 def _write_package_xml(pkg: Path, name: str, build_type: str,
                        deps: list, extra_exec: list = None,
-                       extra_member: list = None) -> None:
+                       extra_member: list = None,
+                       extra_buildtool: list = None) -> None:
     dep_lines = "\n".join(f"  <depend>{d}</depend>" for d in deps)
     exec_lines = ""
     if extra_exec:
         exec_lines = "\n".join(f"  <exec_depend>{d}</exec_depend>"
                                for d in extra_exec)
+    buildtool_lines = ""
+    if extra_buildtool:
+        buildtool_lines = "\n".join(
+            f"  <buildtool_depend>{b}</buildtool_depend>" for b in extra_buildtool)
     member_lines = ""
     if extra_member:
         member_lines = "\n".join(
@@ -335,6 +345,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
   <license>Apache-2.0</license>
 
   <buildtool_depend>{build_type}</buildtool_depend>
+{buildtool_lines}
 {dep_lines}
 {exec_lines}
 
