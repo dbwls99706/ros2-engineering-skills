@@ -30,21 +30,21 @@ A `SKILL.md`-based knowledge module that gives AI coding agents deep ROS 2 engin
 ### Claude Code
 ```bash
 # From plugin marketplace
-claude plugin marketplace add <username>/ros2-engineering-skills
+claude plugin marketplace add dbwls99706/ros2-engineering-skills
 claude plugin install ros2-engineering@ros2-engineering-skills
 
 # Or clone directly
-git clone https://github.com/<username>/ros2-engineering-skills.git ~/.claude/skills/ros2-engineering-skills
+git clone https://github.com/dbwls99706/ros2-engineering-skills.git ~/.claude/skills/ros2-engineering-skills
 ```
 
 ### Codex / Gemini CLI / OpenCode
 ```bash
-git clone https://github.com/<username>/ros2-engineering-skills.git ~/.agents/skills/ros2-engineering-skills
+git clone https://github.com/dbwls99706/ros2-engineering-skills.git ~/.agents/skills/ros2-engineering-skills
 ```
 
 ### Cursor
 ```bash
-git clone https://github.com/<username>/ros2-engineering-skills.git
+git clone https://github.com/dbwls99706/ros2-engineering-skills.git
 # Add to .cursor/rules/ros2-engineering-skills
 ```
 
@@ -57,27 +57,27 @@ ln -s /path/to/ros2-engineering-skills .claude/skills/ros2-engineering-skills
 
 ```
 ros2-engineering-skills/
-├── SKILL.md                            # Entry point — decision router + core principles
+├── SKILL.md                        # Entry point — decision router + core principles
 ├── references/
-│   ├── workspace-build.md              # colcon, ament_cmake, package.xml, overlays
-│   ├── nodes-executors.md              # rclcpp/rclpy nodes, executors, callback groups
-│   ├── communication.md               # Topics, services, actions, QoS, custom interfaces
-│   ├── lifecycle-components.md         # Managed nodes, component loading, composition
-│   ├── launch-system.md               # Python launch API, conditions, events, large systems
-│   ├── tf2-urdf.md                    # Transforms, URDF, xacro, robot_state_publisher
-│   ├── hardware-interface.md           # ros2_control, HW interfaces, controller plugins
-│   ├── realtime.md                    # RT kernel, memory, jitter, deterministic execution
-│   ├── navigation.md                  # Nav2, SLAM, costmaps, BT navigator
-│   ├── manipulation.md               # MoveIt 2, planning scene, grasp pipelines
-│   ├── perception.md                  # image_transport, PCL, cv_bridge, depth
-│   ├── testing.md                     # gtest, pytest, launch_testing, CI/CD
-│   ├── debugging.md                   # ros2 doctor, tracing, profiling, rosbag2
-│   ├── deployment.md                  # Docker, cross-compile, fleet management
-│   └── migration-ros1.md             # ROS 1 → ROS 2 strategy, ros1_bridge
+│   ├── workspace-build.md          # colcon, ament_cmake, package.xml, overlays
+│   ├── nodes-executors.md          # rclcpp/rclpy nodes, executors, callback groups
+│   ├── communication.md            # Topics, services, actions, QoS, custom interfaces
+│   ├── lifecycle-components.md     # Managed nodes, component loading, composition
+│   ├── launch-system.md            # Python launch API, conditions, events, large systems
+│   ├── tf2-urdf.md                 # Transforms, URDF, xacro, robot_state_publisher
+│   ├── hardware-interface.md       # ros2_control, HW interfaces, controller plugins
+│   ├── realtime.md                 # RT kernel, memory, jitter, deterministic execution
+│   ├── navigation.md               # Nav2, SLAM, costmaps, BT navigator
+│   ├── manipulation.md             # MoveIt 2, planning scene, grasp pipelines
+│   ├── perception.md               # image_transport, PCL, cv_bridge, depth
+│   ├── testing.md                  # gtest, pytest, launch_testing, CI/CD
+│   ├── debugging.md                # ros2 doctor, tracing, profiling, rosbag2
+│   ├── deployment.md               # Docker, cross-compile, fleet management
+│   └── migration-ros1.md           # ROS 1 → ROS 2 strategy, ros1_bridge
 ├── scripts/
-│   ├── create_package.py              # Scaffold a package with best-practice structure
-│   ├── qos_checker.py                 # Verify QoS compatibility between pub/sub pairs
-│   └── launch_validator.py            # Static analysis for launch file issues
+│   ├── create_package.py           # Scaffold a package with best-practice structure
+│   ├── qos_checker.py              # Verify QoS compatibility between pub/sub pairs
+│   └── launch_validator.py         # Static analysis for launch file issues
 ├── LICENSE
 └── README.md
 ```
