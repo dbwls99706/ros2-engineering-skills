@@ -154,7 +154,8 @@ public:
     // Read encoder data from serial/CAN/EtherCAT
     auto data = read_encoders(serial_);
     if (!data.valid) {
-      RCLCPP_ERROR(get_logger(), "Failed to read encoder data");
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
+                            "Failed to read encoder data");
       return hardware_interface::return_type::ERROR;
     }
 
@@ -181,7 +182,8 @@ public:
       commands.push_back(get_command(name));
     }
     if (!send_commands(serial_, commands)) {
-      RCLCPP_ERROR(get_logger(), "Failed to send commands to hardware");
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
+                            "Failed to send commands to hardware");
       return hardware_interface::return_type::ERROR;
     }
     return hardware_interface::return_type::OK;
@@ -373,6 +375,11 @@ private:
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstring>
 
 class CanBus
 {
@@ -454,12 +461,15 @@ def generate_launch_description():
         Node(
             package='controller_manager',
             executable='spawner',
-            arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager'],
+            arguments=['joint_state_broadcaster',
+                       '--controller-manager', '/controller_manager'],
         ),
         Node(
             package='controller_manager',
             executable='spawner',
-            arguments=['arm_controller', '--controller-manager', '/controller_manager'],
+            arguments=['arm_controller',
+                       '--controller-manager', '/controller_manager',
+                       '--param-file', controller_params],
         ),
     ])
 ```
