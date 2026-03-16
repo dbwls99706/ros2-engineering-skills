@@ -49,6 +49,21 @@
 abstract command/state model and physical hardware communication. Controllers
 never talk to hardware directly.
 
+### Actuator vs. System vs. Sensor
+
+When creating a `<ros2_control>` tag, you must specify the `type`:
+
+| Type | Use Case | Characteristics |
+|---|---|---|
+| **System** | Multi-joint mechanisms (Robot arms, mobile bases) | Read/writes to multiple joints simultaneously. Best for buses (CAN/EtherCAT) where one frame contains all joint data. |
+| **Actuator** | Single-joint mechanisms (Smart motors, simple grippers) | Read/writes to a single joint. The manager will span an instance per joint. Best for independent motors (e.g., individual PWM/Dir pins). |
+| **Sensor** | Read-only hardware (IMUs, force-torque sensors) | Only exports StateInterfaces. Cannot accept commands. |
+
+**When to use which?**
+- Use **System** for 95% of real-world robots. Even if you have 6 independent serial motors, mapping them as a single System plugin often reduces thread contention and simplifies port management compared to 6 Actuator plugins fighting for USB access.
+- Use **Actuator** only if each motor is truly independent (e.g., driven by separate GPIO pins) and you want maximum modularity.
+- Use **Sensor** for dedicated measurement devices that don't belong to a specific actuator.
+
 ## 2. Writing a hardware interface plugin
 
 ### System interface (Jazzy 4.x API)
@@ -123,10 +138,11 @@ public:
   // To ADD custom interfaces beyond what the URDF defines (e.g., internal
   // temperature, bus voltage), override on_export_state_interfaces():
   //
-  //   std::vector<hardware_interface::InterfaceDescription>
+  //   std::vector<hardware_interface::StateInterface::ConstSharedPtr>
   //   on_export_state_interfaces() override {
   //     auto interfaces = SystemInterface::on_export_state_interfaces();
-  //     interfaces.push_back({"internal/temperature", ...});
+  //     interfaces.push_back(std::make_shared<StateInterface>(
+  //         info_.joints[0].name, "temperature", &temperature_value_));
   //     return interfaces;
   //   }
   //

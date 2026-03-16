@@ -513,7 +513,7 @@ def launch_with_randomized_physics(base_sdf: str, randomize_fn):
         if mass is not None:
             mass.text = str(float(mass.text) * params['mass_scale'])
 
-    with tempfile.NamedTemporaryFile(suffix='.sdf', delete=False, mode='w') as f:
+    with tempfile.NamedTemporaryFile(suffix='.sdf', delete=False, mode='wb') as f:
         tree.write(f, xml_declaration=True)
         randomized_sdf = f.name
 
@@ -626,12 +626,18 @@ For debugging and regression testing, maximize reproducibility:
 ```
 
 ```bash
-# Fixed seed for any plugin randomization (e.g., sensor noise)
-export GZ_SIM_SEED=42
+# Run in server mode (no GUI) with deterministic stepping
+gz sim -s -r world.sdf
 
-# Run in server mode with deterministic stepping
-gz sim -s -r --iterations 10000 world.sdf  # Run exactly 10000 steps
+# For iteration-limited runs (e.g., exactly 10000 steps), use the C++ API:
+#   gz::sim::Server server(serverConfig);
+#   server.Run(/*blocking=*/true, /*iterations=*/10000, /*paused=*/false);
+# The gz sim CLI does not have an --iterations flag.
 ```
+
+> **Note:** Gazebo Sim does not provide a single global `GZ_SIM_SEED` environment
+> variable. Sensor noise seeds must be configured per-sensor in SDF via the
+> `<noise><seed>` element (where supported by the plugin).
 
 **For regression tests:** Record a rosbag of the "golden" run, then compare future
 runs against it. Use `ros2 bag play` with `--clock` to reproduce timing exactly.

@@ -74,7 +74,7 @@ Always ask which ROS 2 distribution the user targets. Key differences:
 |---------------------------|----------------------|--------------------|--------------------|--------------------|--------------------|
 | EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Nov 2025           | Rolling            |
 | Ubuntu                    | 20.04               | 22.04              | 24.04              | 24.04              | Latest             |
-| Default DDS               | Fast DDS             | CycloneDDS         | CycloneDDS         | CycloneDDS         | CycloneDDS         |
+| Default DDS               | Fast DDS             | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           |
 | Zenoh support             | —                    | —                  | —                  | Tier 1             | Tier 1             |
 | Type description support  | No                   | No                 | Yes                | Yes                | Yes                |
 | Service introspection     | No                   | No                 | Yes                | Yes                | Yes                |

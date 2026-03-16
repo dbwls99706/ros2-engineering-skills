@@ -192,10 +192,12 @@ Like `SingleThreadedExecutor` but pre-computes the callback schedule at startup.
 Lower overhead per spin iteration — use for nodes with a fixed set of subscriptions
 and timers (no dynamic creation/destruction at runtime).
 
-**Critical constraint:** Adding or removing subscriptions, timers, or services after
-`spin()` is called will **not** be picked up. The executor's internal schedule is
-frozen at the first `spin()` call. If you need dynamic subscription management, use
-`SingleThreadedExecutor` or `MultiThreadedExecutor` instead.
+**Performance trade-off:** Unlike `SingleThreadedExecutor`, which re-scans all entities
+on every spin iteration, `StaticSingleThreadedExecutor` builds its entity list once
+and only updates it when topology changes (node/subscription added or removed). This
+reduces per-iteration overhead but means entity discovery is slightly delayed compared
+to the regular executor. For nodes whose subscription set is truly fixed at startup,
+this executor offers the lowest overhead.
 
 ### EventsExecutor (Jazzy+)
 
@@ -749,12 +751,76 @@ void callback(const sensor_msgs::msg::Image::ConstSharedPtr msg) {
 - Every participating node must enable `use_intra_process_comms(true)` in its `NodeOptions`
 - `KEEP_ALL` history breaks zero-copy optimization
 
-## 5. Custom executors
+## 5. Custom executors and alternatives
 
 For advanced scheduling requirements (e.g., priority-based, deadline-aware),
-subclass `rclcpp::Executor`. The key method to override is `spin()`, using
-`wait_for_ready_callbacks()` and `execute_any_executable()` to collect and
-dispatch ready callbacks.
+subclass `rclcpp::Executor`. Alternatively, if you want to avoid executors
+entirely, ROS 2 provides the `WaitSet` API.
+
+### 5.1 The WaitSet Alternative (Executor-less spin)
+
+An executor is essentially a while loop around a WaitSet. For ultimate control
+over scheduling (especially in hard real-time systems where you want zero
+hidden allocations or unpredictable callback queues), you can bypass executors
+entirely and use `rclcpp::WaitSet`.
+
+```cpp
+#include <rclcpp/rclcpp.hpp>
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("waitset_node");
+
+  // create_subscription requires a callback, but it won't be invoked when
+  // using a WaitSet — messages are retrieved manually via take().
+  auto sub = node->create_subscription<std_msgs::msg::String>(
+    "topic", 10, [](std_msgs::msg::String::UniquePtr) {});
+
+  auto timer = node->create_wall_timer(std::chrono::seconds(1), nullptr);
+
+  // 1. Create a WaitSet that can hold 1 subscription and 1 timer.
+  // Note: Only SubscriptionEntry and WaitableEntry are type aliases on WaitSet.
+  // The other slots take shared_ptr vectors directly.
+  rclcpp::WaitSet wait_set(
+    std::vector<rclcpp::WaitSet::SubscriptionEntry>{{sub}},
+    std::vector<std::shared_ptr<rclcpp::GuardCondition>>{},
+    std::vector<std::shared_ptr<rclcpp::TimerBase>>{timer},
+    std::vector<std::shared_ptr<rclcpp::ClientBase>>{},
+    std::vector<std::shared_ptr<rclcpp::ServiceBase>>{},
+    std::vector<rclcpp::WaitSet::WaitableEntry>{}
+  );
+
+  while (rclcpp::ok()) {
+    // 2. Wait up to 100ms for something to be ready
+    auto wait_result = wait_set.wait(std::chrono::milliseconds(100));
+
+    if (wait_result.kind() == rclcpp::WaitResultKind::Ready) {
+      // 3. Check what woke us up and handle it manually
+      if (wait_result.get_wait_set().get_rcl_wait_set().timers[0]) {
+        // Timer fired
+        timer->execute_callback();
+      }
+
+      if (wait_result.get_wait_set().get_rcl_wait_set().subscriptions[0]) {
+        // Subscription received data
+        std_msgs::msg::String msg;
+        rclcpp::MessageInfo msg_info;
+        if (sub->take(msg, msg_info)) {
+          RCLCPP_INFO(node->get_logger(), "Got: %s", msg.data.c_str());
+        }
+      }
+    }
+  }
+
+  rclcpp::shutdown();
+  return 0;
+}
+```
+
+WaitSets are powerful because you decide *exactly* the order in which to check
+and process entities. If the timer is more important than the subscription, you
+check the timer first and process it before taking the message.
 
 > **Note:** The `rclcpp::Executor` protected API varies across distros and is not
 > fully stable. The following shows the architectural pattern — adapt method names
@@ -1022,7 +1088,7 @@ ros2 component load /ComponentManager my_robot_driver my_robot_driver::DriverCom
 
 ## 7. Patterns by use case
 
-### Sensor driver node
+### 7.1 Sensor driver node (Lifecycle)
 
 ```cpp
 class SensorDriver : public rclcpp_lifecycle::LifecycleNode
@@ -1031,7 +1097,55 @@ class SensorDriver : public rclcpp_lifecycle::LifecycleNode
   // on_activate: start timer to poll sensor, begin publishing
   // on_deactivate: stop timer, stop publishing
   // on_cleanup: close serial port, free buffers
-  // on_error: attempt recovery, log diagnostics
+  // on_error: attempt recovery (e.g., re-init USB), log diagnostics
+};
+```
+
+### 7.2 Lifecycle error recovery patterns
+
+When a lifecycle node hits a fatal hardware error (e.g. USB disconnect), it should
+transition itself to the `ErrorProcessing` state, attempt recovery, and either
+recover back to `Unconfigured` or drop to `Finalized`.
+
+```cpp
+class RobustDriver : public rclcpp_lifecycle::LifecycleNode
+{
+public:
+  RobustDriver() : LifecycleNode("robust_driver") {}
+
+  // Normal read loop called by timer
+  void read_hardware()
+  {
+    if (!device_.read()) {
+      RCLCPP_ERROR(get_logger(), "Hardware failure! Requesting deactivation.");
+      // 1. Deactivate timer
+      timer_->cancel();
+
+      // 2. Request deactivation via lifecycle service.
+      // The lifecycle state machine will call on_deactivate(). To reach on_error(),
+      // return CallbackReturn::ERROR from on_deactivate — the framework then
+      // automatically invokes on_error(). You cannot directly trigger the error
+      // transition; it is an internal transition driven by callback return values.
+      this->trigger_transition(
+        lifecycle_msgs::msg::Transition::TRANSITION_DEACTIVATE);
+    }
+  }
+
+  // 3. The framework calls on_error
+  CallbackReturn on_error(const rclcpp_lifecycle::State &) override
+  {
+    RCLCPP_INFO(get_logger(), "Attempting hardware reset...");
+    device_.close();
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    if (device_.init()) {
+      RCLCPP_INFO(get_logger(), "Recovery successful. Returning to Unconfigured.");
+      return CallbackReturn::SUCCESS; // Transitions to Unconfigured
+    }
+
+    RCLCPP_FATAL(get_logger(), "Recovery failed. Hardware is dead.");
+    return CallbackReturn::FAILURE; // Transitions to Finalized
+  }
 };
 ```
 

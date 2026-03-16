@@ -308,7 +308,8 @@ OLD_TAG=$(docker inspect --format='{{.Config.Image}}' my_robot_driver 2>/dev/nul
 docker pull "registry.example.com/my_robot:${NEW_TAG}"
 
 # 2. Pre-flight: verify the image can at least start and pass a health check
-docker run --rm --timeout 30 "registry.example.com/my_robot:${NEW_TAG}" \
+# Note: docker run has no --timeout flag; use coreutils timeout instead
+timeout 30 docker run --rm "registry.example.com/my_robot:${NEW_TAG}" \
   ros2 doctor --report > /dev/null 2>&1 || {
     echo "ERROR: New image failed pre-flight check. Aborting OTA." >&2
     exit 1
