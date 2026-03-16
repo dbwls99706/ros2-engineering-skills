@@ -197,8 +197,12 @@ after deactivation.
 // This publisher only works when the node is Active
 auto pub = create_publisher<Msg>("topic", qos);  // LifecyclePublisher
 
-// Standard publisher (always works) — use only for diagnostics/heartbeats
-auto diag_pub = rclcpp::Node::create_publisher<Msg>("diagnostics", qos);
+// Standard publisher (always works) — for diagnostics/heartbeats that must publish
+// regardless of lifecycle state. Use the node's underlying publisher directly:
+auto diag_pub = create_publisher<Msg>("diagnostics", qos);
+// Note: In a lifecycle node, create_publisher returns a LifecyclePublisher.
+// For a truly always-active publisher, publish on a non-lifecycle sub-node or
+// use a separate rclcpp::Node dedicated to diagnostics.
 ```
 
 ## 3. Implementing lifecycle transitions (rclpy)
@@ -290,6 +294,9 @@ def main(args=None):
 
 Components are C++ nodes that can be loaded into a shared-memory container
 process at launch or runtime, enabling zero-copy intra-process communication.
+
+**Note:** Python nodes cannot be loaded as components via pluginlib. They must run as
+separate processes. Use launch files to colocate Python and C++ nodes.
 
 ### CMakeLists.txt registration
 
@@ -406,6 +413,33 @@ ros2 component unload /my_container 1
   must not block others (e.g., ML inference alongside control)
 - Use `component_container` only for trivial pipelines with lightweight callbacks
 
+### `component_container_isolated` launch example
+
+```python
+container = ComposableNodeContainer(
+    name='isolated_container',
+    namespace='',
+    package='rclcpp_components',
+    executable='component_container_isolated',
+    # Each component gets its own SingleThreadedExecutor
+    composable_node_descriptions=[
+        ComposableNode(
+            package='my_robot_perception',
+            plugin='my_robot_perception::LidarProcessor',
+            name='lidar_processor',
+            extra_arguments=[{'use_intra_process_comms': True}],
+        ),
+        ComposableNode(
+            package='my_robot_perception',
+            plugin='my_robot_perception::MLInference',
+            name='ml_inference',
+            extra_arguments=[{'use_intra_process_comms': True}],
+        ),
+    ],
+    output='screen',
+)
+```
+
 ## 7. Lifecycle orchestration from launch files
 
 ### Using lifecycle node manager events
@@ -521,6 +555,20 @@ private:
     }
 
     auto future = client->async_send_request(request);
+    // WARNING: spin_until_future_complete(shared_from_this(), future) will deadlock if
+    // this function is called from within an executor callback. The executor cannot deliver
+    // the service response while the calling callback occupies it. Only call from main()
+    // or a dedicated thread. For lifecycle transitions from within callbacks, use async
+    // patterns:
+    //
+    //   auto future = client->async_send_request(request,
+    //     [this](rclcpp::Client<lifecycle_msgs::srv::ChangeState>::SharedFuture result) {
+    //       auto response = result.get();
+    //       if (response->success) {
+    //         RCLCPP_INFO(get_logger(), "Transition succeeded");
+    //       }
+    //     });
+    //
     if (rclcpp::spin_until_future_complete(shared_from_this(), future,
         std::chrono::seconds(10)) != rclcpp::FutureReturnCode::SUCCESS)
     {

@@ -11,6 +11,9 @@ Checks performed:
 - Common launch file anti-patterns
 - Missing config/URDF file references
 - Deprecated patterns
+- ComposableNode / ComposableNodeContainer validation
+- IncludeLaunchDescription file existence checking
+- Suppression via # noqa or # launch-validator: disable
 """
 
 import argparse
@@ -48,17 +51,30 @@ class ValidationResult:
         return sum(1 for i in self.issues if i.severity == "warning")
 
 
+def _line_has_suppression(source: str, lineno: int) -> bool:
+    """Check if a source line contains a suppression comment."""
+    lines = source.splitlines()
+    if lineno < 1 or lineno > len(lines):
+        return False
+    line = lines[lineno - 1]
+    return "# noqa" in line or "# launch-validator: disable" in line
+
+
 class LaunchFileVisitor(ast.NodeVisitor):
     """AST visitor that checks launch file patterns."""
 
-    def __init__(self, filepath: str):
+    def __init__(self, filepath: str, source: str):
         self.filepath = filepath
+        self.source = source
         self.issues: list[Issue] = []
         self.node_names: list[tuple[str, str, int]] = []  # (name, namespace, line)
         self.has_generate_func = False
 
     def _add(self, node: ast.AST, severity: str, message: str) -> None:
-        self.issues.append(Issue(self.filepath, getattr(node, 'lineno', 0), severity, message))
+        lineno = getattr(node, 'lineno', 0)
+        if _line_has_suppression(self.source, lineno):
+            return
+        self.issues.append(Issue(self.filepath, lineno, severity, message))
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if node.name == "generate_launch_description":
@@ -76,6 +92,15 @@ class LaunchFileVisitor(ast.NodeVisitor):
 
         elif func_name == "DeclareLaunchArgument":
             self._check_declare_argument(node)
+
+        elif func_name == "ComposableNodeContainer":
+            self._check_composable_node_container(node)
+
+        elif func_name == "ComposableNode":
+            self._check_composable_node(node)
+
+        elif func_name == "IncludeLaunchDescription":
+            self._check_include_launch_description(node)
 
         self.generic_visit(node)
 
@@ -161,16 +186,78 @@ class LaunchFileVisitor(ast.NodeVisitor):
                       f"DeclareLaunchArgument{name} has no 'description'. "
                       f"Add description for --show-args output.")
 
+    def _check_composable_node_container(self, node: ast.Call) -> None:
+        """Check ComposableNodeContainer for required arguments."""
+        pkg_node = self._get_keyword_value(node, "package")
+        output_node = self._get_keyword_value(node, "output")
+
+        if pkg_node is None:
+            self._add(node, "error",
+                      "ComposableNodeContainer() missing required 'package' argument "
+                      "(usually 'rclcpp_components').")
+
+        if output_node is None:
+            self._add(node, "warning",
+                      "ComposableNodeContainer() has no 'output' argument. "
+                      "Add output='screen' to see component logs in terminal.")
+
+    def _check_composable_node(self, node: ast.Call) -> None:
+        """Check ComposableNode for required arguments."""
+        plugin_node = self._get_keyword_value(node, "plugin")
+
+        if plugin_node is None:
+            self._add(node, "error",
+                      "ComposableNode() missing required 'plugin' argument.")
+
+    def _check_include_launch_description(self, node: ast.Call) -> None:
+        """Check IncludeLaunchDescription for file existence."""
+        # Try to find the launch file path from the first positional argument.
+        # The typical pattern is:
+        #   IncludeLaunchDescription(
+        #       PythonLaunchDescriptionSource('path/to/file.launch.py')
+        #   )
+        # We only check simple string paths, not substitutions.
+        if not node.args:
+            return
+
+        first_arg = node.args[0]
+
+        # Check if first arg is a call to *LaunchDescriptionSource(path_string)
+        launch_path = None
+        if isinstance(first_arg, ast.Call):
+            source_name = self._get_call_name(first_arg)
+            if source_name.endswith("LaunchDescriptionSource"):
+                if first_arg.args:
+                    launch_path = self._get_string_value(first_arg.args[0])
+        elif isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+            launch_path = first_arg.value
+
+        if launch_path is not None and not os.path.isabs(launch_path):
+            # Resolve relative to the launch file's directory
+            base_dir = os.path.dirname(self.filepath)
+            resolved = os.path.normpath(os.path.join(base_dir, launch_path))
+            if not os.path.exists(resolved):
+                self._add(node, "warning",
+                          f"IncludeLaunchDescription references '{launch_path}' "
+                          f"but the file was not found at '{resolved}'.")
+        elif launch_path is not None and os.path.isabs(launch_path):
+            if not os.path.exists(launch_path):
+                self._add(node, "warning",
+                          f"IncludeLaunchDescription references '{launch_path}' "
+                          f"but the file was not found.")
+
     def check_duplicates(self) -> None:
         """Check for duplicate node names in the same namespace."""
         seen = {}
         for name, ns, line in self.node_names:
             key = f"{ns}/{name}"
             if key in seen:
-                self.issues.append(Issue(
+                issue = Issue(
                     self.filepath, line, "error",
                     f"Duplicate node name '{name}' in namespace '{ns}' "
-                    f"(first defined at line {seen[key]})"))
+                    f"(first defined at line {seen[key]})")
+                if not _line_has_suppression(self.source, line):
+                    self.issues.append(issue)
             else:
                 seen[key] = line
 
@@ -180,6 +267,10 @@ def check_raw_patterns(filepath: str, source: str) -> list[Issue]:
     issues = []
 
     for i, line in enumerate(source.splitlines(), 1):
+        # Check suppression for this line
+        if "# noqa" in line or "# launch-validator: disable" in line:
+            continue
+
         # Check for hardcoded paths
         if re.search(r'["\'][/~][\w/]+\.(yaml|urdf|xacro|rviz)', line):
             if "FindPackageShare" not in line and "PathJoinSubstitution" not in line:
@@ -216,7 +307,7 @@ def validate_file(filepath: str) -> list[Issue]:
         return [Issue(filepath, e.lineno or 0, "error", f"Syntax error: {e.msg}")]
 
     # AST-based checks
-    visitor = LaunchFileVisitor(filepath)
+    visitor = LaunchFileVisitor(filepath, source)
     visitor.visit(tree)
     visitor.check_duplicates()
 

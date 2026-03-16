@@ -87,6 +87,19 @@ missing `package.xml` dependencies, but simplifies Docker `PATH`/`LD_LIBRARY_PAT
 colcon build --merge-install
 ```
 
+### Dependency inspection
+
+```bash
+# Visualize package dependency graph
+colcon graph --dot | dot -Tpng -o deps.png
+
+# Show detailed info about a package
+colcon info my_package
+
+# List packages in topological build order
+colcon list --topological-order
+```
+
 ## 3. ament_cmake in depth
 
 ### Minimal CMakeLists.txt for a library + node
@@ -116,15 +129,19 @@ target_include_directories(${PROJECT_NAME}_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
 )
-ament_target_dependencies(${PROJECT_NAME}_lib
-  rclcpp rclcpp_lifecycle sensor_msgs my_robot_interfaces
+# Modern CMake (Jazzy+ primary, forward-compatible with Kilted)
+# Use target_link_libraries with imported CMake targets
+target_link_libraries(${PROJECT_NAME}_lib PUBLIC
+  rclcpp::rclcpp
+  rclcpp_lifecycle::rclcpp_lifecycle
+  ${sensor_msgs_TARGETS}
+  ${my_robot_interfaces_TARGETS}
 )
-# NOTE: ament_target_dependencies() is deprecated starting from Kilted (May 2025).
-# For forward compatibility, prefer target_link_libraries() with modern CMake targets:
-#   target_link_libraries(${PROJECT_NAME}_lib PUBLIC
-#     rclcpp::rclcpp rclcpp_lifecycle::rclcpp_lifecycle
-#     ${sensor_msgs_TARGETS} ${my_robot_interfaces_TARGETS}
-#   )
+
+# Humble compatibility note: ament_target_dependencies() still works in Humble and
+# Jazzy but is deprecated starting from Kilted. Use target_link_libraries with
+# imported CMake targets everywhere — it works on all distros (Humble+).
+# Only use ament_target_dependencies() for deps that lack CMake target exports (rare).
 
 # Executable (thin wrapper around library)
 add_executable(driver_node src/driver_node_main.cpp)
@@ -156,6 +173,8 @@ ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(rclcpp rclcpp_lifecycle sensor_msgs my_robot_interfaces)
 ament_package()
 ```
+
+**Note**: For message packages, use `${package_TARGETS}` (e.g., `${sensor_msgs_TARGETS}`) which expands to the correct CMake target names. For non-message packages, use the `package::package` syntax (e.g., `rclcpp::rclcpp`).
 
 ### Component registration (for composition)
 

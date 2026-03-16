@@ -4,11 +4,13 @@
 1. ros2_control architecture
 2. Writing a hardware interface plugin
 3. Controller types and selection
-4. URDF integration
-5. Serial and CAN communication patterns
-6. Configuration and parameter loading
-7. Real hardware bring-up workflow
-8. Common failures and fixes
+4. Controller chaining and cascade control
+5. Hardware modularization
+6. GPIO interface
+7. Serial, CAN, and EtherCAT communication patterns
+8. Configuration and parameter loading
+9. Real hardware bring-up workflow
+10. Common failures and fixes
 
 ---
 
@@ -70,11 +72,10 @@ class MyRobotHardware : public hardware_interface::SystemInterface
 {
 public:
   // Called once at startup — parse URDF, validate config
-  // NOTE: Jazzy changed the signature from HardwareInfo to HardwareComponentInterfaceParams
   hardware_interface::CallbackReturn on_init(
-    const hardware_interface::HardwareComponentInterfaceParams & params) override
+    const hardware_interface::HardwareInfo & info) override
   {
-    if (hardware_interface::SystemInterface::on_init(params) !=
+    if (hardware_interface::SystemInterface::on_init(info) !=
         hardware_interface::CallbackReturn::SUCCESS)
     {
       return hardware_interface::CallbackReturn::ERROR;
@@ -242,6 +243,18 @@ pluginlib_export_plugin_description_file(
 </library>
 ```
 
+**Hardware-layer joint limiters (2025+):** ros2_control now supports joint limits enforced directly at the hardware interface layer via `<limits>` tags in the URDF. These act as a safety net below the controller -- even if a controller sends an out-of-range command, the hardware interface clips it. Configure in URDF:
+```xml
+<joint name="joint_1">
+  <command_interface name="position">
+    <param name="min">-3.14</param>
+    <param name="max">3.14</param>
+  </command_interface>
+  <!-- Hardware-layer limits (enforced by framework, not controller) -->
+  <limit effort="100.0" velocity="2.0" lower="-3.14" upper="3.14"/>
+</joint>
+```
+
 ## 3. Controller types and selection
 
 | Controller | Command interface | Use case |
@@ -289,7 +302,184 @@ arm_controller:
       goal_time: 0.0
 ```
 
-## 4. URDF integration
+**Migration: gripper_action_controller -> parallel_gripper_action_controller (Jazzy)**
+
+The `gripper_action_controller` is deprecated in Jazzy. Replace with `parallel_gripper_action_controller`:
+- Action interface changes from `control_msgs/GripperCommand` to the same interface but with updated parameter naming
+- YAML change: `type: gripper_action_controller/GripperActionController` -> `type: parallel_gripper_action_controller/GripperActionController`
+- The `parallel_gripper` supports both position and effort control modes
+
+## 4. Controller chaining and cascade control
+
+Controller chaining (Jazzy+) allows controllers to feed their output into other controllers, enabling cascade control architectures. A `ChainableController` exports **reference interfaces** that other controllers can write to.
+
+Example: A velocity PID controller that accepts reference commands from a joint_trajectory_controller:
+
+```cpp
+#include <controller_interface/chainable_controller_interface.hpp>
+
+class VelocityPidController : public controller_interface::ChainableControllerInterface
+{
+public:
+  // Reference interfaces: what upstream controllers write TO this controller
+  std::vector<hardware_interface::CommandInterface> on_export_reference_interfaces() override
+  {
+    std::vector<hardware_interface::CommandInterface> refs;
+    for (const auto & joint : joint_names_) {
+      refs.emplace_back(get_node()->get_name(),
+                        joint + "/velocity_reference",
+                        &reference_commands_[joint]);
+    }
+    return refs;
+  }
+
+  // State interfaces: what this controller reads (e.g., current velocity)
+  controller_interface::InterfaceConfiguration state_interface_configuration() const override
+  {
+    controller_interface::InterfaceConfiguration config;
+    config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+    for (const auto & joint : joint_names_) {
+      config.names.push_back(joint + "/velocity");
+    }
+    return config;
+  }
+
+  // Command interfaces: what this controller writes (e.g., effort to hardware)
+  controller_interface::InterfaceConfiguration command_interface_configuration() const override
+  {
+    controller_interface::InterfaceConfiguration config;
+    config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+    for (const auto & joint : joint_names_) {
+      config.names.push_back(joint + "/effort");
+    }
+    return config;
+  }
+
+  controller_interface::return_type update_and_write_commands(
+    const rclcpp::Time & time, const rclcpp::Duration & period) override
+  {
+    for (size_t i = 0; i < joint_names_.size(); ++i) {
+      double ref = reference_commands_[joint_names_[i]];
+      double vel = state_interfaces_[i].get_value();
+      double effort = pid_controllers_[i].computeCommand(ref - vel, period.seconds());
+      command_interfaces_[i].set_value(effort);
+    }
+    return controller_interface::return_type::OK;
+  }
+
+private:
+  std::vector<std::string> joint_names_;
+  std::unordered_map<std::string, double> reference_commands_;
+  std::vector<control_toolbox::Pid> pid_controllers_;
+};
+```
+
+YAML configuration for chaining:
+```yaml
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+
+    velocity_pid:
+      type: my_controllers/VelocityPidController
+
+    trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+trajectory_controller:
+  ros__parameters:
+    joints: [joint_1, joint_2]
+    command_interfaces: [velocity_pid/joint_1/velocity_reference,
+                         velocity_pid/joint_2/velocity_reference]
+    state_interfaces: [position, velocity]
+```
+
+Activation order matters: activate the downstream controller (velocity_pid) before the upstream (trajectory_controller).
+
+## 5. Hardware modularization
+
+Split a robot into multiple independent `<ros2_control>` tags when subsystems have different update rates, failure modes, or lifecycle requirements.
+
+```xml
+<!-- Separate hardware interfaces for arm and mobile base -->
+<ros2_control name="ArmSystem" type="system">
+  <hardware>
+    <plugin>my_robot_driver/ArmHardware</plugin>
+    <param name="can_interface">can0</param>
+  </hardware>
+  <joint name="shoulder">...</joint>
+  <joint name="elbow">...</joint>
+</ros2_control>
+
+<ros2_control name="BaseSystem" type="system">
+  <hardware>
+    <plugin>my_robot_driver/BaseHardware</plugin>
+    <param name="serial_port">/dev/ttyUSB0</param>
+  </hardware>
+  <joint name="left_wheel">...</joint>
+  <joint name="right_wheel">...</joint>
+</ros2_control>
+
+<ros2_control name="GripperSystem" type="actuator">
+  <hardware>
+    <plugin>my_robot_driver/GripperHardware</plugin>
+  </hardware>
+  <joint name="gripper_finger">
+    <command_interface name="position"/>
+    <state_interface name="position"/>
+  </joint>
+</ros2_control>
+```
+
+Benefits: Each subsystem can be activated/deactivated independently. If the gripper loses communication, the arm and base continue operating. Controller manager calls read()/write() for each hardware interface separately.
+
+## 6. GPIO interface
+
+```cpp
+// GPIO hardware interface for digital I/O (e-stop, LEDs, limit switches)
+hardware_interface::CallbackReturn on_init(
+  const hardware_interface::HardwareInfo & info) override
+{
+  // GPIO interfaces are defined in URDF under <gpio> tags
+  for (const auto & gpio : info_.gpios) {
+    RCLCPP_INFO(get_logger(), "GPIO: %s, cmd_ifs=%zu, state_ifs=%zu",
+                gpio.name.c_str(),
+                gpio.command_interfaces.size(),
+                gpio.state_interfaces.size());
+  }
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+```
+
+URDF GPIO definition:
+```xml
+<ros2_control name="GPIOSystem" type="system">
+  <hardware>
+    <plugin>my_robot_driver/GPIOHardware</plugin>
+  </hardware>
+  <gpio name="digital_io">
+    <command_interface name="led_red"/>
+    <command_interface name="led_green"/>
+    <state_interface name="estop_active"/>
+    <state_interface name="limit_switch_1"/>
+  </gpio>
+</ros2_control>
+```
+
+Access in read()/write():
+```cpp
+// In read():
+set_state("digital_io/estop_active", read_gpio_pin(ESTOP_PIN) ? 1.0 : 0.0);
+set_state("digital_io/limit_switch_1", read_gpio_pin(LIMIT_PIN) ? 1.0 : 0.0);
+
+// In write():
+set_gpio_pin(LED_RED_PIN, get_command("digital_io/led_red") > 0.5);
+set_gpio_pin(LED_GREEN_PIN, get_command("digital_io/led_green") > 0.5);
+```
+
+Use `gpio_command_controller` (from ros2_controllers) to expose GPIO as a ROS service/topic.
+
+### URDF integration
 
 ```xml
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="my_robot">
@@ -323,7 +513,7 @@ arm_controller:
 </robot>
 ```
 
-## 5. Serial and CAN communication patterns
+## 7. Serial, CAN, and EtherCAT communication patterns
 
 ### Serial protocol best practices
 
@@ -428,7 +618,58 @@ public:
 };
 ```
 
-## 6. Configuration and parameter loading
+### EtherCAT pattern (SOEM)
+
+```cpp
+#include <soem/ethercat.h>
+
+class EtherCATBus
+{
+public:
+  bool init(const std::string & ifname, int expected_slaves)
+  {
+    if (ec_init(ifname.c_str()) <= 0) { return false; }
+    if (ec_config_init(FALSE) < expected_slaves) {
+      ec_close();
+      return false;
+    }
+    // Map PDO (Process Data Objects)
+    ec_config_map(&io_map_);
+    // Set all slaves to SAFE_OP, then OP
+    ec_statecheck(0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE);
+    ec_slave[0].state = EC_STATE_OPERATIONAL;
+    ec_writestate(0);
+    ec_statecheck(0, EC_STATE_OPERATIONAL, EC_TIMEOUTSTATE);
+    return ec_slave[0].state == EC_STATE_OPERATIONAL;
+  }
+
+  void process_cycle()
+  {
+    ec_send_processdata();
+    ec_receive_processdata(EC_TIMEOUTRET);  // Deterministic timing critical
+  }
+
+  // Access PDO data via mapped memory (io_map_)
+  template<typename T>
+  T read_input(int slave, int offset) {
+    return *reinterpret_cast<T*>(ec_slave[slave].inputs + offset);
+  }
+
+  template<typename T>
+  void write_output(int slave, int offset, T value) {
+    *reinterpret_cast<T*>(ec_slave[slave].outputs + offset) = value;
+  }
+
+  void close() { ec_close(); }
+
+private:
+  char io_map_[4096];
+};
+```
+
+Integration with ros2_control: call `process_cycle()` in `read()`, then extract encoder values from PDO inputs. In `write()`, write command values to PDO outputs, then `process_cycle()` sends them. EtherCAT requires deterministic timing -- pair with PREEMPT_RT and CPU isolation (see `references/realtime.md`).
+
+## 8. Configuration and parameter loading
 
 ### Launch file for ros2_control
 
@@ -478,7 +719,7 @@ def generate_launch_description():
     ])
 ```
 
-## 7. Real hardware bring-up workflow
+## 9. Real hardware bring-up workflow
 
 1. **Start with mock hardware** — ros2_control has a built-in mock system:
    ```xml
@@ -503,7 +744,7 @@ def generate_launch_description():
 6. **Tune update rate** — start low (100 Hz), increase until you hit
    serial/CAN bandwidth limits or jitter thresholds.
 
-## 8. Common failures and fixes
+## 10. Common failures and fixes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -514,3 +755,6 @@ def generate_launch_description():
 | Robot jumps on activation | Initial command is 0.0, not current position | In `on_activate`, sync commands to state: `set_command(name, get_state(name))` (Jazzy) or `hw_commands_[i] = hw_positions_[i]` (Humble) |
 | Emergency stop doesn't work | `write()` still sends last command | Check for `is_active()` in write, send zero-velocity on deactivate |
 | Permission denied on serial port | User not in dialout group | `sudo usermod -aG dialout $USER`, re-login |
+| Controller chain activation fails | Downstream controller not activated before upstream | Activate in dependency order: hardware -> downstream controller -> upstream controller |
+| EtherCAT slave not reaching OP state | Incorrect PDO mapping or timing violation | Check ESI file, verify PDO sizes match slave documentation, ensure RT kernel |
+| GPIO values not updating | Using wrong fully-qualified name for set_state/get_command | Use exact name from URDF: "gpio_name/interface_name" (e.g., "digital_io/estop_active") |

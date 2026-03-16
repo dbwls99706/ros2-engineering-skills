@@ -4,12 +4,14 @@ description: >
   Comprehensive ROS 2 engineering guide covering workspace setup, node architecture,
   communication patterns (topics/services/actions with QoS), lifecycle and component nodes,
   launch composition, tf2/URDF, ros2_control hardware interfaces, real-time constraints,
-  Nav2, MoveIt 2, perception pipelines, testing, debugging, deployment, and ROS 1 migration.
+  Nav2, MoveIt 2, perception pipelines, simulation (Gazebo/Isaac Sim), security (SROS2/DDS),
+  micro-ROS (MCU/RTOS), multi-robot systems (fleet management/Open-RMF),
+  testing, debugging, deployment, and ROS 1 migration.
   Trigger whenever the user works on ROS 2 code, packages, launch files, URDF/xacro,
   DDS configuration, ros2_control, Nav2, MoveIt 2, or any robotics middleware task
-  involving rclcpp, rclpy, colcon, ament, rosbag2, ros2 CLI tools, or Gazebo/Isaac Sim
-  integration. Also trigger for ROS 1 to ROS 2 migration, cross-compilation,
-  Docker-based ROS 2 workflows, and CI/CD for robotics.
+  involving rclcpp, rclpy, colcon, ament, rosbag2, ros2 CLI tools, Gazebo/Isaac Sim,
+  micro-ROS, SROS2, or multi-robot coordination. Also trigger for ROS 1 to ROS 2 migration,
+  cross-compilation, Docker-based ROS 2 workflows, and CI/CD for robotics.
 ---
 
 # ROS 2 Engineering Skills
@@ -44,6 +46,10 @@ framework; detailed patterns, code templates, and anti-patterns live in the
 | Unit tests, integration tests, launch_testing, CI | `references/testing.md`          |
 | ros2 doctor, tracing, profiling, rosbag2          | `references/debugging.md`        |
 | Docker, cross-compile, fleet deployment, OTA      | `references/deployment.md`       |
+| Gazebo, Isaac Sim, sim-to-real, use_sim_time      | `references/simulation.md`       |
+| SROS2, DDS security, certificates, supply chain   | `references/security.md`         |
+| micro-ROS, MCU/RTOS, XRCE-DDS, rclc              | `references/micro-ros.md`        |
+| Multi-robot fleet, Open-RMF, DDS discovery scale  | `references/multi-robot.md`      |
 | Message types, units, covariance, frame conventions | `references/message-types.md`    |
 | ROS 1 migration, ros1_bridge, hybrid operation    | `references/migration-ros1.md`   |
 
@@ -58,15 +64,18 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 
 Always ask which ROS 2 distribution the user targets. Key differences:
 
-| Feature                   | Foxy (LTS, **EOL**) | Humble (LTS)       | Jazzy (LTS)        | Rolling            |
-|---------------------------|----------------------|--------------------|--------------------|--------------------|
-| EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Rolling            |
-| Ubuntu                    | 20.04               | 22.04              | 24.04              | Latest             |
-| Default DDS               | Fast DDS             | CycloneDDS         | CycloneDDS         | CycloneDDS         |
-| Default build type        | ament_cmake          | ament_cmake        | ament_cmake        | ament_cmake        |
-| Type description support  | No                   | No                 | Yes                | Yes                |
-| Service introspection     | No                   | No                 | Yes                | Yes                |
-| ros2_control interface    | N/A (separate)       | 2.x                | 4.x                | Latest             |
+| Feature                   | Foxy (**EOL**)       | Humble (LTS)       | Jazzy (LTS)        | Kilted (non-LTS)   | Rolling            |
+|---------------------------|----------------------|--------------------|--------------------|--------------------|--------------------|
+| EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Nov 2025           | Rolling            |
+| Ubuntu                    | 20.04               | 22.04              | 24.04              | 24.04              | Latest             |
+| Default DDS               | Fast DDS             | CycloneDDS         | CycloneDDS         | CycloneDDS         | CycloneDDS         |
+| Default middleware        | —                    | —                  | —                  | Zenoh (Tier 1)     | Zenoh (Tier 1)     |
+| Type description support  | No                   | No                 | Yes                | Yes                | Yes                |
+| Service introspection     | No                   | No                 | Yes                | Yes                | Yes                |
+| EventsExecutor            | No                   | No                 | Experimental       | Stable (+ rclpy)   | Stable (+ rclpy)   |
+| Default bag format        | sqlite3              | sqlite3            | MCAP               | MCAP               | MCAP               |
+| ros2_control interface    | N/A (separate)       | 2.x                | 4.x                | 4.x                | Latest             |
+| CMake recommendation      | ament_target_deps    | ament_target_deps  | either             | target_link_libs   | target_link_libs   |
 
 When the user does not specify, default to the latest LTS (Jazzy).
 Pin the exact distro in Dockerfile, CI, and documentation so builds are reproducible.
@@ -271,13 +280,23 @@ When upgrading between distributions, check these breaking changes first:
   `get_state()` / `set_command()` / `get_command()` helpers with fully qualified names.
 - All joints in `<ros2_control>` tag must exist in the URDF.
 - Controller parameter loading changed — use `--param-file` with spawner.
+- Default bag format changed from sqlite3 to **MCAP**. Use `storage_id='mcap'`.
 - Default middleware changed internal config paths. Regenerate DDS profiles.
-- `nav2_params.yaml` schema changes in several plugins. Validate with Nav2's
-  migration guide.
+- `nav2_params.yaml` schema changes — `recoveries_server` renamed to `behavior_server`.
+- `ROS_AUTOMATIC_DISCOVERY_RANGE` replaces `ROS_LOCALHOST_ONLY` (values: `LOCALHOST`,
+  `SUBNET`, `OFF`, `SYSTEM_DEFAULT`).
 - `launch_ros` actions have new parameter handling — test launch files explicitly.
-- `ament_target_dependencies()` still works but is deprecated starting from Kilted
-  (non-LTS, May 2025). Prefer `target_link_libraries()` with modern CMake targets
-  for forward compatibility.
+
+**Jazzy → Kilted (non-LTS):**
+- **Zenoh promoted to Tier 1 middleware** — `rmw_zenoh` is production-ready.
+  Install: `sudo apt install ros-kilted-rmw-zenoh-cpp`, set
+  `RMW_IMPLEMENTATION=rmw_zenoh_cpp`. Supports router/peer/client modes.
+- **EventsExecutor graduated from experimental** — available in `rclcpp::executors`
+  (no `experimental` namespace). Also ported to rclpy.
+- **`ament_target_dependencies()` deprecated** — use `target_link_libraries()` with
+  modern CMake targets (e.g. `rclcpp::rclcpp`, `std_msgs::std_msgs__rosidl_typesupport_cpp`).
+- Multi-bag replay support in `ros2 bag play`.
+- Gazebo **Jetty** is the paired simulator (replaces Harmonic).
 
 **ROS 1 → ROS 2:**
 - See `references/migration-ros1.md` for a step-by-step strategy.
@@ -288,6 +307,7 @@ When upgrading between distributions, check these breaking changes first:
 # Workspace
 colcon build --symlink-install --packages-select my_pkg
 colcon test --packages-select my_pkg
+colcon graph --dot                       # dependency graph (DOT format)
 source install/setup.bash
 
 # Introspection
@@ -302,8 +322,13 @@ ros2 param list /node_name
 ros2 param describe /node_name param
 ros2 interface show std_msgs/msg/String
 
+# ros2_control
+ros2 control list_controllers
+ros2 control list_hardware_interfaces
+ros2 control list_hardware_components
+
 # Debugging
-ros2 doctor --report
+ros2 doctor --report                    # alias: ros2 wtf
 ros2 run tf2_tools view_frames
 ros2 bag record -a -o my_bag
 ros2 bag info my_bag

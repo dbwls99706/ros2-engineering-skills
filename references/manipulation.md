@@ -330,6 +330,66 @@ void pick(moveit::planning_interface::MoveGroupInterface & arm,
 }
 ```
 
+### MoveIt Task Constructor (MTC)
+
+MTC provides a structured approach to multi-stage manipulation tasks like pick-and-place,
+bin picking, and assembly. Each task is composed of stages (compute IK, approach, grasp,
+retreat, place) that can be configured independently.
+
+```cpp
+#include <moveit/task_constructor/task.h>
+#include <moveit/task_constructor/stages.h>
+#include <moveit/task_constructor/solvers.h>
+
+auto task = std::make_unique<moveit::task_constructor::Task>();
+task->setRobotModel(node->getRobotModel());
+
+// Pipeline planner for free-space motion
+auto pipeline = std::make_shared<moveit::task_constructor::solvers::PipelinePlanner>(node);
+
+// Cartesian planner for approach/retreat
+auto cartesian = std::make_shared<moveit::task_constructor::solvers::CartesianPath>();
+cartesian->setMaxVelocityScalingFactor(0.1);
+
+// Stage 1: Current state
+task->add(std::make_unique<moveit::task_constructor::stages::CurrentState>("current"));
+
+// Stage 2: Open gripper
+auto open = std::make_unique<moveit::task_constructor::stages::MoveTo>("open_gripper", pipeline);
+open->setGroup("gripper");
+open->setGoal("open");
+task->add(std::move(open));
+
+// Stage 3: Move to pick approach
+auto approach = std::make_unique<moveit::task_constructor::stages::MoveRelative>("approach", cartesian);
+approach->setGroup("arm");
+geometry_msgs::msg::Vector3Stamped direction;
+direction.header.frame_id = "world";
+direction.vector.z = -0.1;  // Approach downward
+approach->setDirection(direction);
+task->add(std::move(approach));
+
+// ... more stages: close gripper, retreat, move to place, open gripper
+```
+
+Install: `sudo apt install ros-jazzy-moveit-task-constructor-core`
+
+### pick_ik solver
+
+pick_ik is a modern inverse kinematics solver that uses gradient descent optimization.
+It often finds solutions faster than KDL for complex kinematic chains and handles
+singularities better.
+
+```yaml
+# kinematics.yaml — planning group name at top level
+arm:
+  kinematics_solver: pick_ik/PickIkPlugin
+  kinematics_solver_timeout: 0.05
+  position_threshold: 0.001
+```
+
+Install: `sudo apt install ros-jazzy-pick-ik`
+
 ## 6. MoveIt Servo (real-time jogging)
 
 MoveIt Servo enables real-time Cartesian and joint-space velocity control,
@@ -447,8 +507,8 @@ ros2 launch moveit_setup_assistant setup_assistant.launch.py
 
 ### Adding obstacles from sensor data
 
-```cpp
-// Octomap integration — build 3D collision map from depth camera
+```yaml
+# Octomap integration — build 3D collision map from depth camera
 move_group_node:
   ros__parameters:
     octomap_resolution: 0.05

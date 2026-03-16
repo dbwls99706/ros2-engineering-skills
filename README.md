@@ -11,19 +11,23 @@ A `SKILL.md`-based knowledge module that gives AI coding agents deep ROS 2 engin
 - **Decision frameworks** — when to use rclcpp vs rclpy, which QoS profile, lifecycle vs plain node
 - **Progressive disclosure** — compact routing in `SKILL.md`, detailed patterns in `references/`
 - **Full spectrum** — workspace setup through real-time tuning, Nav2, MoveIt 2, ros2_control, DDS configuration, cross-compilation, and CI/CD
-- **Distro-aware** — explicit Humble / Jazzy / Rolling differences with migration paths
+- **Distro-aware** — explicit Humble / Jazzy / Kilted / Rolling differences with migration paths
 - **Anti-pattern documentation** — what breaks in production and why
 
 ## How it differs from existing ROS 2 skills
 
 | Aspect | Typical ROS 2 skill | This project |
 |---|---|---|
-| Depth | Basic QoS + lifecycle intro | DDS vendor tuning, custom executors, intra-process zero-copy |
-| Scope | Single SKILL.md file | 15+ reference files via progressive disclosure |
-| Hardware | Mentioned in passing | ros2_control hardware interface patterns, serial/CAN/EtherCAT |
-| Real-time | Not covered | PREEMPT_RT, memory allocation, callback group strategies |
-| Testing | "Use pytest" | launch_testing, gtest, integration patterns, CI caching |
-| Deployment | Not covered | Docker multi-stage, cross-compile, fleet OTA |
+| Depth | Basic QoS + lifecycle intro | DDS vendor tuning, custom executors, intra-process zero-copy, type adapters |
+| Scope | Single SKILL.md file | 20 reference files via progressive disclosure |
+| Hardware | Mentioned in passing | ros2_control hardware interface patterns, serial/CAN/EtherCAT, controller chaining |
+| Real-time | Not covered | PREEMPT_RT, realtime_tools, memory allocation, callback group strategies |
+| Simulation | Mentioned in passing | Gazebo version matrix, gz_ros2_control, Isaac Sim, sim-to-real |
+| Security | Not covered | SROS2, DDS security plugins, certificate management, supply chain |
+| Embedded | Not covered | micro-ROS, rclc, XRCE-DDS, ESP32/STM32/RP2040 |
+| Multi-robot | Not covered | Open-RMF, fleet adapters, DDS discovery at scale, NTP/PTP sync |
+| Testing | "Use pytest" | launch_testing, gtest, industrial_ci, simulation-in-the-loop CI |
+| Deployment | Not covered | Docker multi-stage, cross-compile, fleet OTA, Zenoh routing |
 
 ## Installation
 
@@ -61,18 +65,23 @@ ros2-engineering-skills/
 ├── references/
 │   ├── workspace-build.md          # colcon, ament_cmake, package.xml, overlays
 │   ├── nodes-executors.md          # rclcpp/rclpy nodes, executors, callback groups
-│   ├── communication.md            # Topics, services, actions, QoS, custom interfaces
+│   ├── communication.md            # Topics, services, actions, QoS, type adapters, DDS tuning
 │   ├── lifecycle-components.md     # Managed nodes, component loading, composition
 │   ├── launch-system.md            # Python launch API, conditions, events, large systems
 │   ├── tf2-urdf.md                 # Transforms, URDF, xacro, robot_state_publisher
-│   ├── hardware-interface.md       # ros2_control, HW interfaces, controller plugins
-│   ├── realtime.md                 # RT kernel, memory, jitter, deterministic execution
-│   ├── navigation.md               # Nav2, SLAM, costmaps, BT navigator
-│   ├── manipulation.md             # MoveIt 2, planning scene, grasp pipelines
-│   ├── perception.md               # image_transport, PCL, cv_bridge, depth
-│   ├── testing.md                  # gtest, pytest, launch_testing, CI/CD
-│   ├── debugging.md                # ros2 doctor, tracing, profiling, rosbag2
-│   ├── deployment.md               # Docker, cross-compile, fleet management
+│   ├── hardware-interface.md       # ros2_control, HW interfaces, controller chaining, EtherCAT
+│   ├── realtime.md                 # RT kernel, realtime_tools, jitter, deterministic execution
+│   ├── navigation.md               # Nav2, SLAM, costmaps, BT navigator, collision monitor
+│   ├── manipulation.md             # MoveIt 2, MTC, planning scene, grasp pipelines
+│   ├── perception.md               # image_transport, PCL, cv_bridge, depth, Isaac ROS
+│   ├── simulation.md               # Gazebo, Isaac Sim, gz_ros2_control, sim-to-real
+│   ├── security.md                 # SROS2, DDS security plugins, certificates, supply chain
+│   ├── micro-ros.md                # micro-ROS, rclc, XRCE-DDS, ESP32/STM32/RP2040
+│   ├── multi-robot.md              # Fleet management, Open-RMF, DDS discovery at scale
+│   ├── testing.md                  # gtest, pytest, launch_testing, industrial_ci, CI/CD
+│   ├── debugging.md                # ros2 doctor, tracing, Foxglove, MCAP, rosbag2
+│   ├── deployment.md               # Docker, cross-compile, fleet management, Zenoh routing
+│   ├── message-types.md            # Message conventions, units, covariance, diagnostics
 │   └── migration-ros1.md           # ROS 1 → ROS 2 strategy, ros1_bridge
 ├── scripts/
 │   ├── create_package.py           # Scaffold a package with best-practice structure (cpp/python/interfaces)
@@ -84,13 +93,14 @@ ros2-engineering-skills/
 
 ## Current status
 
-**Complete.** All 15 reference files are fully written with production-grade code examples,
-distro-aware guidance, anti-pattern documentation, and troubleshooting tables. All 3 utility
-scripts are implemented and functional.
+**Complete.** All 20 reference files are fully written with production-grade code examples,
+distro-aware guidance (Humble/Jazzy/Kilted/Rolling), anti-pattern documentation, and
+troubleshooting tables. All 3 utility scripts are implemented and functional.
 
 ## Supported ROS 2 distributions
 
 - **Jazzy Jalisco** (LTS, recommended) — primary target
+- **Kilted Kaiju** (non-LTS, May 2025) — Zenoh Tier 1, EventsExecutor stable
 - **Humble Hawksbill** (LTS) — fully supported
 - **Foxy Fitzroy** (LTS, EOL June 2023) — referenced for legacy migration
 - **Rolling Ridley** — latest features, noted where they diverge

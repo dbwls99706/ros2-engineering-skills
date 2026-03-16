@@ -6,11 +6,13 @@ Usage:
     python qos_checker.py --pub reliable,volatile,keep_last,1 --sub reliable,volatile,keep_last,1
     python qos_checker.py --preset sensor
     python qos_checker.py --preset command
+    python qos_checker.py --pub reliable,volatile,keep_last,1 --sub reliable,volatile,keep_last,1 --json
 
-Profiles are specified as: reliability,durability,history,depth
+Profiles are specified as: reliability,durability,history,depth[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]
 """
 
 import argparse
+import json
 import sys
 from dataclasses import dataclass
 from enum import Enum
@@ -32,6 +34,11 @@ class History(Enum):
     KEEP_ALL = "keep_all"
 
 
+class Liveliness(Enum):
+    AUTOMATIC = "automatic"
+    MANUAL_BY_TOPIC = "manual_by_topic"
+
+
 @dataclass
 class QoSProfile:
     reliability: Reliability
@@ -39,16 +46,37 @@ class QoSProfile:
     history: History
     depth: int
     label: str = ""
+    deadline_ms: int = 0
+    lifespan_ms: int = 0
+    liveliness: Liveliness = Liveliness.AUTOMATIC
+    liveliness_lease_ms: int = 0
 
     def __str__(self) -> str:
         parts = [
-            f"  reliability:  {self.reliability.value}",
-            f"  durability:   {self.durability.value}",
-            f"  history:      {self.history.value}",
-            f"  depth:        {self.depth}",
+            f"  reliability:         {self.reliability.value}",
+            f"  durability:          {self.durability.value}",
+            f"  history:             {self.history.value}",
+            f"  depth:               {self.depth}",
+            f"  deadline_ms:         {self.deadline_ms}",
+            f"  lifespan_ms:         {self.lifespan_ms}",
+            f"  liveliness:          {self.liveliness.value}",
+            f"  liveliness_lease_ms: {self.liveliness_lease_ms}",
         ]
         header = f"[{self.label}]" if self.label else "[QoS Profile]"
         return header + "\n" + "\n".join(parts)
+
+    def to_dict(self) -> dict:
+        return {
+            "reliability": self.reliability.value,
+            "durability": self.durability.value,
+            "history": self.history.value,
+            "depth": self.depth,
+            "label": self.label,
+            "deadline_ms": self.deadline_ms,
+            "lifespan_ms": self.lifespan_ms,
+            "liveliness": self.liveliness.value,
+            "liveliness_lease_ms": self.liveliness_lease_ms,
+        }
 
 
 # Pre-defined presets matching common ROS 2 usage patterns
@@ -73,11 +101,13 @@ PRESETS = {
 
 
 def parse_qos_string(qos_str: str, label: str = "") -> QoSProfile:
-    """Parse a QoS string like 'reliable,volatile,keep_last,10'."""
+    """Parse a QoS string like 'reliable,volatile,keep_last,10[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]'."""
     parts = [p.strip().lower() for p in qos_str.split(",")]
-    if len(parts) != 4:
-        print(f"Error: QoS profile must have 4 comma-separated values: "
-              f"reliability,durability,history,depth", file=sys.stderr)
+    if len(parts) not in (4, 8):
+        print(f"Error: QoS profile must have 4 or 8 comma-separated values: "
+              f"reliability,durability,history,depth"
+              f"[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]",
+              file=sys.stderr)
         print(f"Got: {qos_str!r}", file=sys.stderr)
         sys.exit(1)
 
@@ -110,7 +140,45 @@ def parse_qos_string(qos_str: str, label: str = "") -> QoSProfile:
         print(f"Error: Invalid depth '{parts[3]}': {e}", file=sys.stderr)
         sys.exit(1)
 
-    return QoSProfile(reliability, durability, history, depth, label)
+    deadline_ms = 0
+    lifespan_ms = 0
+    liveliness = Liveliness.AUTOMATIC
+    liveliness_lease_ms = 0
+
+    if len(parts) == 8:
+        try:
+            deadline_ms = int(parts[4])
+            if deadline_ms < 0:
+                raise ValueError("deadline_ms must be non-negative")
+        except ValueError as e:
+            print(f"Error: Invalid deadline_ms '{parts[4]}': {e}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            lifespan_ms = int(parts[5])
+            if lifespan_ms < 0:
+                raise ValueError("lifespan_ms must be non-negative")
+        except ValueError as e:
+            print(f"Error: Invalid lifespan_ms '{parts[5]}': {e}", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            liveliness = Liveliness(parts[6])
+        except ValueError:
+            print(f"Error: Invalid liveliness '{parts[6]}'. "
+                  f"Choose from: automatic, manual_by_topic", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            liveliness_lease_ms = int(parts[7])
+            if liveliness_lease_ms < 0:
+                raise ValueError("liveliness_lease_ms must be non-negative")
+        except ValueError as e:
+            print(f"Error: Invalid liveliness_lease_ms '{parts[7]}': {e}", file=sys.stderr)
+            sys.exit(1)
+
+    return QoSProfile(reliability, durability, history, depth, label,
+                      deadline_ms, lifespan_ms, liveliness, liveliness_lease_ms)
 
 
 @dataclass
@@ -143,7 +211,7 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         warnings.append(
             "Publisher is RELIABLE but subscriber is BEST_EFFORT. This is compatible "
             "but the subscriber won't benefit from the publisher's reliability "
-            "guarantees — messages may still be dropped on the subscriber side."
+            "guarantees -- messages may still be dropped on the subscriber side."
         )
 
     # Durability compatibility
@@ -183,6 +251,46 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         warnings.append(
             "Subscriber depth is 1. Only the latest message is kept; older "
             "messages are dropped if the callback is slow."
+        )
+
+    # depth=0 with KEEP_LAST validation
+    if pub.history == History.KEEP_LAST and pub.depth == 0:
+        warnings.append(
+            "depth=0 with KEEP_LAST is undefined behavior in some DDS implementations."
+        )
+    if sub.history == History.KEEP_LAST and sub.depth == 0:
+        warnings.append(
+            "depth=0 with KEEP_LAST is undefined behavior in some DDS implementations."
+        )
+
+    # Deadline compatibility
+    if pub.deadline_ms > 0 and sub.deadline_ms > 0 and sub.deadline_ms < pub.deadline_ms:
+        warnings.append(
+            f"Subscriber deadline ({sub.deadline_ms}ms) is stricter than publisher "
+            f"deadline ({pub.deadline_ms}ms). The subscriber may report missed "
+            f"deadlines if the publisher cannot keep up."
+        )
+
+    # Lifespan vs deadline check
+    if pub.lifespan_ms > 0 and sub.deadline_ms > 0 and pub.lifespan_ms < sub.deadline_ms:
+        warnings.append(
+            f"Publisher lifespan ({pub.lifespan_ms}ms) is shorter than subscriber "
+            f"deadline ({sub.deadline_ms}ms). Messages may expire before the "
+            f"subscriber's deadline triggers, causing missed deadline events."
+        )
+
+    # Liveliness compatibility
+    if (pub.liveliness == Liveliness.AUTOMATIC
+            and sub.liveliness == Liveliness.MANUAL_BY_TOPIC):
+        issues.append(
+            "INCOMPATIBLE LIVELINESS: Publisher uses AUTOMATIC liveliness but "
+            "subscriber requires MANUAL_BY_TOPIC. The subscriber expects the "
+            "publisher to manually assert its liveliness, which it will not do. "
+            "Connection will silently fail."
+        )
+        suggestions.append(
+            "Fix: Either change the publisher to MANUAL_BY_TOPIC, or change the "
+            "subscriber to AUTOMATIC."
         )
 
     compatible = len(issues) == 0
@@ -227,6 +335,19 @@ def print_result(pub: QoSProfile, sub: QoSProfile, result: CompatibilityResult) 
     print("=" * 60)
 
 
+def print_result_json(pub: QoSProfile, sub: QoSProfile, result: CompatibilityResult) -> None:
+    """Print compatibility check results as JSON."""
+    output = {
+        "compatible": result.compatible,
+        "warnings": result.warnings,
+        "errors": result.issues,
+        "suggestions": result.suggestions,
+        "publisher": pub.to_dict(),
+        "subscriber": sub.to_dict(),
+    }
+    print(json.dumps(output, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Check QoS compatibility between publisher and subscriber profiles",
@@ -237,19 +358,24 @@ Examples:
   %(prog)s --pub best_effort,volatile,keep_last,5 --sub reliable,volatile,keep_last,5
   %(prog)s --preset sensor
   %(prog)s --preset command
+  %(prog)s --pub reliable,volatile,keep_last,1,100,0,automatic,0 --sub reliable,volatile,keep_last,1,50,0,automatic,0 --json
 
+Extended format: reliability,durability,history,depth,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms
 Presets: sensor, command, map, diagnostics
         """)
-    parser.add_argument("--pub", help="Publisher QoS: reliability,durability,history,depth")
-    parser.add_argument("--sub", help="Subscriber QoS: reliability,durability,history,depth")
+    parser.add_argument("--pub", help="Publisher QoS: reliability,durability,history,depth[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]")
+    parser.add_argument("--sub", help="Subscriber QoS: reliability,durability,history,depth[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]")
     parser.add_argument("--preset", choices=PRESETS.keys(),
                         help="Use a predefined QoS preset")
+    parser.add_argument("--json", action="store_true", default=False,
+                        help="Output results as JSON")
     args = parser.parse_args()
 
     if args.preset:
         pub = PRESETS[args.preset]["pub"]
         sub = PRESETS[args.preset]["sub"]
-        print(f"Using preset: {args.preset}")
+        if not args.json:
+            print(f"Using preset: {args.preset}")
     elif args.pub and args.sub:
         pub = parse_qos_string(args.pub, "Publisher")
         sub = parse_qos_string(args.sub, "Subscriber")
@@ -259,7 +385,11 @@ Presets: sensor, command, map, diagnostics
         sys.exit(1)
 
     result = check_compatibility(pub, sub)
-    print_result(pub, sub, result)
+
+    if args.json:
+        print_result_json(pub, sub, result)
+    else:
+        print_result(pub, sub, result)
 
     sys.exit(0 if result.compatible else 1)
 

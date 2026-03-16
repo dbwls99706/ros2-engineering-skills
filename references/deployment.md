@@ -7,7 +7,7 @@
 4. Fleet management and OTA updates
 5. systemd service configuration
 6. Environment variable management
-7. Security (SROS2, DDS security)
+7. Security (SROS2)
 8. Monitoring and health checks
 9. Common failures and fixes
 
@@ -131,6 +131,58 @@ RUN --mount=type=cache,target=/ros2_ws/build \
     --mount=type=cache,target=/ros2_ws/log \
     . /opt/ros/jazzy/setup.sh && \
     colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+```
+
+### Docker networking for DDS
+
+```yaml
+# docker-compose.yml — host networking (simplest, recommended for single-machine)
+services:
+  robot:
+    network_mode: host
+    # DDS uses host networking directly — no port mapping needed
+```
+
+For multi-container on the same host without host networking:
+```yaml
+services:
+  robot_a:
+    networks:
+      - ros_net
+    environment:
+      - CYCLONEDDS_URI=file:///config/cyclonedds_docker.xml
+  robot_b:
+    networks:
+      - ros_net
+    environment:
+      - CYCLONEDDS_URI=file:///config/cyclonedds_docker.xml
+
+networks:
+  ros_net:
+    driver: bridge
+```
+
+```xml
+<!-- cyclonedds_docker.xml — unicast for Docker bridge network -->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <General>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="robot_a"/>
+        <Peer address="robot_b"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
+```
+
+For shared memory transport inside Docker:
+```bash
+# Required for iceoryx/CycloneDDS shared memory
+docker run --ipc=host ...
 ```
 
 ## 2. Cross-compilation (aarch64, armhf)
@@ -333,17 +385,16 @@ WatchdogSec=30  # systemd kills service if no heartbeat in 30s
 ```
 
 ```cpp
-// In your main node — send heartbeat to systemd
+// In your lifecycle node — send heartbeat to systemd
 #include <systemd/sd-daemon.h>
+#include <chrono>
+using namespace std::chrono_literals;
 
-void heartbeat_callback()
-{
-  sd_notify(0, "WATCHDOG=1");
-}
-// Create timer at half the WatchdogSec interval
-timer_ = create_wall_timer(15s, heartbeat_callback);
+// In on_activate():
+watchdog_timer_ = create_wall_timer(15s,
+  [this]() { sd_notify(0, "WATCHDOG=1"); });
 
-// Notify systemd when fully started
+// In on_activate() after all setup:
 sd_notify(0, "READY=1");
 ```
 
@@ -371,54 +422,56 @@ export ROBOT_TYPE="diff_drive"
 export SERIAL_PORT="/dev/ttyUSB0"
 ```
 
-## 7. Security (SROS2, DDS security)
+### Discovery range control (Jazzy+)
 
-### SROS2 setup
+Jazzy introduced `ROS_AUTOMATIC_DISCOVERY_RANGE` as a more flexible replacement for `ROS_LOCALHOST_ONLY`:
 
 ```bash
-# Create a security keystore
-ros2 security create_keystore /opt/robot/keystore
+# Restrict discovery to localhost (replaces ROS_LOCALHOST_ONLY=1)
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 
-# Generate keys for each node
-ros2 security create_enclave /opt/robot/keystore /my_robot/driver
-ros2 security create_enclave /opt/robot/keystore /my_robot/navigation
+# Allow discovery within the subnet (default behavior)
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 
-# Enable security
-export ROS_SECURITY_KEYSTORE=/opt/robot/keystore
+# Disable automatic discovery entirely (manual peer configuration only)
+export ROS_AUTOMATIC_DISCOVERY_RANGE=OFF
+
+# Use system default (no restriction)
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT
+```
+
+**Note:** `ROS_LOCALHOST_ONLY` is deprecated in Jazzy+ but still works. Prefer `ROS_AUTOMATIC_DISCOVERY_RANGE` for new deployments.
+
+### ROS 2 Daemon behavior
+
+The ROS 2 daemon (`ros2 daemon`) caches discovery information to speed up CLI tools (`ros2 topic list`, `ros2 node list`). It can become stale:
+
+```bash
+# If ros2 CLI shows stale/missing topics:
+ros2 daemon stop
+ros2 daemon start
+
+# Check daemon status
+ros2 daemon status
+```
+
+The daemon runs as a background process. It connects to the DDS network independently of your nodes. If you change `ROS_DOMAIN_ID` or `RMW_IMPLEMENTATION` after the daemon starts, CLI commands will show data from the old configuration until the daemon is restarted.
+
+## 7. Security (SROS2)
+
+For production deployments, enable DDS security via SROS2. This provides mutual TLS authentication,
+topic-level access control, and message encryption. See `references/security.md` for the complete
+SROS2 workflow including keystore setup, governance/permissions authoring, certificate management,
+supply chain hardening, and performance impact analysis.
+
+Quick start for testing:
+```bash
+ros2 security create_keystore ~/sros2_keystore
+ros2 security create_enclave ~/sros2_keystore /my_robot/driver
+export ROS_SECURITY_KEYSTORE=~/sros2_keystore
 export ROS_SECURITY_ENABLE=true
-export ROS_SECURITY_STRATEGY=Enforce  # or "Permissive" for testing
+export ROS_SECURITY_STRATEGY=Permissive  # Use Enforce in production
 ```
-
-### Access control policies
-
-```xml
-<!-- permissions.xml — define what each node can access -->
-<permissions>
-  <grant name="/my_robot/driver">
-    <allow_rule>
-      <publish>
-        <topics><topic>rt/joint_states</topic></topics>
-      </publish>
-      <subscribe>
-        <topics><topic>rt/joint_commands</topic></topics>
-      </subscribe>
-    </allow_rule>
-    <deny_rule>
-      <publish>
-        <topics><topic>*</topic></topics>
-      </publish>
-    </deny_rule>
-  </grant>
-</permissions>
-```
-
-### Security best practices
-
-- **Encrypt all inter-machine DDS traffic** — default DDS is unencrypted
-- **Use SROS2 in production** — prevents unauthorized nodes from joining
-- **Restrict device permissions** — use udev rules for serial/CAN devices
-- **Don't run as root** — use dedicated `robot` user with minimal privileges
-- **Rotate keys** — regenerate SROS2 keys periodically
 
 ## 8. Monitoring and health checks
 

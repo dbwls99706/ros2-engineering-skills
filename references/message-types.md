@@ -10,9 +10,10 @@
 7. Camera intrinsics (`CameraInfo`)
 8. TF messages and QoS conventions
 9. Action status codes
-10. Covariance matrix conventions
-11. Standard units (REP-103)
-12. Common failures and anti-patterns
+10. Diagnostic messages (`diagnostic_msgs`)
+11. Covariance matrix conventions
+12. Standard units (REP-103)
+13. Common failures and anti-patterns
 
 ---
 
@@ -513,7 +514,37 @@ elif status == GoalStatus.STATUS_CANCELED:
     self.get_logger().warn('Goal canceled')
 ```
 
-## 10. Covariance matrix conventions
+## 10. Diagnostic messages (`diagnostic_msgs`)
+
+### diagnostic_msgs conventions
+
+```python
+from diagnostic_msgs.msg import DiagnosticStatus, DiagnosticArray, KeyValue
+
+status = DiagnosticStatus()
+status.level = DiagnosticStatus.OK      # 0=OK, 1=WARN, 2=ERROR, 3=STALE
+status.name = 'my_robot: Motor Driver'  # Convention: "robot_name: Component"
+status.hardware_id = 'motor_board_v2'   # Unique hardware identifier
+status.message = 'Operating normally'
+status.values = [
+    KeyValue(key='voltage', value='24.1'),
+    KeyValue(key='temperature_c', value='42.3'),
+    KeyValue(key='error_count', value='0'),
+]
+```
+
+Severity levels:
+
+| Level | Value | Meaning |
+|---|---|---|
+| OK | 0 | Component operating normally |
+| WARN | 1 | Degraded but functional |
+| ERROR | 2 | Not functioning correctly |
+| STALE | 3 | No recent data from component |
+
+Use `diagnostic_updater` to publish diagnostics at regular intervals. See `references/debugging.md` for the updater pattern.
+
+## 11. Covariance matrix conventions
 
 Many messages (`Odometry`, `PoseWithCovariance`, `Imu`) flatten 2D covariance
 matrices into 1D arrays in **row-major order**.
@@ -579,7 +610,7 @@ msg.pose.covariance[0] = 1e-6  # Very confident but numerically stable
 msg.pose.covariance[0] = 0.01  # 0.1m standard deviation → 0.01 variance
 ```
 
-## 11. Standard units (REP-103)
+## 12. Standard units (REP-103)
 
 ROS strictly adheres to SI units. **Never invent units or use non-SI units
 in message payloads.**
@@ -623,7 +654,7 @@ $$x^2 + y^2 + z^2 + w^2 = 1$$
   `tf_transformations.quaternion_multiply` (Python) to ensure normalization
   after manual construction.
 
-## 12. Common failures and anti-patterns
+## 13. Common failures and anti-patterns
 
 | Anti-pattern | Why it fails | Fix |
 |---|---|---|

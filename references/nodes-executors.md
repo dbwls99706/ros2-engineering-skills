@@ -4,8 +4,11 @@
 1. Node anatomy — rclcpp and rclpy
 2. Executor models
 3. Callback groups
+   - When ReentrantCallbackGroup is mandatory
+   - Python callback groups (rclpy)
 4. Intra-process communication
 5. Custom executors
+   - Two-executor pattern with `add_callback_group`
 6. Node composition in a single process
 7. Patterns by use case
 8. Performance considerations
@@ -120,6 +123,36 @@ def main(args=None):
 - rclpy GIL limits true parallelism — offload CPU work to C++ or `concurrent.futures`
 - Both: always declare parameters in constructor, never use undeclared params
 
+**rclpy GIL note:** In rclpy, `MultiThreadedExecutor` uses multiple threads, but
+Python's GIL prevents true parallelism for CPU-bound callbacks.
+`ReentrantCallbackGroup` in rclpy is still essential for I/O-bound work (service
+calls, network I/O, file I/O) -- it prevents one blocking I/O callback from starving
+others. For CPU-bound parallelism, offload to `concurrent.futures.ProcessPoolExecutor`
+or rewrite the hot path as a C++ component.
+
+```python
+import concurrent.futures
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+
+class HeavyProcessingNode(Node):
+    def __init__(self):
+        super().__init__('heavy_node')
+        # Process pool for CPU-bound work — bypasses the GIL
+        self._pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+        self.sub = self.create_subscription(
+            Image, '/camera/image_raw', self.image_cb, 10)
+
+    def image_cb(self, msg):
+        # Submit CPU-bound work to a separate process
+        future = self._pool.submit(run_detection, msg.data)
+        future.add_done_callback(self._on_detection_done)
+
+    def _on_detection_done(self, future):
+        result = future.result()
+        self.get_logger().info(f'Detection complete: {result}')
+```
+
 ## 2. Executor models
 
 ### SingleThreadedExecutor (default)
@@ -161,14 +194,47 @@ and timers (no dynamic creation/destruction at runtime).
 
 ### EventsExecutor (Jazzy+)
 
+Event-driven instead of polling-based. Lower CPU usage when idle, faster wake-up
+on incoming data. Preferred for systems with many nodes and intermittent traffic.
+
+In Rolling and Kilted, `EventsExecutor` graduated from the experimental namespace
+to `rclcpp::executors::EventsExecutor`. For Jazzy, use the experimental namespace.
+In Kilted, `EventsExecutor` was also ported to rclpy as `rclpy.executors.EventsExecutor`.
+
+**Benchmark note:** Per the iRobot 2023 paper, `EventsExecutor` achieves approximately
+90% reduction in wake-up latency compared to polling-based `SingleThreadedExecutor`
+under idle-to-active transition.
+
 ```cpp
+// Jazzy — experimental namespace
 rclcpp::experimental::executors::EventsExecutor executor;
 executor.add_node(node);
 executor.spin();
 ```
 
-Event-driven instead of polling-based. Lower CPU usage when idle, faster wake-up
-on incoming data. Preferred for systems with many nodes and intermittent traffic.
+```cpp
+// Kilted / Rolling — graduated namespace
+rclcpp::executors::EventsExecutor executor;
+executor.add_node(node);
+executor.spin();
+```
+
+```python
+# Kilted+ — rclpy EventsExecutor
+import rclpy
+from rclpy.executors import EventsExecutor
+
+rclpy.init()
+node = MyNode()
+executor = EventsExecutor()
+executor.add_node(node)
+try:
+    executor.spin()
+finally:
+    executor.shutdown()
+    node.destroy_node()
+    rclpy.shutdown()
+```
 
 ### Choosing an executor
 
@@ -211,6 +277,191 @@ auto group = this->create_callback_group(
 
 Use when callbacks are independent or when you need maximum throughput and can
 handle your own synchronization.
+
+### When ReentrantCallbackGroup is mandatory
+
+There are scenarios where `MutuallyExclusiveCallbackGroup` fundamentally cannot
+work and `ReentrantCallbackGroup` is the only correct choice:
+
+**a) Action server with concurrent goals**
+
+`rclcpp_action::create_server` registers goal, cancel, and accepted/execute
+callbacks. When a goal is executing (publishing feedback in a loop), the executor
+must still be able to process new goal requests and cancel requests. If these
+callbacks are in a `MutuallyExclusiveCallbackGroup`, new goal and cancel requests
+are blocked until the current goal finishes -- defeating the purpose of actions.
+
+```cpp
+class MultiGoalActionServer : public rclcpp::Node
+{
+public:
+  MultiGoalActionServer()
+  : Node("multi_goal_server")
+  {
+    // ReentrantCallbackGroup is required so the executor can accept
+    // new goals and cancellations while a goal is actively executing.
+    action_group_ = create_callback_group(
+      rclcpp::CallbackGroupType::Reentrant);
+
+    action_server_ = rclcpp_action::create_server<MyAction>(
+      this,
+      "my_action",
+      std::bind(&MultiGoalActionServer::handle_goal, this, _1, _2),
+      std::bind(&MultiGoalActionServer::handle_cancel, this, _1),
+      std::bind(&MultiGoalActionServer::handle_accepted, this, _1),
+      rcl_action_server_get_default_options(),
+      action_group_);
+  }
+
+private:
+  rclcpp_action::GoalResponse handle_goal(
+    const rclcpp_action::GoalUUID &,
+    std::shared_ptr<const MyAction::Goal>)
+  {
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  }
+
+  rclcpp_action::CancelResponse handle_cancel(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<MyAction>>)
+  {
+    return rclcpp_action::CancelResponse::ACCEPT;
+  }
+
+  void handle_accepted(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<MyAction>> goal_handle)
+  {
+    // Execute in a new thread to avoid blocking the executor
+    std::thread([this, goal_handle]() { execute(goal_handle); }).detach();
+  }
+
+  void execute(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<MyAction>> goal_handle)
+  {
+    auto feedback = std::make_shared<MyAction::Feedback>();
+    for (int i = 0; i < 100 && rclcpp::ok(); ++i) {
+      if (goal_handle->is_canceling()) {
+        goal_handle->canceled(std::make_shared<MyAction::Result>());
+        return;
+      }
+      feedback->progress = static_cast<float>(i) / 100.0f;
+      goal_handle->publish_feedback(feedback);
+      std::this_thread::sleep_for(100ms);
+    }
+    goal_handle->succeed(std::make_shared<MyAction::Result>());
+  }
+
+  rclcpp::CallbackGroup::SharedPtr action_group_;
+  rclcpp_action::Server<MyAction>::SharedPtr action_server_;
+};
+```
+
+**b) Parallel high-frequency sensor processing**
+
+When a node subscribes to 4 cameras at 30 Hz each (120 callbacks/sec) and each
+callback takes 20 ms, a `MutuallyExclusiveCallbackGroup` can only handle
+50 callbacks/sec (1000 ms / 20 ms), causing drops. `ReentrantCallbackGroup` with
+`MultiThreadedExecutor` allows all 4 to process in parallel.
+
+```cpp
+class MultiCameraNode : public rclcpp::Node
+{
+public:
+  MultiCameraNode() : Node("multi_camera")
+  {
+    // Reentrant group: 4 camera callbacks can run in parallel
+    cam_group_ = create_callback_group(
+      rclcpp::CallbackGroupType::Reentrant);
+
+    rclcpp::SubscriptionOptions opts;
+    opts.callback_group = cam_group_;
+
+    for (int i = 0; i < 4; ++i) {
+      auto topic = "/camera_" + std::to_string(i) + "/image_raw";
+      cam_subs_.push_back(
+        create_subscription<sensor_msgs::msg::Image>(
+          topic, rclcpp::SensorDataQoS(),
+          [this, i](sensor_msgs::msg::Image::ConstSharedPtr msg) {
+            process_image(i, msg);  // Takes ~20ms each
+          },
+          opts));
+    }
+  }
+
+private:
+  void process_image(int cam_id,
+                     sensor_msgs::msg::Image::ConstSharedPtr msg)
+  {
+    // Each camera callback runs independently in its own thread.
+    // No shared state mutation here -- safe without locking.
+    auto result = run_detector(msg);
+    RCLCPP_DEBUG(get_logger(), "Camera %d: detected %zu objects",
+                 cam_id, result.size());
+  }
+
+  rclcpp::CallbackGroup::SharedPtr cam_group_;
+  std::vector<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr> cam_subs_;
+};
+
+// Must use MultiThreadedExecutor to benefit from ReentrantCallbackGroup
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(std::make_shared<MultiCameraNode>());
+  executor.spin();
+  rclcpp::shutdown();
+  return 0;
+}
+```
+
+**c) Timer + slow subscription overlap**
+
+A 100 Hz control loop timer must not be blocked by a slow data-processing
+subscription callback. If both share a `MutuallyExclusiveCallbackGroup`, the
+timer misses deadlines whenever the subscription is processing. Put the timer in
+one group and the subscription in another, or use `ReentrantCallbackGroup` if
+they do not share state.
+
+```cpp
+class ControlNode : public rclcpp::Node
+{
+public:
+  ControlNode() : Node("control_node")
+  {
+    // Option A: Reentrant group — timer and subscription run independently
+    auto group = create_callback_group(
+      rclcpp::CallbackGroupType::Reentrant);
+
+    timer_ = create_wall_timer(
+      10ms,  // 100 Hz control loop
+      std::bind(&ControlNode::control_loop, this),
+      group);
+
+    rclcpp::SubscriptionOptions opts;
+    opts.callback_group = group;
+    map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      "/map", rclcpp::QoS(1).transient_local(),
+      std::bind(&ControlNode::map_callback, this, std::placeholders::_1),
+      opts);
+  }
+
+private:
+  void control_loop()
+  {
+    // Fast path: read latest sensor data, compute command, publish.
+    // Must never be blocked by map_callback.
+  }
+
+  void map_callback(nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
+  {
+    // Slow path: processing a large occupancy grid (~50ms).
+    // Runs in parallel with control_loop thanks to Reentrant group.
+  }
+
+  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+};
+```
 
 ### Critical pattern: calling a service from a callback
 
@@ -297,6 +548,134 @@ mode_client_ = create_client<SetMode>("/set_mode",
   rmw_qos_profile_services_default, client_group);
 ```
 
+### Python callback groups (rclpy)
+
+rclpy provides the same callback group semantics as rclcpp. The API differs
+slightly: groups are passed directly to subscription/timer/client constructors
+via the `callback_group` parameter.
+
+```python
+import rclpy
+from rclpy.callback_groups import (
+    MutuallyExclusiveCallbackGroup,
+    ReentrantCallbackGroup,
+)
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from sensor_msgs.msg import LaserScan, Imu
+from geometry_msgs.msg import Twist
+from example_interfaces.srv import SetBool
+
+
+class MultiGroupNode(Node):
+    def __init__(self):
+        super().__init__('multi_group_node')
+
+        # Group 1: sensor callbacks (reentrant — independent data streams)
+        self.sensor_group = ReentrantCallbackGroup()
+
+        # Group 2: state callbacks (mutually exclusive — shared state)
+        self.state_group = MutuallyExclusiveCallbackGroup()
+
+        # Group 3: service clients (separate group to avoid deadlock)
+        self.client_group = MutuallyExclusiveCallbackGroup()
+
+        # Subscriptions assigned to groups
+        self.lidar_sub = self.create_subscription(
+            LaserScan, '/scan', self.lidar_cb, 10,
+            callback_group=self.sensor_group)
+        self.imu_sub = self.create_subscription(
+            Imu, '/imu', self.imu_cb, 10,
+            callback_group=self.sensor_group)
+
+        self.cmd_sub = self.create_subscription(
+            Twist, '/cmd_vel', self.cmd_cb, 10,
+            callback_group=self.state_group)
+
+        # Timer in the state group — serialized with cmd_cb
+        self.timer = self.create_timer(
+            0.1, self.control_loop,
+            callback_group=self.state_group)
+
+        # Service client on its own group
+        self.mode_client = self.create_client(
+            SetBool, '/set_mode',
+            callback_group=self.client_group)
+
+    def lidar_cb(self, msg):
+        self.get_logger().debug(f'Scan: {len(msg.ranges)} ranges')
+
+    def imu_cb(self, msg):
+        self.get_logger().debug('IMU received')
+
+    def cmd_cb(self, msg):
+        self.latest_cmd = msg  # Shared state, safe — state_group is MutuallyExclusive
+
+    def control_loop(self):
+        # Also in state_group, so never runs concurrently with cmd_cb
+        pass
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MultiGroupNode()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
+```
+
+### Python async service call pattern (rclpy)
+
+In rclpy, calling a service from within a callback requires `call_async()`.
+Never use the synchronous `call()` inside a callback -- it blocks the executor
+thread and deadlocks.
+
+```python
+# WRONG — blocks the executor thread, causes deadlock
+def timer_callback(self):
+    request = SetBool.Request()
+    request.data = True
+    response = self.client.call(request)  # Deadlock!
+
+# CORRECT — use call_async with await in an async callback
+import asyncio
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+
+class AsyncServiceCallerNode(Node):
+    def __init__(self):
+        super().__init__('async_caller')
+
+        self.client_group = MutuallyExclusiveCallbackGroup()
+        self.client = self.create_client(
+            SetBool, '/set_mode',
+            callback_group=self.client_group)
+
+        # Timer in the default group (separate from client_group)
+        self.timer = self.create_timer(1.0, self.timer_callback)
+
+    async def timer_callback(self):
+        """Async callback — the executor can process other work while awaiting."""
+        if not self.client.service_is_ready():
+            self.get_logger().warn('Service not ready')
+            return
+
+        request = SetBool.Request()
+        request.data = True
+        response = await self.client.call_async(request)
+        self.get_logger().info(f'Service response: {response.success}')
+```
+
+**Key rules for rclpy service calls from callbacks:**
+- Always use `call_async()`, never `call()`, inside a callback
+- Make the callback `async def` and `await` the future
+- Put the service client in a separate `MutuallyExclusiveCallbackGroup`
+- Use `MultiThreadedExecutor` to allow the client group to process the response
+
 ## 4. Intra-process communication
 
 When multiple nodes run in the same process, you can eliminate serialization
@@ -343,25 +722,226 @@ void callback(const sensor_msgs::msg::Image::ConstSharedPtr msg) {
 ## 5. Custom executors
 
 For advanced scheduling requirements (e.g., priority-based, deadline-aware),
-subclass `rclcpp::Executor`:
+subclass `rclcpp::Executor`. The key method to override is `spin()`, using
+`wait_for_ready_callbacks()` and `execute_any_executable()` to collect and
+dispatch ready callbacks.
+
+> **Note:** The `rclcpp::Executor` protected API varies across distros and is not
+> fully stable. The following shows the architectural pattern — adapt method names
+> to your target distro. For production, consider the `EventsExecutor` (Kilted+)
+> as a higher-performance alternative.
 
 ```cpp
+#include <rclcpp/rclcpp.hpp>
+#include <map>
+#include <algorithm>
+
 class PriorityExecutor : public rclcpp::Executor
 {
 public:
+  /// Register a callback group with a priority level (lower number = higher priority).
+  void add_callback_group_with_priority(
+    rclcpp::CallbackGroup::SharedPtr group,
+    rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node_base,
+    int priority)
+  {
+    priority_map_[group.get()] = priority;
+    add_callback_group(group, node_base);
+  }
+
   void spin() override
   {
     while (rclcpp::ok()) {
-      // Get all ready callbacks
-      // Sort by priority (e.g., control > perception > logging)
-      // Execute in priority order
+      // Block until at least one callback is ready, with a timeout
+      // to allow checking rclcpp::ok() periodically.
+      auto any_exec = get_next_ready_executable();
+      if (any_exec.has_value()) {
+        execute_any_executable(any_exec.value());
+      }
     }
   }
+
+private:
+  std::optional<rclcpp::AnyExecutable> get_next_ready_executable()
+  {
+    // Wait for work with a timeout so we can re-check rclcpp::ok()
+    std::chrono::nanoseconds timeout(100'000'000);  // 100ms
+
+    // Collect all ready executables by iterating callback groups
+    std::vector<std::pair<int, rclcpp::AnyExecutable>> ready_list;
+
+    for (auto & weak_group : get_all_callback_groups()) {
+      auto group = weak_group.lock();
+      if (!group) {
+        continue;
+      }
+      rclcpp::AnyExecutable any_exec;
+      if (get_next_executable(any_exec, timeout)) {
+        int prio = 999;
+        auto it = priority_map_.find(any_exec.callback_group.get());
+        if (it != priority_map_.end()) {
+          prio = it->second;
+        }
+        ready_list.push_back({prio, std::move(any_exec)});
+      }
+    }
+
+    if (ready_list.empty()) {
+      // Fall back to standard wait-for-ready with timeout
+      rclcpp::AnyExecutable any_exec;
+      if (get_next_executable(any_exec, timeout)) {
+        return any_exec;
+      }
+      return std::nullopt;
+    }
+
+    // Sort by priority: lowest number first
+    std::sort(ready_list.begin(), ready_list.end(),
+      [](const auto & a, const auto & b) { return a.first < b.first; });
+
+    return std::move(ready_list.front().second);
+  }
+
+  std::map<rclcpp::CallbackGroup *, int> priority_map_;
 };
+
+// Usage
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("priority_demo");
+
+  auto control_group = node->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive);
+  auto logging_group = node->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  PriorityExecutor executor;
+  // Priority 0 = highest, processes first
+  executor.add_callback_group_with_priority(
+    control_group, node->get_node_base_interface(), 0);
+  // Priority 10 = lower, processes only when higher-priority groups are idle
+  executor.add_callback_group_with_priority(
+    logging_group, node->get_node_base_interface(), 10);
+
+  executor.spin();
+  rclcpp::shutdown();
+  return 0;
+}
 ```
 
 This is rarely needed but powerful for real-time systems where certain callbacks
-must preempt others.
+must preempt others. For most applications, splitting callback groups across
+separate executors (see below) is simpler and achieves a similar effect.
+
+### Two-executor pattern with `add_callback_group`
+
+Instead of a custom executor, you can split a single node's callback groups
+across two standard executors, each running on its own thread. This is the
+recommended way to isolate real-time callbacks from non-real-time work.
+
+```cpp
+#include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/float64.hpp>
+#include <example_interfaces/srv/set_bool.hpp>
+#include <thread>
+
+class DualExecutorNode : public rclcpp::Node
+{
+public:
+  DualExecutorNode() : Node("dual_executor_node")
+  {
+    // RT group: fast control loop
+    rt_group_ = create_callback_group(
+      rclcpp::CallbackGroupType::MutuallyExclusive);
+    // Background group: slow service calls, logging
+    bg_group_ = create_callback_group(
+      rclcpp::CallbackGroupType::Reentrant);
+
+    // 500 Hz control timer in the RT group
+    control_timer_ = create_wall_timer(
+      std::chrono::microseconds(2000),
+      std::bind(&DualExecutorNode::control_loop, this),
+      rt_group_);
+
+    // Publisher for actuator commands (used from the RT callback)
+    cmd_pub_ = create_publisher<std_msgs::msg::Float64>(
+      "actuator_cmd", rclcpp::SystemDefaultsQoS());
+
+    // Service client in the background group — safe to call from bg callbacks
+    param_client_ = create_client<example_interfaces::srv::SetBool>(
+      "/configure_sensor",
+      rmw_qos_profile_services_default,
+      bg_group_);
+
+    // Slow subscription in the background group
+    rclcpp::SubscriptionOptions bg_opts;
+    bg_opts.callback_group = bg_group_;
+    config_sub_ = create_subscription<std_msgs::msg::Float64>(
+      "config_update", 10,
+      std::bind(&DualExecutorNode::config_callback, this,
+                std::placeholders::_1),
+      bg_opts);
+  }
+
+  rclcpp::CallbackGroup::SharedPtr rt_group_;
+  rclcpp::CallbackGroup::SharedPtr bg_group_;
+
+private:
+  void control_loop()
+  {
+    auto msg = std_msgs::msg::Float64();
+    msg.data = compute_command();
+    cmd_pub_->publish(msg);
+  }
+
+  void config_callback(std_msgs::msg::Float64::ConstSharedPtr msg)
+  {
+    // Slow processing -- does not affect control_loop timing
+    RCLCPP_INFO(get_logger(), "Config update: %f", msg->data);
+  }
+
+  double compute_command() { return 0.0; }
+
+  rclcpp::TimerBase::SharedPtr control_timer_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr cmd_pub_;
+  rclcpp::Client<example_interfaces::srv::SetBool>::SharedPtr param_client_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr config_sub_;
+};
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<DualExecutorNode>();
+
+  // RT executor: only processes control_timer_ (rt_group_)
+  rclcpp::executors::SingleThreadedExecutor rt_executor;
+  rt_executor.add_callback_group(
+    node->rt_group_, node->get_node_base_interface());
+
+  // Background executor: processes config_sub_ and param_client_ (bg_group_)
+  rclcpp::executors::MultiThreadedExecutor bg_executor;
+  bg_executor.add_callback_group(
+    node->bg_group_, node->get_node_base_interface());
+
+  // Each executor spins on its own thread
+  std::thread rt_thread([&]() { rt_executor.spin(); });
+  std::thread bg_thread([&]() { bg_executor.spin(); });
+
+  rt_thread.join();
+  bg_thread.join();
+
+  rclcpp::shutdown();
+  return 0;
+}
+```
+
+**When to use this pattern:**
+- A node has both hard-real-time callbacks (control loops) and soft/non-RT
+  callbacks (logging, service calls, parameter updates)
+- You want to set different thread priorities (e.g., `SCHED_FIFO` on the RT
+  thread) without affecting non-RT callbacks
+- You need to prevent a slow subscription from ever blocking a fast timer
 
 ## 6. Node composition in a single process
 
@@ -459,6 +1039,16 @@ class ImageProcessor : public rclcpp::Node
 - **Measure with `ros2 topic delay`** and **tracing** before optimizing.
 - **Python GIL:** For CPU-bound Python nodes, use `ProcessPoolExecutor` for
   parallel computation, or rewrite the hot path in C++ as a component.
+- **MultiThreadedExecutor starvation (EmSoft 2024):** A 2024 research paper
+  ("Thread Carefully: Preventing Starvation in the ROS 2 Multi-Threaded
+  Executor") identified a priority-inversion pattern where high-frequency timers
+  can starve lower-priority subscription callbacks. The executor's ready-set
+  evaluation favors timers that are perpetually ready, leaving subscriptions
+  unable to acquire execution slots. Mitigation: assign subscriptions and timers
+  to separate callback groups on separate executors via `add_callback_group()`
+  (see the two-executor pattern in section 5), or use `EventsExecutor` which
+  dispatches based on actual events and is not susceptible to this starvation
+  pattern.
 
 ## 9. Common failures and fixes
 

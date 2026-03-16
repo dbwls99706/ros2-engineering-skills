@@ -5,6 +5,7 @@ Usage:
     python create_package.py my_robot_driver --type cpp
     python create_package.py my_robot_monitor --type python
     python create_package.py my_robot_interfaces --type interfaces
+    python create_package.py my_robot_driver --type cpp --component
 """
 
 import argparse
@@ -14,7 +15,48 @@ import sys
 from pathlib import Path
 
 
-def create_cpp_package(name: str, dest: Path) -> None:
+def _generate_launch_file(name: str) -> str:
+    """Generate a basic bringup.launch.py file for the package."""
+    return f"""from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
+
+def generate_launch_description():
+    config = PathJoinSubstitution([
+        FindPackageShare('{name}'), 'config', 'params.yaml'
+    ])
+    return LaunchDescription([
+        Node(
+            package='{name}',
+            executable='{name}_node',
+            name='{name}',
+            parameters=[config],
+            output='screen',
+        ),
+    ])
+"""
+
+
+def _generate_readme(name: str) -> str:
+    """Generate a basic README.md for the package."""
+    return f"""# {name}
+
+TODO: Package description
+
+## Usage
+
+```bash
+ros2 launch {name} bringup.launch.py
+```
+
+## Parameters
+
+See `config/params.yaml` for default parameters.
+"""
+
+
+def create_cpp_package(name: str, dest: Path, component: bool = False) -> None:
     pkg = dest / name
     dirs = [
         pkg / "include" / name,
@@ -25,6 +67,16 @@ def create_cpp_package(name: str, dest: Path) -> None:
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
+
+    component_cmake = ""
+    if component:
+        component_cmake = f"""
+find_package(rclcpp_components REQUIRED)
+rclcpp_components_register_node(${{PROJECT_NAME}}_lib
+  PLUGIN "{name}::{_class_name(name)}Node"
+  EXECUTABLE ${{PROJECT_NAME}}_component_node
+)
+"""
 
     (pkg / "CMakeLists.txt").write_text(f"""cmake_minimum_required(VERSION 3.8)
 project({name})
@@ -44,10 +96,13 @@ target_include_directories(${{PROJECT_NAME}}_lib PUBLIC
   $<BUILD_INTERFACE:${{CMAKE_CURRENT_SOURCE_DIR}}/include>
   $<INSTALL_INTERFACE:include/${{PROJECT_NAME}}>
 )
-ament_target_dependencies(${{PROJECT_NAME}}_lib rclcpp rclcpp_lifecycle)
-# NOTE: ament_target_dependencies() is deprecated from Kilted (May 2025).
-# For forward compat, prefer: target_link_libraries(${{PROJECT_NAME}}_lib PUBLIC rclcpp::rclcpp ...)
-
+target_link_libraries(${{PROJECT_NAME}}_lib PUBLIC
+  rclcpp::rclcpp
+  rclcpp_lifecycle::rclcpp_lifecycle
+)
+# Legacy fallback (deprecated from Kilted, May 2025):
+# ament_target_dependencies(${{PROJECT_NAME}}_lib rclcpp rclcpp_lifecycle)
+{component_cmake}
 add_executable({name}_node src/main.cpp)
 target_link_libraries({name}_node ${{PROJECT_NAME}}_lib)
 
@@ -74,7 +129,7 @@ ament_export_dependencies(rclcpp rclcpp_lifecycle)
 ament_package()
 """)
 
-    class_name = "".join(w.capitalize() for w in name.split("_"))
+    class_name = _class_name(name)
 
     (pkg / "include" / name / f"{name}_node.hpp").write_text(f"""#pragma once
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -96,8 +151,14 @@ public:
 }}  // namespace {name}
 """)
 
-    (pkg / "src" / f"{name}_node.cpp").write_text(f"""#include "{name}/{name}_node.hpp"
+    component_include = ""
+    component_register = ""
+    if component:
+        component_include = "\n#include <rclcpp_components/register_node_macro.hpp>"
+        component_register = f"\n\nRCLCPP_COMPONENTS_REGISTER_NODE({name}::{class_name}Node)\n"
 
+    (pkg / "src" / f"{name}_node.cpp").write_text(f"""#include "{name}/{name}_node.hpp"
+{component_include}
 namespace {name}
 {{
 
@@ -136,7 +197,7 @@ namespace {name}
 }}
 
 }}  // namespace {name}
-""")
+{component_register}""")
 
     (pkg / "src" / "main.cpp").write_text(f"""#include <rclcpp/rclcpp.hpp>
 #include "{name}/{name}_node.hpp"
@@ -177,8 +238,16 @@ TEST_F({class_name}Test, NodeCreation)
 }}
 """)
 
-    _write_package_xml(pkg, name, "ament_cmake",
-                       ["rclcpp", "rclcpp_lifecycle"])
+    # Generate launch file
+    (pkg / "launch" / "bringup.launch.py").write_text(_generate_launch_file(name))
+
+    # Generate README
+    (pkg / "README.md").write_text(_generate_readme(name))
+
+    deps = ["rclcpp", "rclcpp_lifecycle"]
+    if component:
+        deps.append("rclcpp_components")
+    _write_package_xml(pkg, name, "ament_cmake", deps)
     print(f"Created C++ package: {pkg}")
 
 
@@ -197,7 +266,7 @@ def create_python_package(name: str, dest: Path) -> None:
     (pkg / name / "__init__.py").write_text("")
     (pkg / "resource" / name).write_text("")
 
-    class_name = "".join(w.capitalize() for w in name.split("_"))
+    class_name = _class_name(name)
 
     (pkg / name / f"{name}_node.py").write_text(f"""import rclpy
 from rclpy.node import Node
@@ -206,7 +275,7 @@ from rclpy.node import Node
 class {class_name}Node(Node):
     def __init__(self):
         super().__init__('{name}')
-        self.declare_parameter('publish_rate', 10.0)
+        self.declare_parameter('publish_rate', 50.0)
         rate = self.get_parameter('publish_rate').value
         self.timer = self.create_timer(1.0 / rate, self.timer_callback)
         self.get_logger().info('Node started')
@@ -242,8 +311,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        # launch files will be added here when created, e.g.:
-        # ('share/' + package_name + '/launch', ['launch/bringup.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/bringup.launch.py']),
         ('share/' + package_name + '/config', ['config/params.yaml']),
     ],
     install_requires=['setuptools'],
@@ -264,7 +332,7 @@ install_scripts=$base/lib/{name}
 
     (pkg / "config" / "params.yaml").write_text(f"""{name}:
   ros__parameters:
-    publish_rate: 10.0
+    publish_rate: 50.0
 """)
 
     (pkg / "test" / f"test_{name}.py").write_text(f"""import pytest
@@ -284,6 +352,12 @@ def test_node_creation():
     assert node.get_name() == '{name}'
     node.destroy_node()
 """)
+
+    # Generate launch file
+    (pkg / "launch" / "bringup.launch.py").write_text(_generate_launch_file(name))
+
+    # Generate README
+    (pkg / "README.md").write_text(_generate_readme(name))
 
     _write_package_xml(pkg, name, "ament_python", ["rclpy"])
     print(f"Created Python package: {pkg}")
@@ -325,12 +399,25 @@ ament_export_dependencies(rosidl_default_runtime)
 ament_package()
 """)
 
+    # Generate README
+    (pkg / "README.md").write_text(_generate_readme(name))
+
     _write_package_xml(pkg, name, "ament_cmake",
                        ["std_msgs"],
                        extra_buildtool=["rosidl_default_generators"],
                        extra_exec=["rosidl_default_runtime"],
                        extra_member=["rosidl_interface_packages"])
     print(f"Created interfaces package: {pkg}")
+
+
+def _class_name(name: str) -> str:
+    """Convert a snake_case package name to CamelCase class name."""
+    return "".join(w.capitalize() for w in name.split("_"))
+
+
+# Module-level defaults for maintainer info, set from CLI args in main()
+_maintainer_name = "TODO"
+_maintainer_email = "todo@todo.com"
 
 
 def _write_package_xml(pkg: Path, name: str, build_type: str,
@@ -358,7 +445,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
   <name>{name}</name>
   <version>0.1.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="todo@todo.com">TODO</maintainer>
+  <maintainer email="{_maintainer_email}">{_maintainer_name}</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>{build_type}</buildtool_depend>{buildtool_lines}
@@ -381,6 +468,14 @@ def main():
     parser.add_argument("--type", choices=["cpp", "python", "interfaces"],
                         default="cpp", help="Package type")
     parser.add_argument("--dest", default=".", help="Destination directory")
+    parser.add_argument("--component", action="store_true", default=False,
+                        help="Register as a composable node component (C++ only)")
+    parser.add_argument("--maintainer-name", default="TODO",
+                        help="Maintainer name for package.xml (default: TODO)")
+    parser.add_argument("--maintainer-email", default="todo@todo.com",
+                        help="Maintainer email for package.xml (default: todo@todo.com)")
+    parser.add_argument("--force", action="store_true", default=False,
+                        help="Overwrite existing package directory")
     args = parser.parse_args()
 
     if not re.match(r'^[a-z][a-z0-9_]*$', args.name):
@@ -389,12 +484,24 @@ def main():
               "must start with a letter).", file=sys.stderr)
         sys.exit(1)
 
+    # Set module-level maintainer info from CLI args
+    global _maintainer_name, _maintainer_email
+    _maintainer_name = args.maintainer_name
+    _maintainer_email = args.maintainer_email
+
     dest = Path(args.dest)
     if not dest.exists():
         dest.mkdir(parents=True)
 
+    # Overwrite protection
+    pkg_dir = dest / args.name
+    if pkg_dir.exists() and not args.force:
+        print(f"Warning: Package directory '{pkg_dir}' already exists. "
+              f"Use --force to overwrite.", file=sys.stderr)
+        sys.exit(1)
+
     creators = {
-        "cpp": create_cpp_package,
+        "cpp": lambda name, dest: create_cpp_package(name, dest, args.component),
         "python": create_python_package,
         "interfaces": create_interfaces_package,
     }

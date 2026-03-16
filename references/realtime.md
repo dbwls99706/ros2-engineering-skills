@@ -41,10 +41,8 @@ the entire system adds complexity without benefit.
 
 ```bash
 # Ubuntu 22.04 (Humble) / 24.04 (Jazzy)
-sudo apt install linux-image-rt-amd64     # Debian-based
-# Or install the Ubuntu Pro real-time kernel:
-sudo pro attach
-sudo pro enable realtime-kernel
+sudo apt install linux-image-rt-generic
+# On Ubuntu Pro, use `sudo pro enable realtime-kernel` instead.
 
 # Verify RT kernel is running
 uname -a  # Should show "PREEMPT_RT" in kernel version
@@ -184,9 +182,12 @@ private:
 #include <atomic>
 #include <array>
 
-// RT-safe double buffer for passing data between RT and non-RT threads
+// Simplified RT-safe flag for passing data between RT and non-RT threads.
+// WARNING: This is a simplified illustration. It has a race condition for
+// non-trivially-copyable types (non-RT can overwrite while RT is copying).
+// Use realtime_tools::RealtimeBuffer (below) in production.
 template<typename T>
-class RealtimeBuffer
+class SimpleRealtimeFlag
 {
 public:
   void writeFromNonRT(const T & data)
@@ -209,6 +210,35 @@ private:
   T rt_data_{};
   std::atomic<bool> new_data_available_{false};
 };
+```
+
+### realtime_tools library (ros2_control) — recommended
+
+The `realtime_tools` package from ros2_control provides production-ready RT-safe primitives
+using a proper triple-buffer scheme. **Always prefer these over custom implementations:**
+
+```cpp
+// From ros2_control's realtime_tools package
+#include <realtime_tools/realtime_buffer.hpp>
+#include <realtime_tools/realtime_publisher.hpp>
+
+// RT-safe publisher — buffers messages and publishes from a non-RT thread
+realtime_tools::RealtimePublisher<sensor_msgs::msg::JointState> rt_pub(
+  node->create_publisher<sensor_msgs::msg::JointState>("joint_states", 10));
+
+// In RT callback:
+if (rt_pub.trylock()) {
+  rt_pub.msg_.header.stamp = now;
+  rt_pub.msg_.position = current_positions;
+  rt_pub.unlockAndPublish();
+}
+
+// RT-safe buffer — lock-free data sharing between RT and non-RT threads
+realtime_tools::RealtimeBuffer<geometry_msgs::msg::Twist> cmd_buf;
+// Non-RT thread writes:
+cmd_buf.writeFromNonRT(twist_msg);
+// RT thread reads:
+auto cmd = *cmd_buf.readFromRT();
 ```
 
 ### What to avoid in the RT path
@@ -289,19 +319,26 @@ public:
            rclcpp::CallbackGroup::SharedPtr rt_group,
            int rt_priority, int cpu_id)
   {
-    // Create a separate single-threaded executor for the RT group
-    rclcpp::executors::SingleThreadedExecutor rt_executor;
-    rt_executor.add_callback_group(rt_group, node->get_node_base_interface());
+    // Executor must outlive the thread — store as member
+    rt_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    rt_executor_->add_callback_group(rt_group, node->get_node_base_interface());
 
     // Run on dedicated thread with RT priority
-    rt_thread_ = std::thread([&rt_executor, rt_priority, cpu_id]() {
+    rt_thread_ = std::thread([this, rt_priority, cpu_id]() {
       set_thread_rt_priority(rt_priority);
       pin_thread_to_cpu(cpu_id);
-      rt_executor.spin();
+      rt_executor_->spin();
     });
   }
 
+  ~DualExecutorRunner()
+  {
+    if (rt_executor_) { rt_executor_->cancel(); }
+    if (rt_thread_.joinable()) { rt_thread_.join(); }
+  }
+
 private:
+  std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> rt_executor_;
   std::thread rt_thread_;
 };
 ```
@@ -479,6 +516,35 @@ ros2 launch my_robot_bringup robot.launch.py
 ros2 trace stop my_trace
 
 # Analyze with ros2_tracing tools or LTTng
+```
+
+### Benchmark reference numbers
+
+These are order-of-magnitude numbers from published benchmarks on typical hardware (Intel i7-12700, Ubuntu 24.04):
+
+| Metric | Without PREEMPT_RT | With PREEMPT_RT |
+|---|---|---|
+| cyclictest max latency (1kHz, 10 min) | 50-500 us, spikes to 10+ ms | 8-15 us |
+| cyclictest avg latency | 2-5 us | 1-3 us |
+| Worst-case jitter (p99.9) | 200-2000 us | 10-20 us |
+
+DDS transport latency (loopback, 1KB message):
+
+| Middleware | Avg latency | p99 latency |
+|---|---|---|
+| CycloneDDS | ~30-60 us | ~100-200 us |
+| FastDDS | ~40-80 us | ~150-300 us |
+| Zenoh | ~20-40 us | ~60-120 us |
+| Intra-process (zero-copy) | ~1-5 us | ~5-10 us |
+
+### Tail latency (p99/p999)
+
+**Tail latency matters more than mean.** For safety-critical control loops, a 1ms average with occasional 50ms spikes is worse than a 5ms average with 7ms p99.9. Always measure and report p99.9 latency:
+
+```bash
+# cyclictest with histogram output for tail latency analysis
+sudo cyclictest -l 100000 -m -S -p 90 -i 1000 -h 400 -q > histogram.txt
+# Analyze: sort histogram, find the latency at 99.9th percentile
 ```
 
 ## 10. Common failures and fixes

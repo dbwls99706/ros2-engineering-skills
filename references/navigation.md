@@ -45,7 +45,7 @@
 - `bt_navigator` — orchestrates navigation tasks via behavior trees
 - `planner_server` — computes global paths
 - `controller_server` — generates velocity commands to follow paths
-- `recoveries_server` — handles stuck situations (spin, back up, wait)
+- `behavior_server` (Jazzy+, renamed from `recoveries_server` in Humble) -- handles stuck situations (spin, back up, wait)
 - `smoother_server` — smooths planned paths (optional)
 - `waypoint_follower` — executes multi-waypoint missions
 - `velocity_smoother` — smooths `cmd_vel` output (optional)
@@ -133,6 +133,41 @@ ros2 run nav2_map_server map_server --ros-args \
   -p yaml_filename:=~/maps/my_map.yaml \
   -p use_sim_time:=true
 ```
+
+### AMCL localization (known maps)
+
+AMCL (Adaptive Monte Carlo Localization) is the standard particle filter localization for navigating in pre-built maps:
+
+```yaml
+amcl:
+  ros__parameters:
+    use_sim_time: true
+    alpha1: 0.2   # rotation noise from rotation
+    alpha2: 0.2   # rotation noise from translation
+    alpha3: 0.2   # translation noise from translation
+    alpha4: 0.2   # translation noise from rotation
+    base_frame_id: "base_link"
+    global_frame_id: "map"
+    odom_frame_id: "odom"
+    max_particles: 2000
+    min_particles: 500
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+    scan_topic: scan
+    tf_broadcast: true
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+```
+
+When to use AMCL vs SLAM:
+| Scenario | Use |
+|---|---|
+| Known, static environment | AMCL with pre-built map |
+| Unknown environment | slam_toolbox (online SLAM) |
+| Semi-dynamic environment | slam_toolbox in localization mode |
+| Outdoor with GPS | robot_localization EKF + NavSat |
 
 ## 3. Costmap configuration
 
@@ -343,6 +378,18 @@ controller_server:
 ## 6. Recovery behaviors
 
 ```yaml
+# Jazzy+: behavior_server (renamed from recoveries_server)
+behavior_server:
+  ros__parameters:
+    behavior_plugins: ["spin", "backup", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+
+# Humble: recoveries_server
 recoveries_server:
   ros__parameters:
     recovery_plugins: ["spin", "backup", "wait"]
@@ -360,6 +407,38 @@ recoveries_server:
 3. Spin 180° (look for alternative paths)
 4. Back up 0.3 m (escape tight spaces)
 5. Replan
+
+### Nav2 Collision Monitor
+
+The collision monitor (Jazzy+) is an independent safety node that monitors sensor data and can stop the robot before collision, independent of the costmap and controller. It runs at its own rate and provides a last-line-of-defense safety layer.
+
+```yaml
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    transform_tolerance: 0.5
+    source_timeout: 2.0
+    stop_pub_timeout: 2.0
+    polygons: ["PolygonStop", "PolygonSlow"]
+    PolygonStop:
+      type: "polygon"
+      points: [0.4, 0.3, 0.4, -0.3, -0.1, -0.3, -0.1, 0.3]
+      action_type: "stop"
+      max_points: 3
+      visualize: true
+    PolygonSlow:
+      type: "circle"
+      radius: 0.7
+      action_type: "slowdown"
+      max_points: 3
+      slowdown_ratio: 0.5
+    observation_sources: ["scan"]
+    scan:
+      source_timeout: 2.0
+      type: "scan"
+      topic: "/scan"
+```
 
 ## 7. Waypoint following
 
@@ -444,6 +523,18 @@ for robot_id in ['robot_1', 'robot_2']:
 - Use `frame_prefix` in robot_state_publisher for unique TF frames
 - Localization must publish `map → robot_N/odom` (not shared `odom`)
 - Consider a central task allocator for waypoint assignment
+
+### Outdoor navigation with GPS
+
+For outdoor robots, combine GPS with Nav2 using `robot_localization` EKF:
+
+```bash
+sudo apt install ros-jazzy-robot-localization ros-jazzy-nav2-waypoint-follower
+```
+
+The key is fusing GPS (lat/lon) into the Nav2 coordinate system via `robot_localization`'s `navsat_transform_node`, which converts GPS fixes to odometry in the map frame.
+
+For multi-robot navigation patterns including fleet management and Open-RMF integration, see `references/multi-robot.md`.
 
 ## 9. Parameter tuning methodology
 
