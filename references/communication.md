@@ -312,7 +312,9 @@ ros2 topic echo /rosout --qos-reliability reliable --field msg | grep -i "incomp
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain>
     <General>
-      <NetworkInterfaceAddress>eth0</NetworkInterfaceAddress>
+      <Interfaces>
+        <NetworkInterface name="eth0"/>
+      </Interfaces>
       <AllowMulticast>true</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
@@ -353,7 +355,7 @@ export ROS_DOMAIN_ID=42  # Isolate from other ROS 2 systems on the network
 
 ### Zenoh as an alternative middleware
 
-Zenoh (`rmw_zenoh_cpp`) is an emerging ROS 2 middleware option — Tier 2 in Jazzy,
+Zenoh (`rmw_zenoh_cpp`) is an emerging ROS 2 middleware option — experimental in Jazzy,
 Tier 1 in Kilted (May 2025). It offers lower wire overhead and better performance
 in challenging network conditions compared to DDS.
 
