@@ -81,7 +81,8 @@ colcon builds each package in isolation by default. This means:
 - CMake cannot accidentally see headers from sibling packages
 - Missing `find_package()` or `package.xml` deps break the build immediately (good)
 
-To disable isolation (not recommended, but sometimes needed for debugging):
+To merge all packages into a single install prefix (not recommended — hides
+missing `package.xml` dependencies, but simplifies Docker `PATH`/`LD_LIBRARY_PATH`):
 ```bash
 colcon build --merge-install
 ```
@@ -118,6 +119,12 @@ target_include_directories(${PROJECT_NAME}_lib PUBLIC
 ament_target_dependencies(${PROJECT_NAME}_lib
   rclcpp rclcpp_lifecycle sensor_msgs my_robot_interfaces
 )
+# NOTE: ament_target_dependencies() is deprecated starting from Kilted (May 2025).
+# For forward compatibility, prefer target_link_libraries() with modern CMake targets:
+#   target_link_libraries(${PROJECT_NAME}_lib PUBLIC
+#     rclcpp::rclcpp rclcpp_lifecycle::rclcpp_lifecycle
+#     ${sensor_msgs_TARGETS} ${my_robot_interfaces_TARGETS}
+#   )
 
 # Executable (thin wrapper around library)
 add_executable(driver_node src/driver_node_main.cpp)
@@ -254,8 +261,8 @@ or utilities in the same package.
   <depend>sensor_msgs</depend>
   <depend>my_robot_interfaces</depend>
 
-  <!-- Build-only deps -->
-  <build_depend>rclcpp_components</build_depend>
+  <!-- Needed at build and runtime (component container loads the shared lib) -->
+  <depend>rclcpp_components</depend>
 
   <!-- Test deps -->
   <test_depend>ament_lint_auto</test_depend>
@@ -322,16 +329,21 @@ colcon build --mixin ccache
 
 ```bash
 # Limit parallel link jobs (linking is memory-heavy)
-colcon build --cmake-args -DCMAKE_JOB_POOL_LINK=2
+# Use --parallel-workers to reduce package-level parallelism
+colcon build --parallel-workers 2
+# Or set MAKEFLAGS to limit make-level parallelism
+MAKEFLAGS="-j2" colcon build
 ```
 
 ### Selective builds in CI
 
 ```bash
-# Only build packages changed since last commit
-colcon list --packages-above-depth 0 \
-  --packages-select-by-dep $(git diff --name-only HEAD~1 | \
-  xargs -I{} colcon list --packages-above {})
+# Only build packages that contain changed files (and their dependents)
+CHANGED_DIRS=$(git diff --name-only HEAD~1 | xargs -I{} dirname {} | sort -u)
+CHANGED_PKGS=$(colcon list -n --base-paths $CHANGED_DIRS 2>/dev/null | tr '\n' ' ')
+if [ -n "$CHANGED_PKGS" ]; then
+  colcon build --packages-above $CHANGED_PKGS
+fi
 ```
 
 ## 8. Dependency management
@@ -369,18 +381,18 @@ rosdep update
 ```yaml
 # repos.yaml
 repositories:
-  src/my_robot_driver:
+  my_robot_driver:
     type: git
     url: https://github.com/org/my_robot_driver.git
     version: jazzy
-  src/my_robot_interfaces:
+  my_robot_interfaces:
     type: git
     url: https://github.com/org/my_robot_interfaces.git
     version: jazzy
 ```
 
 ```bash
-vcs import src < repos.yaml
+vcs import src < repos.yaml   # clones into src/my_robot_driver, src/my_robot_interfaces
 vcs pull src
 ```
 

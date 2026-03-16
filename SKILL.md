@@ -57,14 +57,15 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 
 Always ask which ROS 2 distribution the user targets. Key differences:
 
-| Feature                   | Humble (LTS)       | Iron               | Jazzy (LTS)        | Rolling            |
-|---------------------------|--------------------|--------------------|--------------------|--------------------|
-| EOL                       | May 2027           | Nov 2024 (EOL)     | May 2029           | Rolling            |
-| Default DDS               | CycloneDDS         | CycloneDDS         | CycloneDDS         | CycloneDDS         |
-| Default build type        | ament_cmake        | ament_cmake        | ament_cmake        | ament_cmake        |
-| Type description support  | No                 | Yes                | Yes                | Yes                |
-| Service introspection     | No                 | No                 | Yes                | Yes                |
-| ros2_control interface    | 2.x                | 3.x                | 4.x                | Latest             |
+| Feature                   | Foxy (LTS, **EOL**) | Humble (LTS)       | Jazzy (LTS)        | Rolling            |
+|---------------------------|----------------------|--------------------|--------------------|--------------------|
+| EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Rolling            |
+| Ubuntu                    | 20.04               | 22.04              | 24.04              | Latest             |
+| Default DDS               | Fast DDS             | CycloneDDS         | CycloneDDS         | CycloneDDS         |
+| Default build type        | ament_cmake          | ament_cmake        | ament_cmake        | ament_cmake        |
+| Type description support  | No                   | No                 | Yes                | Yes                |
+| Service introspection     | No                   | No                 | Yes                | Yes                |
+| ros2_control interface    | N/A (separate)       | 2.x                | 4.x                | Latest             |
 
 When the user does not specify, default to the latest LTS (Jazzy).
 Pin the exact distro in Dockerfile, CI, and documentation so builds are reproducible.
@@ -86,7 +87,9 @@ Choose the language based on the node's role, not personal preference.
 - The node does not sit in a latency-critical path
 
 **Mixed stacks are normal.** A typical robot has C++ drivers/controllers and Python
-orchestration/monitoring. Component composition can mix both in one process.
+orchestration/monitoring. Note: `component_container` (composition) only loads
+C++ components via pluginlib. Python nodes run as separate processes, but can
+share a launch file and communicate via zero-overhead intra-host DDS.
 
 ### 3. Package structure conventions
 
@@ -159,7 +162,7 @@ Always check compatibility with `ros2 topic info -v` when debugging.
 | Node        | `snake_case`                | `joint_state_broadcaster`      |
 | Topic       | `/snake_case` with ns       | `/arm/joint_states`            |
 | Service     | `/snake_case`               | `/arm/set_mode`                |
-| Action      | `/PascalCase`               | `/arm/FollowJointTrajectory`   |
+| Action      | `/snake_case`               | `/arm/follow_joint_trajectory` |
 | Parameter   | `snake_case` with dot ns    | `controller.publish_rate`      |
 | Frame       | `snake_case`                | `base_link`, `camera_optical`  |
 | Interface   | `PascalCase.msg/srv/action` | `JointState.msg`               |
@@ -191,7 +194,7 @@ hardware drivers, sensor pipelines, planners, controllers.
                  └──────┬───────┘
             on_activate  │
                  ┌──────▼───────┐
-                 │    Active     │ ◄── on_activate
+                 │    Active     │
                  └──────┬───────┘
            on_deactivate │
                  ┌──────▼───────┐
@@ -236,18 +239,34 @@ and how it shuts down. It also makes error recovery predictable.
 | Publishing in constructor | Subscribers may not be ready, messages lost | Publish in `on_activate` or after a short timer |
 | Ignoring QoS compatibility | Silent communication failure | Match publisher/subscriber QoS or check with `ros2 topic info -v` |
 | Creating timers/subs in callbacks | Resource leak, unpredictable behavior | Create all entities in constructor or `on_configure` |
+| Synchronous service call in callback | Deadlocks the executor thread | Use `async_send_request` with a callback or dedicated thread |
 
 ## Distro-specific migration notes
 
 When upgrading between distributions, check these breaking changes first:
 
+**Foxy → Humble:**
+- Complete API overhaul. Foxy packages require significant rework.
+- `ros2_control` was not bundled in Foxy — must be built separately.
+- Lifecycle node API stabilized in Humble.
+- Action server/client API changed significantly.
+
 **Humble → Jazzy:**
-- `ros2_control` API changed from 2.x to 4.x — `HardwareInterface` read/write
-  signatures differ. See `references/hardware-interface.md`.
+- `ros2_control` API changed from 2.x to 4.x — `export_state_interfaces()` and
+  `export_command_interfaces()` are now auto-generated by the framework. Manual
+  overrides use `on_export_state_interfaces()`. See `references/hardware-interface.md`.
+- Handle `get_value()` deprecated → use `get_optional<T>()` on `LoanedStateInterface` /
+  `LoanedCommandInterface` (controller side). Hardware interfaces use `set_state()` /
+  `get_state()` / `set_command()` / `get_command()` helpers with fully qualified names.
+- All joints in `<ros2_control>` tag must exist in the URDF.
+- Controller parameter loading changed — use `--param-file` with spawner.
 - Default middleware changed internal config paths. Regenerate DDS profiles.
 - `nav2_params.yaml` schema changes in several plugins. Validate with Nav2's
   migration guide.
 - `launch_ros` actions have new parameter handling — test launch files explicitly.
+- `ament_target_dependencies()` still works but is deprecated starting from Kilted
+  (non-LTS, May 2025). Prefer `target_link_libraries()` with modern CMake targets
+  for forward compatibility.
 
 **ROS 1 → ROS 2:**
 - See `references/migration-ros1.md` for a step-by-step strategy.

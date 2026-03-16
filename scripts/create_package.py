@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -44,6 +45,8 @@ target_include_directories(${{PROJECT_NAME}}_lib PUBLIC
   $<INSTALL_INTERFACE:include/${{PROJECT_NAME}}>
 )
 ament_target_dependencies(${{PROJECT_NAME}}_lib rclcpp rclcpp_lifecycle)
+# NOTE: ament_target_dependencies() is deprecated from Kilted (May 2025).
+# For forward compat, prefer: target_link_libraries(${{PROJECT_NAME}}_lib PUBLIC rclcpp::rclcpp ...)
 
 add_executable({name}_node src/main.cpp)
 target_link_libraries({name}_node ${{PROJECT_NAME}}_lib)
@@ -104,25 +107,29 @@ namespace {name}
   RCLCPP_INFO(get_logger(), "Node created");
 }}
 
-CallbackReturn {class_name}Node::on_configure(const rclcpp_lifecycle::State &)
+{class_name}Node::CallbackReturn
+{class_name}Node::on_configure(const rclcpp_lifecycle::State &)
 {{
   RCLCPP_INFO(get_logger(), "Configuring...");
   return CallbackReturn::SUCCESS;
 }}
 
-CallbackReturn {class_name}Node::on_activate(const rclcpp_lifecycle::State &)
+{class_name}Node::CallbackReturn
+{class_name}Node::on_activate(const rclcpp_lifecycle::State &)
 {{
   RCLCPP_INFO(get_logger(), "Activating...");
   return CallbackReturn::SUCCESS;
 }}
 
-CallbackReturn {class_name}Node::on_deactivate(const rclcpp_lifecycle::State &)
+{class_name}Node::CallbackReturn
+{class_name}Node::on_deactivate(const rclcpp_lifecycle::State &)
 {{
   RCLCPP_INFO(get_logger(), "Deactivating...");
   return CallbackReturn::SUCCESS;
 }}
 
-CallbackReturn {class_name}Node::on_cleanup(const rclcpp_lifecycle::State &)
+{class_name}Node::CallbackReturn
+{class_name}Node::on_cleanup(const rclcpp_lifecycle::State &)
 {{
   RCLCPP_INFO(get_logger(), "Cleaning up...");
   return CallbackReturn::SUCCESS;
@@ -137,7 +144,10 @@ CallbackReturn {class_name}Node::on_cleanup(const rclcpp_lifecycle::State &)
 int main(int argc, char ** argv)
 {{
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<{name}::{class_name}Node>());
+  auto node = std::make_shared<{name}::{class_name}Node>();
+  rclcpp::executors::SingleThreadedExecutor exe;
+  exe.add_node(node->get_node_base_interface());
+  exe.spin();
   rclcpp::shutdown();
   return 0;
 }}
@@ -150,14 +160,20 @@ int main(int argc, char ** argv)
 """)
 
     (pkg / "test" / f"test_{name}.cpp").write_text(f"""#include <gtest/gtest.h>
+#include <rclcpp/rclcpp.hpp>
 #include "{name}/{name}_node.hpp"
 
-TEST({class_name}Test, NodeCreation)
+class {class_name}Test : public ::testing::Test
 {{
-  rclcpp::init(0, nullptr);
+protected:
+  static void SetUpTestSuite() {{ rclcpp::init(0, nullptr); }}
+  static void TearDownTestSuite() {{ rclcpp::shutdown(); }}
+}};
+
+TEST_F({class_name}Test, NodeCreation)
+{{
   auto node = std::make_shared<{name}::{class_name}Node>();
   ASSERT_NE(node, nullptr);
-  rclcpp::shutdown();
 }}
 """)
 
@@ -202,9 +218,13 @@ class {class_name}Node(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = {class_name}Node()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
@@ -222,7 +242,8 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', []),
+        # launch files will be added here when created, e.g.:
+        # ('share/' + package_name + '/launch', ['launch/bringup.launch.py']),
         ('share/' + package_name + '/config', ['config/params.yaml']),
     ],
     install_requires=['setuptools'],
@@ -244,6 +265,24 @@ install_scripts=$base/lib/{name}
     (pkg / "config" / "params.yaml").write_text(f"""{name}:
   ros__parameters:
     publish_rate: 10.0
+""")
+
+    (pkg / "test" / f"test_{name}.py").write_text(f"""import pytest
+import rclpy
+from {name}.{name}_node import {class_name}Node
+
+
+@pytest.fixture(scope='module', autouse=True)
+def init_rclpy():
+    rclpy.init()
+    yield
+    rclpy.shutdown()
+
+
+def test_node_creation():
+    node = {class_name}Node()
+    assert node.get_name() == '{name}'
+    node.destroy_node()
 """)
 
     _write_package_xml(pkg, name, "ament_python", ["rclpy"])
@@ -275,12 +314,11 @@ project({name})
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${{PROJECT_NAME}}
   "msg/Status.msg"
   "srv/SetMode.srv"
-  DEPENDENCIES std_msgs geometry_msgs
+  DEPENDENCIES std_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)
@@ -288,7 +326,8 @@ ament_package()
 """)
 
     _write_package_xml(pkg, name, "ament_cmake",
-                       ["rosidl_default_generators", "std_msgs", "geometry_msgs"],
+                       ["std_msgs"],
+                       extra_buildtool=["rosidl_default_generators"],
                        extra_exec=["rosidl_default_runtime"],
                        extra_member=["rosidl_interface_packages"])
     print(f"Created interfaces package: {pkg}")
@@ -296,15 +335,20 @@ ament_package()
 
 def _write_package_xml(pkg: Path, name: str, build_type: str,
                        deps: list, extra_exec: list = None,
-                       extra_member: list = None) -> None:
+                       extra_member: list = None,
+                       extra_buildtool: list = None) -> None:
     dep_lines = "\n".join(f"  <depend>{d}</depend>" for d in deps)
     exec_lines = ""
     if extra_exec:
-        exec_lines = "\n".join(f"  <exec_depend>{d}</exec_depend>"
-                               for d in extra_exec)
+        exec_lines = "\n" + "\n".join(
+            f"  <exec_depend>{d}</exec_depend>" for d in extra_exec)
+    buildtool_lines = ""
+    if extra_buildtool:
+        buildtool_lines = "\n" + "\n".join(
+            f"  <buildtool_depend>{b}</buildtool_depend>" for b in extra_buildtool)
     member_lines = ""
     if extra_member:
-        member_lines = "\n".join(
+        member_lines = "\n" + "\n".join(
             f"    <member_of_group>{m}</member_of_group>" for m in extra_member)
 
     (pkg / "package.xml").write_text(f"""<?xml version="1.0"?>
@@ -317,16 +361,14 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
   <maintainer email="todo@todo.com">TODO</maintainer>
   <license>Apache-2.0</license>
 
-  <buildtool_depend>{build_type}</buildtool_depend>
-{dep_lines}
-{exec_lines}
+  <buildtool_depend>{build_type}</buildtool_depend>{buildtool_lines}
+{dep_lines}{exec_lines}
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>
-    <build_type>{build_type}</build_type>
-{member_lines}
+    <build_type>{build_type}</build_type>{member_lines}
   </export>
 </package>
 """)
@@ -340,6 +382,12 @@ def main():
                         default="cpp", help="Package type")
     parser.add_argument("--dest", default=".", help="Destination directory")
     args = parser.parse_args()
+
+    if not re.match(r'^[a-z][a-z0-9_]*$', args.name):
+        print(f"Error: Package name '{args.name}' is invalid. "
+              "Use snake_case (lowercase letters, digits, underscores; "
+              "must start with a letter).", file=sys.stderr)
+        sys.exit(1)
 
     dest = Path(args.dest)
     if not dest.exists():
