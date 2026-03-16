@@ -44,6 +44,7 @@ framework; detailed patterns, code templates, and anti-patterns live in the
 | Unit tests, integration tests, launch_testing, CI | `references/testing.md`          |
 | ros2 doctor, tracing, profiling, rosbag2          | `references/debugging.md`        |
 | Docker, cross-compile, fleet deployment, OTA      | `references/deployment.md`       |
+| Message types, units, covariance, frame conventions | `references/message-types.md`    |
 | ROS 1 migration, ros1_bridge, hybrid operation    | `references/migration-ros1.md`   |
 
 When a task spans multiple domains, read all relevant files and reconcile
