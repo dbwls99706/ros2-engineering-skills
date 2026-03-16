@@ -212,6 +212,57 @@ auto group = this->create_callback_group(
 Use when callbacks are independent or when you need maximum throughput and can
 handle your own synchronization.
 
+### Critical pattern: calling a service from a callback
+
+If you call a service from within a subscription or timer callback, the service
+client **must** be on a different callback group than the caller. Otherwise the
+executor deadlocks — the callback is waiting for the service response, but the
+executor cannot process the response because the callback group is occupied.
+
+```cpp
+// WRONG — deadlocks with SingleThreadedExecutor or same MutuallyExclusive group
+void timer_callback() {
+  auto future = client_->async_send_request(request);
+  auto result = rclcpp::spin_until_future_complete(shared_from_this(), future);
+  // This blocks the executor, which cannot deliver the response → deadlock
+}
+
+// CORRECT — use a separate callback group + async handling
+class MyNode : public rclcpp::Node {
+public:
+  MyNode() : Node("my_node") {
+    // Timer in default group
+    timer_ = create_wall_timer(1s, std::bind(&MyNode::timer_callback, this));
+
+    // Service client in a SEPARATE callback group
+    client_group_ = create_callback_group(
+      rclcpp::CallbackGroupType::MutuallyExclusive);
+    client_ = create_client<MySrv>("my_service",
+      rmw_qos_profile_services_default, client_group_);
+  }
+
+private:
+  void timer_callback() {
+    auto request = std::make_shared<MySrv::Request>();
+    // Use async with a response callback — does NOT block the executor
+    client_->async_send_request(request,
+      [this](rclcpp::Client<MySrv>::SharedFuture future) {
+        auto response = future.get();
+        RCLCPP_INFO(get_logger(), "Got response: %s", response->message.c_str());
+      });
+  }
+
+  rclcpp::CallbackGroup::SharedPtr client_group_;
+  rclcpp::Client<MySrv>::SharedPtr client_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+```
+
+**Rule:** When using `MultiThreadedExecutor`, always put service clients in a
+separate `MutuallyExclusiveCallbackGroup` from the callbacks that invoke them.
+With `SingleThreadedExecutor`, never use `spin_until_future_complete` inside a
+callback — always use the async callback pattern shown above.
+
 ### The default group trap
 
 If you do not assign a callback group, all callbacks go into the node's default
@@ -228,6 +279,9 @@ auto sensor_group = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
 // Group 2: state machine callbacks (mutually exclusive — shared state)
 auto state_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
+// Group 3: service clients (separate from callers to avoid deadlock)
+auto client_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
 // Assign explicitly
 rclcpp::SubscriptionOptions sensor_opts;
 sensor_opts.callback_group = sensor_group;
@@ -237,12 +291,20 @@ imu_sub_ = create_subscription<Imu>("/imu", 10, imu_cb, sensor_opts);
 rclcpp::SubscriptionOptions state_opts;
 state_opts.callback_group = state_group;
 cmd_sub_ = create_subscription<Twist>("/cmd_vel", 10, cmd_cb, state_opts);
+
+// Service client on its own group — safe to call from sensor or state callbacks
+mode_client_ = create_client<SetMode>("/set_mode",
+  rmw_qos_profile_services_default, client_group);
 ```
 
 ## 4. Intra-process communication
 
-When multiple nodes run in the same process (via composition), you can
-eliminate serialization overhead entirely.
+When multiple nodes run in the same process, you can eliminate serialization
+overhead entirely. This works for **any** nodes sharing a process — whether
+loaded as composable components, manually instantiated in the same `main()`,
+or even publishers and subscribers within the same node. Composition via
+`ComposableNodeContainer` is the most common way to colocate nodes, but it
+is not the only way.
 
 ```cpp
 rclcpp::NodeOptions options;
@@ -275,7 +337,7 @@ void callback(const sensor_msgs::msg::Image::ConstSharedPtr msg) {
 
 **Limitations:**
 - Does not work across processes (falls back to DDS)
-- All nodes must be loaded as components
+- Every participating node must enable `use_intra_process_comms(true)` in its `NodeOptions`
 - `KEEP_ALL` history breaks zero-copy optimization
 
 ## 5. Custom executors
@@ -407,4 +469,5 @@ class ImageProcessor : public rclcpp::Node
 | Memory growing over time | Unbounded queue + slow subscriber | Use `KEEP_LAST` with depth, or process faster |
 | Callbacks run serially despite MultiThreadedExecutor | All in default MutuallyExclusive group | Assign Reentrant callback group explicitly |
 | Timer drifts under load | Wall timer + heavy callbacks | Use a dedicated callback group or reduce callback work |
-| Intra-process not working | Missing `use_intra_process_comms(true)` or not in same container | Enable in NodeOptions, load into same ComposableNodeContainer |
+| Intra-process not working | Missing `use_intra_process_comms(true)` or nodes not in same process | Enable in NodeOptions for all participating nodes; ensure they run in the same process (composition, same main(), etc.) |
+| Service call deadlocks executor | Service client in same callback group as caller | Put service client in a separate MutuallyExclusiveCallbackGroup; use async_send_request with callback |

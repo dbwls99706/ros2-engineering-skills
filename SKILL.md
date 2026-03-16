@@ -92,6 +92,10 @@ orchestration/monitoring. Note: `component_container` (composition) only loads
 C++ components via pluginlib. Python nodes run as separate processes, but can
 share a launch file and communicate via zero-overhead intra-host DDS.
 
+**Intra-process communication** works for any nodes sharing a process — not only
+composable components. Any nodes instantiated in the same process with
+`use_intra_process_comms(true)` can use zero-copy transfer.
+
 ### 3. Package structure conventions
 
 Every package should follow this layout. Consistency across a workspace reduces
@@ -174,6 +178,11 @@ Always check compatibility with `ros2 topic info -v` when debugging.
   shared state without locks, but limits throughput.
 - A `ReentrantCallbackGroup` allows parallel execution — you must protect
   shared state with `std::mutex` (C++) or `threading.Lock` (Python).
+- **Calling a service from a callback:** The service client **must** be in a
+  separate `MutuallyExclusiveCallbackGroup` from the calling callback. Otherwise
+  the executor deadlocks — the callback waits for the response while the executor
+  cannot deliver it. Always use `async_send_request` with a response callback;
+  never use `spin_until_future_complete` inside an executor callback.
 - Never do blocking work (file I/O, long computation, `sleep`) inside a
   timer or subscription callback on the default executor. Offload to a
   dedicated thread or use a `MultiThreadedExecutor` with a reentrant group.
@@ -241,6 +250,7 @@ and how it shuts down. It also makes error recovery predictable.
 | Ignoring QoS compatibility | Silent communication failure | Match publisher/subscriber QoS or check with `ros2 topic info -v` |
 | Creating timers/subs in callbacks | Resource leak, unpredictable behavior | Create all entities in constructor or `on_configure` |
 | Synchronous service call in callback | Deadlocks the executor thread | Use `async_send_request` with a callback or dedicated thread |
+| Service client in same callback group as caller | Deadlocks even with async in `MultiThreadedExecutor` | Put service client in a separate `MutuallyExclusiveCallbackGroup` |
 
 ## Distro-specific migration notes
 

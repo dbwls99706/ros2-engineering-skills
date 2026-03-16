@@ -535,8 +535,11 @@ private:
 
 ## 8. Composition with intra-process communication
 
-When components are loaded in the same container with intra-process enabled,
-messages bypass DDS entirely — zero serialization, zero copy.
+When nodes run in the same process with intra-process enabled, messages bypass
+DDS entirely — zero serialization, zero copy. This works for any nodes sharing
+a process (composable components in a container, or nodes manually instantiated
+in the same `main()`). Composition is the most common approach, but not the
+only one.
 
 ### Enabling intra-process in launch
 
@@ -571,7 +574,7 @@ void callback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
 
 ### Requirements for zero-copy
 
-1. Both publisher and subscriber in the same `ComposableNodeContainer`
+1. Both publisher and subscriber in the same process (e.g., same `ComposableNodeContainer` or same `main()`)
 2. Both have `use_intra_process_comms: true`
 3. Publisher uses `std::unique_ptr` with `publish(std::move(msg))`
 4. QoS uses `KEEP_LAST` (not `KEEP_ALL`)
