@@ -338,14 +338,12 @@ MAKEFLAGS="-j2" colcon build
 ### Selective builds in CI
 
 ```bash
-# Only build packages affected by changes since last commit.
-# Step 1: find which packages contain changed files
-CHANGED_PKGS=$(colcon list --packages-select-by-dep \
-  --packages-up-to $(colcon list -n --base-paths \
-  $(git diff --name-only HEAD~1 | xargs -I{} dirname {} | sort -u)) 2>/dev/null)
-
-# Step 2: build only those packages and their dependents
-colcon build --packages-up-to $CHANGED_PKGS
+# Only build packages that contain changed files (and their dependents)
+CHANGED_DIRS=$(git diff --name-only HEAD~1 | xargs -I{} dirname {} | sort -u)
+CHANGED_PKGS=$(colcon list -n --base-paths $CHANGED_DIRS 2>/dev/null | tr '\n' ' ')
+if [ -n "$CHANGED_PKGS" ]; then
+  colcon build --packages-above $CHANGED_PKGS
+fi
 ```
 
 ## 8. Dependency management

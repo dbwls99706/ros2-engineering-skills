@@ -323,15 +323,15 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
     dep_lines = "\n".join(f"  <depend>{d}</depend>" for d in deps)
     exec_lines = ""
     if extra_exec:
-        exec_lines = "\n".join(f"  <exec_depend>{d}</exec_depend>"
-                               for d in extra_exec)
+        exec_lines = "\n" + "\n".join(
+            f"  <exec_depend>{d}</exec_depend>" for d in extra_exec)
     buildtool_lines = ""
     if extra_buildtool:
-        buildtool_lines = "\n".join(
+        buildtool_lines = "\n" + "\n".join(
             f"  <buildtool_depend>{b}</buildtool_depend>" for b in extra_buildtool)
     member_lines = ""
     if extra_member:
-        member_lines = "\n".join(
+        member_lines = "\n" + "\n".join(
             f"    <member_of_group>{m}</member_of_group>" for m in extra_member)
 
     (pkg / "package.xml").write_text(f"""<?xml version="1.0"?>
@@ -344,17 +344,14 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
   <maintainer email="todo@todo.com">TODO</maintainer>
   <license>Apache-2.0</license>
 
-  <buildtool_depend>{build_type}</buildtool_depend>
-{buildtool_lines}
-{dep_lines}
-{exec_lines}
+  <buildtool_depend>{build_type}</buildtool_depend>{buildtool_lines}
+{dep_lines}{exec_lines}
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>
-    <build_type>{build_type}</build_type>
-{member_lines}
+    <build_type>{build_type}</build_type>{member_lines}
   </export>
 </package>
 """)
