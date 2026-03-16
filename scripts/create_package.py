@@ -267,6 +267,24 @@ install_scripts=$base/lib/{name}
     publish_rate: 10.0
 """)
 
+    (pkg / "test" / f"test_{name}.py").write_text(f"""import pytest
+import rclpy
+from {name}.{name}_node import {class_name}Node
+
+
+@pytest.fixture(scope='module', autouse=True)
+def init_rclpy():
+    rclpy.init()
+    yield
+    rclpy.shutdown()
+
+
+def test_node_creation():
+    node = {class_name}Node()
+    assert node.get_name() == '{name}'
+    node.destroy_node()
+""")
+
     _write_package_xml(pkg, name, "ament_python", ["rclpy"])
     print(f"Created Python package: {pkg}")
 
@@ -296,12 +314,11 @@ project({name})
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${{PROJECT_NAME}}
   "msg/Status.msg"
   "srv/SetMode.srv"
-  DEPENDENCIES std_msgs geometry_msgs
+  DEPENDENCIES std_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)
@@ -309,7 +326,7 @@ ament_package()
 """)
 
     _write_package_xml(pkg, name, "ament_cmake",
-                       ["std_msgs", "geometry_msgs"],
+                       ["std_msgs"],
                        extra_buildtool=["rosidl_default_generators"],
                        extra_exec=["rosidl_default_runtime"],
                        extra_member=["rosidl_interface_packages"])
