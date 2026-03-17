@@ -1,0 +1,71 @@
+name: Test
+
+on:
+  push:
+    branches: [main, master, 'claude/**']
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # -------------------------------------------------------
+  # Job 1: Pure-Python unit tests (fast, no Docker needed)
+  # -------------------------------------------------------
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - run: python -m pytest tests/ -v --tb=short
+
+  # -------------------------------------------------------
+  # Job 2: ROS 2 distro integration tests (Docker-based)
+  # -------------------------------------------------------
+  ros2-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [humble, jazzy, rolling]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify Docker image exists
+        run: docker pull osrf/ros:${{ matrix.ros_distro }}-desktop
+
+      - name: Build and test in ROS 2 ${{ matrix.ros_distro }}
+        run: |
+          docker build \
+            -f tests/Dockerfile.ros2-test \
+            --build-arg ROS_DISTRO=${{ matrix.ros_distro }} \
+            --progress=plain \
+            -t ros2-test:${{ matrix.ros_distro }} \
+            .
+
+  # -------------------------------------------------------
+  # Job 3: Validate scripts and generated code
+  # -------------------------------------------------------
+  lint-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check scripts syntax
+        run: |
+          python -m py_compile scripts/create_package.py
+          python -m py_compile scripts/qos_checker.py
+          python -m py_compile scripts/launch_validator.py
+      - name: Run launch validator on generated packages
+        run: |
+          mkdir -p /tmp/test_pkgs
+          python scripts/create_package.py test_cpp --type cpp --dest /tmp/test_pkgs
+          python scripts/create_package.py test_py --type python --dest /tmp/test_pkgs
+          python scripts/launch_validator.py /tmp/test_pkgs/

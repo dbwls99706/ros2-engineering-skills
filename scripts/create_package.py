@@ -483,7 +483,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
     member_lines = ""
     if extra_member:
         member_lines = "\n" + "\n".join(
-            f"    <member_of_group>{m}</member_of_group>" for m in extra_member)
+            f"  <member_of_group>{m}</member_of_group>" for m in extra_member)
 
     (pkg / "package.xml").write_text(f"""<?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd"
@@ -500,9 +500,9 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
-
+{member_lines}
   <export>
-    <build_type>{build_type}</build_type>{member_lines}
+    <build_type>{build_type}</build_type>
   </export>
 </package>
 """)

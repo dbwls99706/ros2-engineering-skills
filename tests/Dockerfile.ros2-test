@@ -1,0 +1,53 @@
+# Dockerfile for testing ROS 2 code examples across distros.
+#
+# Build args:
+#   ROS_DISTRO  — humble | jazzy | rolling (default: jazzy)
+#
+# Usage:
+#   docker build -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-test:humble .
+#   docker run --rm ros2-test:humble
+
+ARG ROS_DISTRO=jazzy
+FROM osrf/ros:${ROS_DISTRO}-desktop
+
+# Re-declare ARG after FROM (Docker scoping rules)
+ARG ROS_DISTRO
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+# osrf/ros:*-desktop already includes pytest, colcon, rclcpp, rosidl, etc.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3-pytest \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ws/ros2-engineering-skills
+COPY . .
+
+# Stage 1: Pure-Python unit tests
+RUN python3 -m pytest tests/ -v --tb=short
+
+# Stage 2: Scaffold packages
+RUN mkdir -p /ws/test_ws/src \
+    && python3 scripts/create_package.py test_cpp_pkg --type cpp --dest /ws/test_ws/src \
+    && python3 scripts/create_package.py test_py_pkg --type python --dest /ws/test_ws/src \
+    && python3 scripts/create_package.py test_iface_pkg --type interfaces --dest /ws/test_ws/src
+
+# Stage 3: Build all scaffolded packages with colcon
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && cd /ws/test_ws \
+    && colcon build \
+         --executor sequential \
+         --event-handlers console_direct+ \
+         --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+
+# Stage 4: Validate generated launch files
+RUN python3 scripts/launch_validator.py /ws/test_ws/src/test_cpp_pkg/launch/ \
+    && python3 scripts/launch_validator.py /ws/test_ws/src/test_py_pkg/launch/
+
+# Stage 5: QoS checker presets
+RUN python3 scripts/qos_checker.py --preset sensor \
+    && python3 scripts/qos_checker.py --preset command \
+    && python3 scripts/qos_checker.py --preset map \
+    && python3 scripts/qos_checker.py --preset diagnostics
+
+CMD echo "All tests passed for ROS 2 ${ROS_DISTRO}!"
