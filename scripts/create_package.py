@@ -485,7 +485,6 @@ def create_python_package(name: str, dest: Path,
         (pkg / name / f"{name}_node.py").write_text(py_header + f"""
 import rclpy
 from rclpy.node import Node
-from rclpy.qos_event import QoSEventHandler
 
 
 class {class_name}Node(Node):
