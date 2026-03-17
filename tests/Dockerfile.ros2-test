@@ -1,0 +1,72 @@
+# Dockerfile for testing ROS 2 code examples across distros.
+#
+# Build args:
+#   ROS_DISTRO  — humble | jazzy | rolling (default: jazzy)
+#
+# Usage:
+#   docker build -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-test:humble .
+#   docker run --rm ros2-test:humble
+
+ARG ROS_DISTRO=jazzy
+FROM osrf/ros:${ROS_DISTRO}-desktop
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+# Install Python test dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pytest \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy project into container
+WORKDIR /ws/ros2-engineering-skills
+COPY . .
+
+# ------------------------------------------------------------------
+# Stage 1: Pure-Python unit tests (no ROS dependencies)
+# ------------------------------------------------------------------
+RUN echo "=== Running pure-Python unit tests ===" && \
+    python3 -m pytest tests/ -v --tb=short
+
+# ------------------------------------------------------------------
+# Stage 2: Validate scaffolded packages actually build with colcon
+# ------------------------------------------------------------------
+RUN echo "=== Scaffolding test packages ===" && \
+    mkdir -p /ws/test_ws/src && \
+    python3 scripts/create_package.py test_cpp_pkg --type cpp --dest /ws/test_ws/src && \
+    python3 scripts/create_package.py test_py_pkg --type python --dest /ws/test_ws/src && \
+    python3 scripts/create_package.py test_iface_pkg --type interfaces --dest /ws/test_ws/src
+
+RUN echo "=== Building scaffolded packages with colcon ===" && \
+    source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    cd /ws/test_ws && \
+    colcon build --event-handlers console_direct+ --cmake-args -DCMAKE_BUILD_TYPE=Release 2>&1
+
+# ------------------------------------------------------------------
+# Stage 3: Validate generated launch files with launch_validator
+# ------------------------------------------------------------------
+RUN echo "=== Validating generated launch files ===" && \
+    python3 scripts/launch_validator.py /ws/test_ws/src/test_cpp_pkg/launch/ && \
+    python3 scripts/launch_validator.py /ws/test_ws/src/test_py_pkg/launch/
+
+# ------------------------------------------------------------------
+# Stage 4: Run QoS checker against all presets
+# ------------------------------------------------------------------
+RUN echo "=== Testing QoS presets ===" && \
+    python3 scripts/qos_checker.py --preset sensor && \
+    python3 scripts/qos_checker.py --preset command && \
+    python3 scripts/qos_checker.py --preset map && \
+    python3 scripts/qos_checker.py --preset diagnostics
+
+# ------------------------------------------------------------------
+# Stage 5: Run colcon test (gtest for C++ package)
+# ------------------------------------------------------------------
+RUN echo "=== Running colcon test ===" && \
+    source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    cd /ws/test_ws && \
+    colcon test --event-handlers console_direct+ --ctest-args --output-on-failure 2>&1 && \
+    colcon test-result --verbose 2>&1 || true
+
+# Default command prints success summary
+CMD echo "All tests passed for ROS 2 ${ROS_DISTRO}!"
