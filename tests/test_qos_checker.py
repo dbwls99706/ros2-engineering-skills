@@ -206,6 +206,133 @@ class TestCLI:
         assert result.returncode == 0
 
 
+class TestParsingErrorPaths:
+    """Test error-handling paths in parse_qos_string for coverage."""
+
+    def test_invalid_durability_exits(self):
+        with pytest.raises(SystemExit):
+            parse_qos_string("reliable,invalid,keep_last,5", "test")
+
+    def test_invalid_history_exits(self):
+        with pytest.raises(SystemExit):
+            parse_qos_string("reliable,volatile,invalid,5", "test")
+
+    def test_non_numeric_depth_exits(self):
+        with pytest.raises(SystemExit):
+            parse_qos_string("reliable,volatile,keep_last,abc", "test")
+
+    def test_negative_deadline_exits(self):
+        with pytest.raises(SystemExit):
+            parse_qos_string("reliable,volatile,keep_last,5,-1,0,automatic,0", "test")
+
+    def test_negative_lifespan_exits(self):
+        with pytest.raises(SystemExit):
+            parse_qos_string("reliable,volatile,keep_last,5,0,-1,automatic,0", "test")
+
+    def test_invalid_liveliness_exits(self):
+        with pytest.raises(SystemExit):
+            parse_qos_string("reliable,volatile,keep_last,5,0,0,invalid,0", "test")
+
+    def test_negative_liveliness_lease_exits(self):
+        with pytest.raises(SystemExit):
+            parse_qos_string("reliable,volatile,keep_last,5,0,0,automatic,-1", "test")
+
+
+class TestMainFunction:
+    """Test main() directly for coverage."""
+
+    def test_main_preset(self, monkeypatch):
+        from qos_checker import main
+        monkeypatch.setattr(
+            "sys.argv", ["qos_checker.py", "--preset", "sensor"])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_custom_profiles(self, monkeypatch):
+        from qos_checker import main
+        monkeypatch.setattr(
+            "sys.argv", ["qos_checker.py",
+                         "--pub", "reliable,volatile,keep_last,1",
+                         "--sub", "reliable,volatile,keep_last,1"])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_incompatible(self, monkeypatch):
+        from qos_checker import main
+        monkeypatch.setattr(
+            "sys.argv", ["qos_checker.py",
+                         "--pub", "best_effort,volatile,keep_last,5",
+                         "--sub", "reliable,volatile,keep_last,5"])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_json_output(self, monkeypatch):
+        from qos_checker import main
+        monkeypatch.setattr(
+            "sys.argv", ["qos_checker.py",
+                         "--preset", "command", "--json"])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_no_args_exits(self, monkeypatch):
+        from qos_checker import main
+        monkeypatch.setattr("sys.argv", ["qos_checker.py"])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+
+class TestPrintFunctions:
+    """Test print/display functions for coverage."""
+
+    def test_print_result_compatible(self, capsys):
+        from qos_checker import print_result
+        pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE,
+                         History.KEEP_LAST, 1, "Pub")
+        sub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE,
+                         History.KEEP_LAST, 1, "Sub")
+        result = check_compatibility(pub, sub)
+        print_result(pub, sub, result)
+        captured = capsys.readouterr()
+        assert "COMPATIBLE" in captured.out
+
+    def test_print_result_incompatible(self, capsys):
+        from qos_checker import print_result
+        pub = QoSProfile(Reliability.BEST_EFFORT, Durability.VOLATILE,
+                         History.KEEP_LAST, 5, "Pub")
+        sub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE,
+                         History.KEEP_LAST, 5, "Sub")
+        result = check_compatibility(pub, sub)
+        print_result(pub, sub, result)
+        captured = capsys.readouterr()
+        assert "INCOMPATIBLE" in captured.out
+        assert "ERROR" in captured.out
+        assert "Suggestions" in captured.out
+
+    def test_print_result_json(self, capsys):
+        from qos_checker import print_result_json
+        pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE,
+                         History.KEEP_LAST, 1, "Pub")
+        sub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE,
+                         History.KEEP_LAST, 1, "Sub")
+        result = check_compatibility(pub, sub)
+        print_result_json(pub, sub, result)
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["compatible"] is True
+
+
+class TestVersion:
+    def test_version_flag(self):
+        result = run_script("--version")
+        assert result.returncode == 0
+        assert "0.1.0" in result.stdout
+
+
 class TestQoSProfileDisplay:
     def test_str_representation(self):
         p = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 10, "Test")

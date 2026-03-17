@@ -9,10 +9,12 @@ Usage:
 """
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
+from typing import Optional
+
+__version__ = "0.1.0"
 
 
 def _generate_launch_file(name: str, lifecycle: bool = False) -> str:
@@ -468,9 +470,10 @@ _maintainer_email = "todo@todo.com"
 
 
 def _write_package_xml(pkg: Path, name: str, build_type: str,
-                       deps: list, extra_exec: list = None,
-                       extra_member: list = None,
-                       extra_buildtool: list = None) -> None:
+                       deps: list,
+                       extra_exec: Optional[list] = None,
+                       extra_member: Optional[list] = None,
+                       extra_buildtool: Optional[list] = None) -> None:
     dep_lines = "\n".join(f"  <depend>{d}</depend>" for d in deps)
     exec_lines = ""
     if extra_exec:
@@ -511,6 +514,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
 def main():
     parser = argparse.ArgumentParser(
         description="Scaffold a ROS 2 package with best-practice structure")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("name", help="Package name (snake_case)")
     parser.add_argument("--type", choices=["cpp", "python", "interfaces"],
                         default="cpp", help="Package type")

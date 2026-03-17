@@ -8,7 +8,24 @@ on:
 
 jobs:
   # -------------------------------------------------------
-  # Job 1: Pure-Python unit tests (fast, no Docker needed)
+  # Job 1: Static analysis (flake8 + mypy)
+  # -------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install linters
+        run: pip install flake8 mypy
+      - name: flake8
+        run: flake8 scripts/ tests/
+      - name: mypy
+        run: mypy scripts/ --ignore-missing-imports
+
+  # -------------------------------------------------------
+  # Job 2: Unit tests with coverage (fast, no Docker needed)
   # -------------------------------------------------------
   unit-tests:
     runs-on: ubuntu-latest
@@ -20,11 +37,22 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install pytest
-      - run: python -m pytest tests/ -v --tb=short
+      - name: Install dependencies
+        run: pip install pytest pytest-cov hypothesis
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ -v --tb=short \
+            --cov=scripts --cov-report=term-missing --cov-report=xml \
+            --cov-fail-under=90
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
 
   # -------------------------------------------------------
-  # Job 2: ROS 2 distro integration tests (Docker-based)
+  # Job 3: ROS 2 distro integration tests (Docker-based)
   # -------------------------------------------------------
   ros2-integration:
     runs-on: ubuntu-latest
@@ -49,7 +77,7 @@ jobs:
             .
 
   # -------------------------------------------------------
-  # Job 3: Validate scripts and generated code
+  # Job 4: Validate scripts and generated code
   # -------------------------------------------------------
   lint-scripts:
     runs-on: ubuntu-latest
@@ -63,6 +91,11 @@ jobs:
           python -m py_compile scripts/create_package.py
           python -m py_compile scripts/qos_checker.py
           python -m py_compile scripts/launch_validator.py
+      - name: Verify --version works
+        run: |
+          python scripts/create_package.py --version
+          python scripts/qos_checker.py --version
+          python scripts/launch_validator.py --version
       - name: Run launch validator on generated packages
         run: |
           mkdir -p /tmp/test_pkgs

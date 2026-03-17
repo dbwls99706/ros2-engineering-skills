@@ -16,7 +16,8 @@ import json
 import sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+
+__version__ = "0.1.0"
 
 
 class Reliability(Enum):
@@ -101,12 +102,12 @@ PRESETS = {
 
 
 def parse_qos_string(qos_str: str, label: str = "") -> QoSProfile:
-    """Parse a QoS string like 'reliable,volatile,keep_last,10[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]'."""
+    """Parse a QoS string like 'reliable,volatile,keep_last,10[,...]'."""
     parts = [p.strip().lower() for p in qos_str.split(",")]
     if len(parts) not in (4, 8):
-        print(f"Error: QoS profile must have 4 or 8 comma-separated values: "
-              f"reliability,durability,history,depth"
-              f"[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]",
+        print("Error: QoS profile must have 4 or 8 comma-separated values: "
+              "reliability,durability,history,depth"
+              "[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]",
               file=sys.stderr)
         print(f"Got: {qos_str!r}", file=sys.stderr)
         sys.exit(1)
@@ -370,19 +371,28 @@ def main():
     parser = argparse.ArgumentParser(
         description="Check QoS compatibility between publisher and subscriber profiles",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog="""\
 Examples:
   %(prog)s --pub reliable,volatile,keep_last,1 --sub reliable,volatile,keep_last,1
-  %(prog)s --pub best_effort,volatile,keep_last,5 --sub reliable,volatile,keep_last,5
   %(prog)s --preset sensor
   %(prog)s --preset command
-  %(prog)s --pub reliable,volatile,keep_last,1,100,0,automatic,0 --sub reliable,volatile,keep_last,1,50,0,automatic,0 --json
+  %(prog)s --pub reliable,volatile,keep_last,1,100,0,automatic,0 \\
+           --sub reliable,volatile,keep_last,1,50,0,automatic,0 --json
 
-Extended format: reliability,durability,history,depth,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms
+Extended format: reliability,durability,history,depth,deadline_ms,
+                 lifespan_ms,liveliness,liveliness_lease_ms
 Presets: sensor, command, map, diagnostics
         """)
-    parser.add_argument("--pub", help="Publisher QoS: reliability,durability,history,depth[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]")
-    parser.add_argument("--sub", help="Subscriber QoS: reliability,durability,history,depth[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]")
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--pub",
+        help="Publisher QoS: reliability,durability,history,depth"
+             "[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]")
+    parser.add_argument(
+        "--sub",
+        help="Subscriber QoS: reliability,durability,history,depth"
+             "[,deadline_ms,lifespan_ms,liveliness,liveliness_lease_ms]")
     parser.add_argument("--preset", choices=PRESETS.keys(),
                         help="Use a predefined QoS preset")
     parser.add_argument("--json", action="store_true", default=False,

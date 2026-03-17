@@ -17,7 +17,8 @@ SHELL ["/bin/bash", "-c"]
 
 # osrf/ros:*-desktop already includes pytest, colcon, rclcpp, rosidl, etc.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3-pytest \
+    && apt-get install -y --no-install-recommends python3-pytest python3-pip \
+    && pip3 install --break-system-packages hypothesis \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ws/ros2-engineering-skills

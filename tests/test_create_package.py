@@ -3,12 +3,16 @@
 import os
 import subprocess
 import sys
-import tempfile
 import xml.etree.ElementTree as ET
 
-import pytest
-
 SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "create_package.py")
+
+# Also import the module directly for coverage tracking
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+from create_package import (
+    create_cpp_package, create_python_package, create_interfaces_package,
+    _class_name, _generate_launch_file, _generate_readme,
+)
 
 
 def run_script(*args: str, cwd: str | None = None) -> subprocess.CompletedProcess:
@@ -160,6 +164,157 @@ class TestInterfacesPackage:
         export = root.find("export")
         export_members = [m.text for m in export.findall("member_of_group")]
         assert len(export_members) == 0
+
+
+class TestDirectFunctions:
+    """Test functions directly (not via subprocess) for coverage."""
+
+    def test_class_name_conversion(self):
+        assert _class_name("my_robot") == "MyRobot"
+        assert _class_name("arm_controller") == "ArmController"
+        assert _class_name("single") == "Single"
+        assert _class_name("a_b_c") == "ABC"
+
+    def test_generate_launch_file_standard(self):
+        launch = _generate_launch_file("test_pkg")
+        assert "generate_launch_description" in launch
+        assert "Node(" in launch
+        assert "package='test_pkg'" in launch
+        assert "LifecycleNode" not in launch
+
+    def test_generate_launch_file_lifecycle(self):
+        launch = _generate_launch_file("test_pkg", lifecycle=True)
+        assert "generate_launch_description" in launch
+        assert "LifecycleNode(" in launch
+        assert "package='test_pkg'" in launch
+
+    def test_generate_readme(self):
+        readme = _generate_readme("my_pkg")
+        assert "# my_pkg" in readme
+        assert "ros2 launch my_pkg" in readme
+
+    def test_create_cpp_direct(self, tmp_path):
+        create_cpp_package("test_bot", tmp_path)
+        pkg = tmp_path / "test_bot"
+        assert (pkg / "CMakeLists.txt").exists()
+        assert (pkg / "include" / "test_bot" / "test_bot_node.hpp").exists()
+        assert (pkg / "src" / "test_bot_node.cpp").exists()
+        assert (pkg / "src" / "main.cpp").exists()
+        assert (pkg / "config" / "params.yaml").exists()
+        assert (pkg / "test" / "test_test_bot.cpp").exists()
+
+    def test_create_cpp_component_direct(self, tmp_path):
+        create_cpp_package("test_bot", tmp_path, component=True)
+        cmake = (tmp_path / "test_bot" / "CMakeLists.txt").read_text()
+        assert "rclcpp_components_register_node" in cmake
+        cpp = (tmp_path / "test_bot" / "src" / "test_bot_node.cpp").read_text()
+        assert "RCLCPP_COMPONENTS_REGISTER_NODE" in cpp
+
+    def test_create_python_direct(self, tmp_path):
+        create_python_package("test_mon", tmp_path)
+        pkg = tmp_path / "test_mon"
+        assert (pkg / "setup.py").exists()
+        assert (pkg / "setup.cfg").exists()
+        assert (pkg / "test_mon" / "__init__.py").exists()
+        assert (pkg / "test_mon" / "test_mon_node.py").exists()
+        assert (pkg / "resource" / "test_mon").exists()
+
+    def test_create_interfaces_direct(self, tmp_path):
+        create_interfaces_package("test_iface", tmp_path)
+        pkg = tmp_path / "test_iface"
+        assert (pkg / "CMakeLists.txt").exists()
+        assert (pkg / "msg" / "Status.msg").exists()
+        assert (pkg / "srv" / "SetMode.srv").exists()
+
+
+class TestMainFunction:
+    """Test main() directly for coverage."""
+
+    def test_main_creates_package(self, tmp_path, monkeypatch):
+        from create_package import main
+        monkeypatch.setattr(
+            "sys.argv",
+            ["create_package.py", "test_pkg", "--type", "cpp",
+             "--dest", str(tmp_path)])
+        main()
+        assert (tmp_path / "test_pkg" / "CMakeLists.txt").exists()
+
+    def test_main_invalid_name_exits(self, tmp_path, monkeypatch):
+        from create_package import main
+        import pytest as _pytest
+        monkeypatch.setattr(
+            "sys.argv",
+            ["create_package.py", "BadName", "--type", "cpp",
+             "--dest", str(tmp_path)])
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_overwrite_protection_exits(self, tmp_path, monkeypatch):
+        from create_package import main
+        import pytest as _pytest
+        # Create first
+        monkeypatch.setattr(
+            "sys.argv",
+            ["create_package.py", "test_pkg", "--type", "cpp",
+             "--dest", str(tmp_path)])
+        main()
+        # Try again without --force
+        monkeypatch.setattr(
+            "sys.argv",
+            ["create_package.py", "test_pkg", "--type", "cpp",
+             "--dest", str(tmp_path)])
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_python_type(self, tmp_path, monkeypatch):
+        from create_package import main
+        monkeypatch.setattr(
+            "sys.argv",
+            ["create_package.py", "py_pkg", "--type", "python",
+             "--dest", str(tmp_path)])
+        main()
+        assert (tmp_path / "py_pkg" / "setup.py").exists()
+
+    def test_main_interfaces_type(self, tmp_path, monkeypatch):
+        from create_package import main
+        monkeypatch.setattr(
+            "sys.argv",
+            ["create_package.py", "iface_pkg", "--type", "interfaces",
+             "--dest", str(tmp_path)])
+        main()
+        assert (tmp_path / "iface_pkg" / "msg" / "Status.msg").exists()
+
+    def test_main_creates_dest_if_missing(self, tmp_path, monkeypatch):
+        from create_package import main
+        dest = tmp_path / "new_dir"
+        monkeypatch.setattr(
+            "sys.argv",
+            ["create_package.py", "test_pkg", "--type", "cpp",
+             "--dest", str(dest)])
+        main()
+        assert (dest / "test_pkg" / "CMakeLists.txt").exists()
+
+    def test_main_maintainer_args(self, tmp_path, monkeypatch):
+        from create_package import main
+        monkeypatch.setattr(
+            "sys.argv",
+            ["create_package.py", "test_pkg", "--type", "cpp",
+             "--dest", str(tmp_path),
+             "--maintainer-name", "Bot",
+             "--maintainer-email", "bot@test.com"])
+        main()
+        xml = (tmp_path / "test_pkg" / "package.xml").read_text()
+        assert "Bot" in xml
+        assert "bot@test.com" in xml
+
+
+class TestVersion:
+    def test_version_flag(self):
+        result = run_script("--version")
+        assert result.returncode == 0
+        assert "0.1.0" in result.stdout
 
 
 class TestValidation:
