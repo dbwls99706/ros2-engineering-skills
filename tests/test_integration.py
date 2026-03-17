@@ -829,7 +829,7 @@ class TestQoSEventCallbacksInGeneratedCode:
                / "qos_node_node.hpp").read_text()
         assert "on_offered_qos_incompatible" in hpp
         assert "on_requested_qos_incompatible" in hpp
-        assert "qos_event" in hpp
+        assert "QOSOfferedIncompatibleQoSInfo" in hpp
 
     def test_cpp_source_has_qos_implementations(self, tmp_path):
         create_cpp_package("qos_node", tmp_path)

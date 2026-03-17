@@ -235,7 +235,7 @@ ament_package()
         cpp_header + f"""
 #pragma once
 
-#include <rclcpp/qos_event.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 namespace {name}
