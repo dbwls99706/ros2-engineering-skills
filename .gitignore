@@ -8,3 +8,11 @@ __pycache__/
 *~
 .DS_Store
 skills/
+
+# Testing artifacts
+.coverage
+coverage.xml
+htmlcov/
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
