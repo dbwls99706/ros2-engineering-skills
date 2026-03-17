@@ -384,7 +384,7 @@ def check_raw_patterns(filepath: str, source: str) -> list[Issue]:
             continue
 
         # Check for hardcoded paths
-        if re.search(r'["\'][/~][\w/]+\.(yaml|urdf|xacro|rviz)', line):
+        if re.search(r'["\'][/~][\w/\-\.]+\.(yaml|urdf|xacro|rviz)', line):
             if "FindPackageShare" not in line and "PathJoinSubstitution" not in line:
                 issues.append(Issue(
                     filepath, i, "warning",

@@ -663,7 +663,7 @@ def test_pep257():
 
     py_deps = ["rclpy"]
     if lifecycle:
-        py_deps.append("rclpy_lifecycle")
+        py_deps.append("lifecycle_msgs")
     _write_package_xml(pkg, name, "ament_python", py_deps,
                        maintainer_name=maintainer_name,
                        maintainer_email=maintainer_email,
@@ -908,6 +908,9 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {{
   RCLCPP_INFO(rclcpp::get_logger("{name}"), "Deactivating...");
+  // SAFETY: Zero all commands to prevent the robot from holding
+  // the last commanded velocity/position on shutdown.
+  std::fill(hw_commands_.begin(), hw_commands_.end(), 0.0);
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
 
@@ -1029,7 +1032,8 @@ PLUGINLIB_EXPORT_CLASS(
     (pkg / "test" / f"test_{name}.cpp").write_text(
         cpp_header + f"""
 #include <gtest/gtest.h>
-#include <hardware_interface/resource_manager.hpp>
+#include <hardware_interface/system_interface.hpp>
+#include <pluginlib/class_loader.hpp>
 
 TEST({class_name}Test, PluginLoadable)
 {{

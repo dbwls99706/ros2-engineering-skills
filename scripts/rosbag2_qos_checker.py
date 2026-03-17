@@ -106,12 +106,14 @@ def _parse_yaml_qos(qos_dict: dict, label: str = "") -> Optional[QoSProfile]:
 
 
 def _extract_duration_ms(val: object) -> int:
-    """Extract milliseconds from rosbag2 duration formats."""
+    """Extract milliseconds from rosbag2 duration formats.
+
+    rosbag2 metadata stores durations as nanoseconds (int) or as
+    {"sec": N, "nsec": N} dicts.  We always convert to milliseconds.
+    """
     if isinstance(val, (int, float)):
-        # Could be nanoseconds (common in rosbag2)
-        if val > 1_000_000:  # > 1ms in ns
-            return int(val / 1_000_000)
-        return int(val)
+        # rosbag2 stores durations in nanoseconds
+        return int(val / 1_000_000)
     if isinstance(val, dict):
         sec = int(val.get("sec", 0))
         nsec = int(val.get("nsec", 0) or val.get("nanosec", 0))

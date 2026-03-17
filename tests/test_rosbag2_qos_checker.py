@@ -141,7 +141,12 @@ class TestExtractDurationMs:
         assert _extract_duration_ms({"sec": 2, "nsec": 0}) == 2000
 
     def test_small_int(self):
-        assert _extract_duration_ms(100) == 100
+        # 100 nanoseconds = 0 milliseconds (truncated)
+        assert _extract_duration_ms(100) == 0
+
+    def test_millisecond_range_int(self):
+        # 5,000,000 nanoseconds = 5 milliseconds
+        assert _extract_duration_ms(5_000_000) == 5
 
     def test_zero(self):
         assert _extract_duration_ms(0) == 0
