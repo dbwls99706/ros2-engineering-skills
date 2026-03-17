@@ -401,7 +401,7 @@ Examples:
 
 Extended format: reliability,durability,history,depth,deadline_ms,
                  lifespan_ms,liveliness,liveliness_lease_ms
-Presets: sensor, command, map, diagnostics
+Presets: sensor, command, map, diagnostics, parameter_events, action_feedback, safety_heartbeat
         """)
     parser.add_argument("--version", action="version",
                         version=f"%(prog)s {__version__}")

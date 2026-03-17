@@ -197,7 +197,7 @@ target_link_libraries(${{PROJECT_NAME}}_lib PUBLIC
   rclcpp::rclcpp
   rclcpp_lifecycle::rclcpp_lifecycle
 )
-# Legacy fallback (deprecated from Kilted, May 2025):
+# Legacy fallback (deprecated since Kilted; prefer target_link_libraries):
 # ament_target_dependencies(${{PROJECT_NAME}}_lib rclcpp rclcpp_lifecycle)
 {component_cmake}
 add_executable({name}_node src/main.cpp)
@@ -395,8 +395,8 @@ from rclpy.node import Node
 
 class {class_name}Node(Node):
 
-    def __init__(self):
-        super().__init__('{name}')
+    def __init__(self, **kwargs):
+        super().__init__('{name}', **kwargs)
         self.declare_parameter('publish_rate', 50.0)
         rate = self.get_parameter('publish_rate').value
         self.timer = self.create_timer(1.0 / rate, self.timer_callback)
