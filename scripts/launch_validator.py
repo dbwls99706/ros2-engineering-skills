@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Static analysis for ROS 2 Python launch files.
+"""Static analysis for ROS 2 Python launch files (.launch.py only).
+
+XML (.launch.xml) and YAML (.launch.yaml) launch files are not supported.
 
 Usage:
     python launch_validator.py path/to/launch_dir/
@@ -349,13 +351,17 @@ def validate_directory(dirpath: str) -> ValidationResult:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Static analysis for ROS 2 Python launch files",
+        description="Static analysis for ROS 2 Python launch files "
+                    "(.launch.py only; XML/YAML launch files are not supported)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
   %(prog)s src/my_robot_bringup/launch/
   %(prog)s src/my_robot_bringup/launch/robot.launch.py
-  %(prog)s .  # Check all launch files recursively
+  %(prog)s .  # Check all .launch.py files recursively
+
+Note: Only Python launch files (.launch.py) are validated.
+      XML (.launch.xml) and YAML (.launch.yaml) files are not supported.
         """)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("path", help="Launch file or directory to validate")

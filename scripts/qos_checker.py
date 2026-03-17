@@ -98,6 +98,26 @@ PRESETS = {
         "pub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 10, "Diagnostics Publisher"),
         "sub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 10, "Diagnostics Subscriber"),
     },
+    "parameter_events": {
+        "pub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1000,
+                          "Parameter Events Publisher"),
+        "sub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1000,
+                          "Parameter Events Subscriber"),
+    },
+    "action_feedback": {
+        "pub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                          "Action Feedback Publisher"),
+        "sub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                          "Action Feedback Subscriber"),
+    },
+    "safety_heartbeat": {
+        "pub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                          "Safety Heartbeat Publisher",
+                          deadline_ms=500, lifespan_ms=1000),
+        "sub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                          "Safety Heartbeat Subscriber",
+                          deadline_ms=500, lifespan_ms=1000),
+    },
 }
 
 

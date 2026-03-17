@@ -141,7 +141,8 @@ class TestCompatibilityChecks:
 
 class TestPresets:
     def test_all_presets_exist(self):
-        expected = {"sensor", "command", "map", "diagnostics"}
+        expected = {"sensor", "command", "map", "diagnostics",
+                    "parameter_events", "action_feedback", "safety_heartbeat"}
         assert set(PRESETS.keys()) == expected
 
     def test_sensor_preset_is_best_effort(self):
@@ -151,6 +152,14 @@ class TestPresets:
     def test_map_preset_is_transient_local(self):
         assert PRESETS["map"]["pub"].durability == Durability.TRANSIENT_LOCAL
         assert PRESETS["map"]["sub"].durability == Durability.TRANSIENT_LOCAL
+
+    def test_safety_heartbeat_has_deadline(self):
+        pub = PRESETS["safety_heartbeat"]["pub"]
+        assert pub.deadline_ms == 500
+        assert pub.lifespan_ms == 1000
+
+    def test_parameter_events_depth(self):
+        assert PRESETS["parameter_events"]["pub"].depth == 1000
 
     def test_all_presets_self_compatible(self):
         for name, profiles in PRESETS.items():

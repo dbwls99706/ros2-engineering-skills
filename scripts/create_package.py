@@ -104,7 +104,9 @@ See `config/params.yaml` for default parameters.
 """
 
 
-def create_cpp_package(name: str, dest: Path, component: bool = False) -> None:
+def create_cpp_package(name: str, dest: Path, component: bool = False,
+                       maintainer_name: str = "TODO",
+                       maintainer_email: str = "todo@todo.com") -> None:
     pkg = dest / name
     dirs = [
         pkg / "include" / name,
@@ -296,11 +298,15 @@ TEST_F({class_name}Test, NodeCreation)
     deps = ["rclcpp", "rclcpp_lifecycle"]
     if component:
         deps.append("rclcpp_components")
-    _write_package_xml(pkg, name, "ament_cmake", deps)
+    _write_package_xml(pkg, name, "ament_cmake", deps,
+                       maintainer_name=maintainer_name,
+                       maintainer_email=maintainer_email)
     print(f"Created C++ package: {pkg}")
 
 
-def create_python_package(name: str, dest: Path) -> None:
+def create_python_package(name: str, dest: Path,
+                          maintainer_name: str = "TODO",
+                          maintainer_email: str = "todo@todo.com") -> None:
     pkg = dest / name
     dirs = [
         pkg / name,
@@ -408,11 +414,15 @@ def test_node_creation():
     # Generate README
     (pkg / "README.md").write_text(_generate_readme(name))
 
-    _write_package_xml(pkg, name, "ament_python", ["rclpy"])
+    _write_package_xml(pkg, name, "ament_python", ["rclpy"],
+                       maintainer_name=maintainer_name,
+                       maintainer_email=maintainer_email)
     print(f"Created Python package: {pkg}")
 
 
-def create_interfaces_package(name: str, dest: Path) -> None:
+def create_interfaces_package(name: str, dest: Path,
+                              maintainer_name: str = "TODO",
+                              maintainer_email: str = "todo@todo.com") -> None:
     pkg = dest / name
     dirs = [pkg / "msg", pkg / "srv", pkg / "action"]
     for d in dirs:
@@ -453,6 +463,8 @@ ament_package()
 
     _write_package_xml(pkg, name, "ament_cmake",
                        ["std_msgs"],
+                       maintainer_name=maintainer_name,
+                       maintainer_email=maintainer_email,
                        extra_buildtool=["rosidl_default_generators"],
                        extra_exec=["rosidl_default_runtime"],
                        extra_member=["rosidl_interface_packages"])
@@ -464,13 +476,10 @@ def _class_name(name: str) -> str:
     return "".join(w.capitalize() for w in name.split("_"))
 
 
-# Module-level defaults for maintainer info, set from CLI args in main()
-_maintainer_name = "TODO"
-_maintainer_email = "todo@todo.com"
-
-
 def _write_package_xml(pkg: Path, name: str, build_type: str,
                        deps: list,
+                       maintainer_name: str = "TODO",
+                       maintainer_email: str = "todo@todo.com",
                        extra_exec: Optional[list] = None,
                        extra_member: Optional[list] = None,
                        extra_buildtool: Optional[list] = None) -> None:
@@ -495,7 +504,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
   <name>{name}</name>
   <version>0.1.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="{_maintainer_email}">{_maintainer_name}</maintainer>
+  <maintainer email="{maintainer_email}">{maintainer_name}</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>{build_type}</buildtool_depend>{buildtool_lines}
@@ -535,11 +544,6 @@ def main():
               "must start with a letter).", file=sys.stderr)
         sys.exit(1)
 
-    # Set module-level maintainer info from CLI args
-    global _maintainer_name, _maintainer_email
-    _maintainer_name = args.maintainer_name
-    _maintainer_email = args.maintainer_email
-
     dest = Path(args.dest)
     if not dest.exists():
         dest.mkdir(parents=True)
@@ -551,10 +555,15 @@ def main():
               f"Use --force to overwrite.", file=sys.stderr)
         sys.exit(1)
 
+    m_name = args.maintainer_name
+    m_email = args.maintainer_email
     creators = {
-        "cpp": lambda name, dest: create_cpp_package(name, dest, args.component),
-        "python": create_python_package,
-        "interfaces": create_interfaces_package,
+        "cpp": lambda n, d: create_cpp_package(
+            n, d, args.component, m_name, m_email),
+        "python": lambda n, d: create_python_package(
+            n, d, m_name, m_email),
+        "interfaces": lambda n, d: create_interfaces_package(
+            n, d, m_name, m_email),
     }
     creators[args.type](args.name, dest)
 

@@ -26,31 +26,43 @@ RUN apt-get update \
 WORKDIR /ws/ros2-engineering-skills
 COPY . .
 
-# Stage 1: Pure-Python unit tests
+# Stage 1: Pure-Python unit tests on the utility scripts
 RUN python3 -m pytest tests/ -v --tb=short
 
-# Stage 2: Scaffold packages
+# Stage 2: Scaffold packages (C++, Python, interfaces)
 RUN mkdir -p /ws/test_ws/src \
     && python3 scripts/create_package.py test_cpp_pkg --type cpp --dest /ws/test_ws/src \
     && python3 scripts/create_package.py test_py_pkg --type python --dest /ws/test_ws/src \
     && python3 scripts/create_package.py test_iface_pkg --type interfaces --dest /ws/test_ws/src
 
-# Stage 3: Build all scaffolded packages with colcon
+# Stage 3: Build all scaffolded packages WITH testing enabled
+# This compiles the generated gtest targets to verify the scaffolding is valid C++.
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
     && cd /ws/test_ws \
     && colcon build \
          --executor sequential \
          --event-handlers console_direct+ \
-         --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+         --cmake-args -DCMAKE_BUILD_TYPE=Release
 
-# Stage 4: Validate generated launch files
+# Stage 4: Run generated tests (gtest for C++, lint for all)
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && cd /ws/test_ws \
+    && colcon test \
+         --executor sequential \
+         --event-handlers console_direct+ \
+    && colcon test-result --verbose
+
+# Stage 5: Validate generated launch files
 RUN python3 scripts/launch_validator.py /ws/test_ws/src/test_cpp_pkg/launch/ \
     && python3 scripts/launch_validator.py /ws/test_ws/src/test_py_pkg/launch/
 
-# Stage 5: QoS checker presets
+# Stage 6: QoS checker — all presets including safety_heartbeat with deadline/lifespan
 RUN python3 scripts/qos_checker.py --preset sensor \
     && python3 scripts/qos_checker.py --preset command \
     && python3 scripts/qos_checker.py --preset map \
-    && python3 scripts/qos_checker.py --preset diagnostics
+    && python3 scripts/qos_checker.py --preset diagnostics \
+    && python3 scripts/qos_checker.py --preset parameter_events \
+    && python3 scripts/qos_checker.py --preset action_feedback \
+    && python3 scripts/qos_checker.py --preset safety_heartbeat
 
 CMD echo "All tests passed for ROS 2 ${ROS_DISTRO}!"
