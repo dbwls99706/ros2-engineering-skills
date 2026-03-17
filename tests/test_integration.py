@@ -14,7 +14,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from create_package import create_cpp_package, create_python_package
+from create_package import (
+    create_cpp_package, create_python_package,
+    create_hardware_interface_package, _generate_fleet_launch,
+    _generate_sros2_enclave,
+)
 from launch_validator import validate_file, validate_directory
 from qos_checker import (
     QoSProfile, Reliability, Durability, History, Liveliness,
@@ -633,3 +637,210 @@ class TestCrossToolIntegration:
                 warnings = check_vendor_specific(
                     profiles["pub"], profiles["sub"], vendor)
                 assert isinstance(warnings, list)
+
+
+class TestHardwareInterfacePackage:
+    """ros2_control hardware_interface package generation."""
+
+    def test_creates_expected_structure(self, tmp_path):
+        create_hardware_interface_package("my_arm_hw", tmp_path)
+        pkg = tmp_path / "my_arm_hw"
+        assert (pkg / "CMakeLists.txt").exists()
+        assert (pkg / "package.xml").exists()
+        assert (pkg / "include" / "my_arm_hw" / "my_arm_hw_hardware.hpp").exists()
+        assert (pkg / "src" / "my_arm_hw_hardware.cpp").exists()
+        assert (pkg / "my_arm_hw_plugin.xml").exists()
+        assert (pkg / "config" / "my_arm_hw.ros2_control.xacro").exists()
+        assert (pkg / "config" / "controllers.yaml").exists()
+        assert (pkg / "test" / "test_my_arm_hw.cpp").exists()
+        assert (pkg / "README.md").exists()
+
+    def test_cmake_has_hw_interface_deps(self, tmp_path):
+        create_hardware_interface_package("hw_test", tmp_path)
+        cmake = (tmp_path / "hw_test" / "CMakeLists.txt").read_text()
+        assert "find_package(hardware_interface REQUIRED)" in cmake
+        assert "find_package(pluginlib REQUIRED)" in cmake
+        assert "pluginlib_export_plugin_description_file" in cmake
+
+    def test_header_has_system_interface(self, tmp_path):
+        create_hardware_interface_package("hw_test", tmp_path)
+        hpp = (tmp_path / "hw_test" / "include" / "hw_test"
+               / "hw_test_hardware.hpp").read_text()
+        assert "SystemInterface" in hpp
+        assert "on_init" in hpp
+        assert "on_configure" in hpp
+        assert "export_state_interfaces" in hpp
+        assert "export_command_interfaces" in hpp
+        assert "read(" in hpp
+        assert "write(" in hpp
+
+    def test_source_has_pluginlib_export(self, tmp_path):
+        create_hardware_interface_package("hw_test", tmp_path)
+        cpp = (tmp_path / "hw_test" / "src"
+               / "hw_test_hardware.cpp").read_text()
+        assert "PLUGINLIB_EXPORT_CLASS" in cpp
+        assert "HW_IF_POSITION" in cpp
+        assert "HW_IF_VELOCITY" in cpp
+
+    def test_plugin_xml_valid(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        create_hardware_interface_package("hw_test", tmp_path)
+        tree = ET.parse(tmp_path / "hw_test" / "hw_test_plugin.xml")
+        root = tree.getroot()
+        cls = root.find("class")
+        assert cls is not None
+        assert "SystemInterface" in cls.attrib["base_class_type"]
+
+    def test_xacro_has_plugin(self, tmp_path):
+        create_hardware_interface_package("hw_test", tmp_path)
+        xacro = (tmp_path / "hw_test" / "config"
+                 / "hw_test.ros2_control.xacro").read_text()
+        assert "ros2_control" in xacro
+        assert "hw_test/HwTestHardware" in xacro
+
+    def test_package_xml_deps(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        create_hardware_interface_package("hw_test", tmp_path)
+        tree = ET.parse(tmp_path / "hw_test" / "package.xml")
+        root = tree.getroot()
+        deps = [d.text for d in root.findall("depend")]
+        assert "hardware_interface" in deps
+        assert "pluginlib" in deps
+        assert "rclcpp" in deps
+
+
+class TestFleetLaunchGeneration:
+    """Multi-robot fleet launch file generation."""
+
+    def test_fleet_launch_creates_file(self, tmp_path):
+        content = _generate_fleet_launch("my_robot", 3)
+        path = tmp_path / "fleet.launch.py"
+        path.write_text(content)
+        issues = validate_file(str(path))
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) == 0
+
+    def test_fleet_launch_has_robot_namespaces(self, tmp_path):
+        content = _generate_fleet_launch("my_robot", 3)
+        assert "robot_1" in content
+        assert "robot_2" in content
+        assert "robot_3" in content
+        assert "PushRosNamespace" in content
+        assert "GroupAction" in content
+
+    def test_fleet_launch_lifecycle(self, tmp_path):
+        content = _generate_fleet_launch("my_robot", 2, lifecycle=True)
+        assert "LifecycleNode" in content
+        assert "robot_1" in content
+        assert "robot_2" in content
+
+    def test_fleet_launch_standard(self, tmp_path):
+        content = _generate_fleet_launch("my_robot", 2, lifecycle=False)
+        assert "Node(" in content
+        assert "LifecycleNode" not in content
+
+    def test_fleet_cli_integration(self, tmp_path):
+        import subprocess
+        script = os.path.join(os.path.dirname(__file__), "..",
+                              "scripts", "create_package.py")
+        result = subprocess.run(
+            [sys.executable, script, "fleet_bot", "--type", "cpp",
+             "--dest", str(tmp_path), "--robots", "3"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        fleet_launch = tmp_path / "fleet_bot" / "launch" / "fleet.launch.py"
+        assert fleet_launch.exists()
+        content = fleet_launch.read_text()
+        assert "robot_1" in content
+        assert "robot_2" in content
+        assert "robot_3" in content
+
+    def test_fleet_launch_passes_validator(self, tmp_path):
+        content = _generate_fleet_launch("test_bot", 4)
+        path = tmp_path / "fleet.launch.py"
+        path.write_text(content)
+        issues = validate_file(str(path))
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) == 0
+
+
+class TestSROS2SecurityEnclave:
+    """SROS2 security enclave scaffolding."""
+
+    def test_creates_security_files(self, tmp_path):
+        (tmp_path / "my_robot").mkdir()
+        _generate_sros2_enclave("my_robot", tmp_path)
+        sec = tmp_path / "my_robot" / "security"
+        assert (sec / "policies.xml").exists()
+        assert (sec / "governance.xml").exists()
+        assert (sec / "README.md").exists()
+        assert (sec / "enclaves" / "my_robot").exists()
+
+    def test_policies_xml_valid(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        (tmp_path / "secure_bot").mkdir()
+        _generate_sros2_enclave("secure_bot", tmp_path)
+        tree = ET.parse(
+            tmp_path / "secure_bot" / "security" / "policies.xml")
+        root = tree.getroot()
+        assert root.tag == "policy"
+        enclaves = root.find("enclaves")
+        assert enclaves is not None
+
+    def test_governance_xml_valid(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        (tmp_path / "secure_bot").mkdir()
+        _generate_sros2_enclave("secure_bot", tmp_path)
+        tree = ET.parse(
+            tmp_path / "secure_bot" / "security" / "governance.xml")
+        root = tree.getroot()
+        assert root.tag == "dds"
+
+    def test_sros2_cli_integration(self, tmp_path):
+        import subprocess
+        script = os.path.join(os.path.dirname(__file__), "..",
+                              "scripts", "create_package.py")
+        result = subprocess.run(
+            [sys.executable, script, "sec_robot", "--type", "cpp",
+             "--dest", str(tmp_path), "--sros2"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        sec = tmp_path / "sec_robot" / "security"
+        assert (sec / "policies.xml").exists()
+        assert (sec / "governance.xml").exists()
+
+    def test_readme_has_instructions(self, tmp_path):
+        (tmp_path / "my_robot").mkdir()
+        _generate_sros2_enclave("my_robot", tmp_path)
+        readme = (tmp_path / "my_robot" / "security" / "README.md").read_text()
+        assert "create_keystore" in readme
+        assert "create_enclave" in readme
+        assert "ROS_SECURITY_ENABLE" in readme
+
+
+class TestQoSEventCallbacksInGeneratedCode:
+    """Generated nodes must include QoS event callback infrastructure."""
+
+    def test_cpp_header_has_qos_callbacks(self, tmp_path):
+        create_cpp_package("qos_node", tmp_path)
+        hpp = (tmp_path / "qos_node" / "include" / "qos_node"
+               / "qos_node_node.hpp").read_text()
+        assert "on_offered_qos_incompatible" in hpp
+        assert "on_requested_qos_incompatible" in hpp
+        assert "qos_event" in hpp
+
+    def test_cpp_source_has_qos_implementations(self, tmp_path):
+        create_cpp_package("qos_node", tmp_path)
+        cpp = (tmp_path / "qos_node" / "src"
+               / "qos_node_node.cpp").read_text()
+        assert "on_offered_qos_incompatible" in cpp
+        assert "on_requested_qos_incompatible" in cpp
+        assert "last_policy_kind" in cpp
+
+    def test_python_node_has_qos_event_handler(self, tmp_path):
+        create_python_package("py_qos", tmp_path)
+        src = (tmp_path / "py_qos" / "py_qos" / "py_qos_node.py").read_text()
+        assert "on_qos_event" in src
+        assert "QoSEventHandler" in src

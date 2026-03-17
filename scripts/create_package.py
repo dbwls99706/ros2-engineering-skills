@@ -6,6 +6,9 @@ Usage:
     python create_package.py my_robot_monitor --type python
     python create_package.py my_robot_interfaces --type interfaces
     python create_package.py my_robot_driver --type cpp --component
+    python create_package.py my_arm_hw --type hardware_interface
+    python create_package.py my_robot --type cpp --robots 3
+    python create_package.py my_robot --type cpp --sros2
 """
 
 import argparse
@@ -232,6 +235,7 @@ ament_package()
         cpp_header + f"""
 #pragma once
 
+#include <rclcpp/qos_event.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 namespace {name}
@@ -246,6 +250,12 @@ public:
   CallbackReturn on_activate(const rclcpp_lifecycle::State &) override;
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State &) override;
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State &) override;
+
+private:
+  /// QoS event: called when a subscriber with incompatible QoS connects
+  void on_offered_qos_incompatible(rclcpp::QOSOfferedIncompatibleQoSInfo & event);
+  /// QoS event: called when a publisher with incompatible QoS is discovered
+  void on_requested_qos_incompatible(rclcpp::QOSRequestedIncompatibleQoSInfo & event);
 }};
 
 }}  // namespace {name}
@@ -296,6 +306,22 @@ namespace {name}
 {{
   RCLCPP_INFO(get_logger(), "Cleaning up...");
   return CallbackReturn::SUCCESS;
+}}
+
+void {class_name}Node::on_offered_qos_incompatible(
+  rclcpp::QOSOfferedIncompatibleQoSInfo & event)
+{{
+  RCLCPP_WARN(get_logger(),
+    "Offered incompatible QoS: policy_kind=%d, total_count=%d",
+    event.last_policy_kind, event.total_count);
+}}
+
+void {class_name}Node::on_requested_qos_incompatible(
+  rclcpp::QOSRequestedIncompatibleQoSInfo & event)
+{{
+  RCLCPP_WARN(get_logger(),
+    "Requested incompatible QoS: policy_kind=%d, total_count=%d",
+    event.last_policy_kind, event.total_count);
 }}
 
 }}  // namespace {name}
@@ -457,6 +483,7 @@ def create_python_package(name: str, dest: Path,
         (pkg / name / f"{name}_node.py").write_text(py_header + f"""
 import rclpy
 from rclpy.node import Node
+from rclpy.qos_event import QoSEventHandler
 
 
 class {class_name}Node(Node):
@@ -470,6 +497,12 @@ class {class_name}Node(Node):
 
     def timer_callback(self):
         pass  # Implement your logic here
+
+    # QoS event callbacks — attach to publishers/subscribers via
+    # event_callbacks=QoSEventHandler(incompatible_qos_callback=self.on_qos_event)
+    def on_qos_event(self, event):
+        self.get_logger().warn(
+            f'QoS incompatibility detected: {{event.last_policy_kind}}')
 
 
 def main(args=None):
@@ -694,6 +727,491 @@ ament_package()
     print(f"Created interfaces package: {pkg}")
 
 
+def create_hardware_interface_package(
+    name: str, dest: Path,
+    maintainer_name: str = "TODO",
+    maintainer_email: str = "todo@todo.com",
+) -> None:
+    """Generate a ros2_control hardware_interface package (C++)."""
+    pkg = dest / name
+    dirs = [
+        pkg / "include" / name,
+        pkg / "src",
+        pkg / "config",
+        pkg / "test",
+    ]
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+
+    cpp_header = _copyright_cpp(maintainer_name)
+    class_name = _class_name(name)
+
+    # --- CMakeLists.txt ---
+    (pkg / "CMakeLists.txt").write_text(f"""cmake_minimum_required(VERSION 3.8)
+project({name})
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+find_package(ament_cmake REQUIRED)
+find_package(hardware_interface REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
+
+add_library(${{PROJECT_NAME}} SHARED
+  src/{name}_hardware.cpp
+)
+target_include_directories(${{PROJECT_NAME}} PUBLIC
+  $<BUILD_INTERFACE:${{CMAKE_CURRENT_SOURCE_DIR}}/include>
+  $<INSTALL_INTERFACE:include/${{PROJECT_NAME}}>
+)
+target_link_libraries(${{PROJECT_NAME}} PUBLIC
+  hardware_interface::hardware_interface
+  pluginlib::pluginlib
+  rclcpp::rclcpp
+  rclcpp_lifecycle::rclcpp_lifecycle
+)
+
+pluginlib_export_plugin_description_file(hardware_interface {name}_plugin.xml)
+
+install(TARGETS ${{PROJECT_NAME}}
+  EXPORT export_${{PROJECT_NAME}}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+install(DIRECTORY include/ DESTINATION include/${{PROJECT_NAME}})
+install(DIRECTORY config DESTINATION share/${{PROJECT_NAME}})
+
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_{name} test/test_{name}.cpp)
+  target_link_libraries(test_{name} ${{PROJECT_NAME}})
+endif()
+
+ament_export_targets(export_${{PROJECT_NAME}} HAS_LIBRARY_TARGET)
+ament_export_dependencies(hardware_interface pluginlib rclcpp rclcpp_lifecycle)
+ament_package()
+""")
+
+    # --- Header ---
+    (pkg / "include" / name / f"{name}_hardware.hpp").write_text(
+        cpp_header + f"""
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include <hardware_interface/system_interface.hpp>
+#include <hardware_interface/handle.hpp>
+#include <hardware_interface/hardware_info.hpp>
+#include <hardware_interface/types/hardware_interface_return_values.hpp>
+#include <rclcpp/macros.hpp>
+#include <rclcpp_lifecycle/state.hpp>
+
+namespace {name}
+{{
+
+class {class_name}Hardware : public hardware_interface::SystemInterface
+{{
+public:
+  RCLCPP_SHARED_PTR_DEFINITIONS({class_name}Hardware)
+
+  hardware_interface::CallbackReturn on_init(
+    const hardware_interface::HardwareInfo & info) override;
+
+  hardware_interface::CallbackReturn on_configure(
+    const rclcpp_lifecycle::State & previous_state) override;
+
+  hardware_interface::CallbackReturn on_activate(
+    const rclcpp_lifecycle::State & previous_state) override;
+
+  hardware_interface::CallbackReturn on_deactivate(
+    const rclcpp_lifecycle::State & previous_state) override;
+
+  hardware_interface::CallbackReturn on_cleanup(
+    const rclcpp_lifecycle::State & previous_state) override;
+
+  std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
+  std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
+
+  hardware_interface::return_type read(
+    const rclcpp::Time & time, const rclcpp::Duration & period) override;
+
+  hardware_interface::return_type write(
+    const rclcpp::Time & time, const rclcpp::Duration & period) override;
+
+private:
+  // Joint state storage
+  std::vector<double> hw_positions_;
+  std::vector<double> hw_velocities_;
+  std::vector<double> hw_commands_;
+}};
+
+}}  // namespace {name}
+""")
+
+    # --- Source ---
+    (pkg / "src" / f"{name}_hardware.cpp").write_text(
+        cpp_header + f"""
+#include "{name}/{name}_hardware.hpp"
+
+#include <hardware_interface/types/hardware_interface_type_values.hpp>
+#include <pluginlib/class_list_macros.hpp>
+#include <rclcpp/rclcpp.hpp>
+
+namespace {name}
+{{
+
+hardware_interface::CallbackReturn {class_name}Hardware::on_init(
+  const hardware_interface::HardwareInfo & info)
+{{
+  if (hardware_interface::SystemInterface::on_init(info) !=
+    hardware_interface::CallbackReturn::SUCCESS)
+  {{
+    return hardware_interface::CallbackReturn::ERROR;
+  }}
+
+  hw_positions_.resize(info_.joints.size(), 0.0);
+  hw_velocities_.resize(info_.joints.size(), 0.0);
+  hw_commands_.resize(info_.joints.size(), 0.0);
+
+  RCLCPP_INFO(rclcpp::get_logger("{name}"), "Initialized with %zu joints",
+    info_.joints.size());
+  return hardware_interface::CallbackReturn::SUCCESS;
+}}
+
+hardware_interface::CallbackReturn {class_name}Hardware::on_configure(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{{
+  RCLCPP_INFO(rclcpp::get_logger("{name}"), "Configuring...");
+  // Reset command and state values
+  std::fill(hw_positions_.begin(), hw_positions_.end(), 0.0);
+  std::fill(hw_velocities_.begin(), hw_velocities_.end(), 0.0);
+  std::fill(hw_commands_.begin(), hw_commands_.end(), 0.0);
+  return hardware_interface::CallbackReturn::SUCCESS;
+}}
+
+hardware_interface::CallbackReturn {class_name}Hardware::on_activate(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{{
+  RCLCPP_INFO(rclcpp::get_logger("{name}"), "Activating...");
+  return hardware_interface::CallbackReturn::SUCCESS;
+}}
+
+hardware_interface::CallbackReturn {class_name}Hardware::on_deactivate(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{{
+  RCLCPP_INFO(rclcpp::get_logger("{name}"), "Deactivating...");
+  return hardware_interface::CallbackReturn::SUCCESS;
+}}
+
+hardware_interface::CallbackReturn {class_name}Hardware::on_cleanup(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{{
+  RCLCPP_INFO(rclcpp::get_logger("{name}"), "Cleaning up...");
+  return hardware_interface::CallbackReturn::SUCCESS;
+}}
+
+std::vector<hardware_interface::StateInterface>
+{class_name}Hardware::export_state_interfaces()
+{{
+  std::vector<hardware_interface::StateInterface> state_interfaces;
+  for (size_t i = 0; i < info_.joints.size(); i++) {{
+    state_interfaces.emplace_back(
+      info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_positions_[i]);
+    state_interfaces.emplace_back(
+      info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_velocities_[i]);
+  }}
+  return state_interfaces;
+}}
+
+std::vector<hardware_interface::CommandInterface>
+{class_name}Hardware::export_command_interfaces()
+{{
+  std::vector<hardware_interface::CommandInterface> command_interfaces;
+  for (size_t i = 0; i < info_.joints.size(); i++) {{
+    command_interfaces.emplace_back(
+      info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_commands_[i]);
+  }}
+  return command_interfaces;
+}}
+
+hardware_interface::return_type {class_name}Hardware::read(
+  const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+{{
+  // TODO: Read actual hardware state here
+  // For simulation, mirror commands to positions:
+  for (size_t i = 0; i < hw_positions_.size(); i++) {{
+    hw_positions_[i] = hw_commands_[i];
+  }}
+  return hardware_interface::return_type::OK;
+}}
+
+hardware_interface::return_type {class_name}Hardware::write(
+  const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+{{
+  // TODO: Write commands to actual hardware here
+  return hardware_interface::return_type::OK;
+}}
+
+}}  // namespace {name}
+
+PLUGINLIB_EXPORT_CLASS(
+  {name}::{class_name}Hardware,
+  hardware_interface::SystemInterface)
+""")
+
+    # --- Plugin description XML ---
+    (pkg / f"{name}_plugin.xml").write_text(
+        f"""<library path="{name}">
+  <class name="{name}/{class_name}Hardware"
+         type="{name}::{class_name}Hardware"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      Hardware interface for {name}
+    </description>
+  </class>
+</library>
+""")
+
+    # --- ros2_control URDF snippet ---
+    (pkg / "config" / f"{name}.ros2_control.xacro").write_text(
+        f"""<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <ros2_control name="{class_name}System" type="system">
+    <hardware>
+      <plugin>{name}/{class_name}Hardware</plugin>
+    </hardware>
+    <!-- Example joint: uncomment and adapt for your robot -->
+    <!--
+    <joint name="joint_1">
+      <command_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    -->
+  </ros2_control>
+</robot>
+""")
+
+    # --- Controller config ---
+    (pkg / "config" / "controllers.yaml").write_text("""controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # Example controller: uncomment and adapt
+    # joint_trajectory_controller:
+    #   type: joint_trajectory_controller/JointTrajectoryController
+
+# joint_trajectory_controller:
+#   ros__parameters:
+#     joints:
+#       - joint_1
+#     command_interfaces:
+#       - position
+#     state_interfaces:
+#       - position
+#       - velocity
+""")
+
+    # --- Test ---
+    (pkg / "test" / f"test_{name}.cpp").write_text(
+        cpp_header + f"""
+#include <gtest/gtest.h>
+#include <hardware_interface/resource_manager.hpp>
+
+TEST({class_name}Test, PluginLoadable)
+{{
+  // Verify the plugin can be discovered by pluginlib
+  // This test validates the plugin.xml and class registration
+  ASSERT_NO_THROW({{
+    pluginlib::ClassLoader<hardware_interface::SystemInterface> loader(
+      "hardware_interface", "hardware_interface::SystemInterface");
+    auto hw = loader.createSharedInstance("{name}/{class_name}Hardware");
+    ASSERT_NE(hw, nullptr);
+  }});
+}}
+""")
+
+    # --- README ---
+    (pkg / "README.md").write_text(f"""# {name}
+
+ros2_control hardware interface package.
+
+## Usage
+
+Include the xacro snippet in your robot URDF:
+```xml
+<xacro:include filename="$(find {name})/config/{name}.ros2_control.xacro"/>
+```
+
+Load controllers:
+```bash
+ros2 launch {name} bringup.launch.py  # if using a launch file
+# or manually:
+ros2 control load_controller joint_state_broadcaster --set-state active
+```
+
+## Configuration
+
+- `config/controllers.yaml` — Controller manager configuration
+- `config/{name}.ros2_control.xacro` — Hardware interface URDF snippet
+""")
+
+    _write_package_xml(
+        pkg, name, "ament_cmake",
+        ["hardware_interface", "pluginlib", "rclcpp", "rclcpp_lifecycle"],
+        maintainer_name=maintainer_name,
+        maintainer_email=maintainer_email)
+    print(f"Created hardware_interface package: {pkg}")
+
+
+def _generate_fleet_launch(name: str, num_robots: int,
+                           lifecycle: bool = False,
+                           maintainer_name: str = "TODO") -> str:
+    """Generate a multi-robot fleet launch file with namespace isolation."""
+    header = _copyright_py(maintainer_name)
+    node_type = "LifecycleNode" if lifecycle else "Node"
+    imports = "from launch_ros.actions import Node" if not lifecycle else \
+        "from launch_ros.actions import LifecycleNode"
+
+    robot_blocks = []
+    for i in range(1, num_robots + 1):
+        robot_blocks.append(f"""
+        GroupAction(
+            scoped=True,
+            actions=[
+                PushRosNamespace('robot_{i}'),
+                {node_type}(
+                    package='{name}',
+                    executable='{name}_node',
+                    name='{name}_robot_{i}',
+                    parameters=[config],
+                    output='screen',
+                ),
+            ],
+        ),""")
+
+    robots_str = "".join(robot_blocks)
+
+    return header + f"""
+from launch import LaunchDescription
+from launch.actions import GroupAction
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.actions import PushRosNamespace
+{imports}
+from launch_ros.substitutions import FindPackageShare
+
+
+def generate_launch_description():
+    config = PathJoinSubstitution([
+        FindPackageShare('{name}'), 'config', 'params.yaml'
+    ])
+    return LaunchDescription([{robots_str}
+    ])
+"""
+
+
+def _generate_sros2_enclave(name: str, dest: Path,
+                            maintainer_name: str = "TODO") -> None:
+    """Generate SROS2 security enclave directory and policy files."""
+    enclave = dest / name / "security" / "enclaves" / name
+    enclave.mkdir(parents=True, exist_ok=True)
+
+    (dest / name / "security" / "policies.xml").write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<policy version="0.2.0">
+  <enclaves>
+    <enclave path="/{name}">
+      <profiles>
+        <profile ns="/" node="{name}">
+          <topics publish="ALLOW" subscribe="ALLOW">
+            <topic>/*</topic>
+          </topics>
+          <services reply="ALLOW" request="ALLOW">
+            <service>/*</service>
+          </services>
+          <actions call="ALLOW" execute="ALLOW">
+            <action>/*</action>
+          </actions>
+        </profile>
+      </profiles>
+    </enclave>
+  </enclaves>
+</policy>
+""")
+
+    (dest / name / "security" / "governance.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<dds xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:noNamespaceSchemaLocation="omg_shared_ca_governance.xsd">
+  <domain_access_rules>
+    <domain_rule>
+      <domains>
+        <id_range>
+          <min>0</min>
+          <max>230</max>
+        </id_range>
+      </domains>
+      <allow_unauthenticated_participants>false</allow_unauthenticated_participants>
+      <enable_join_access_control>true</enable_join_access_control>
+      <discovery_protection_kind>ENCRYPT</discovery_protection_kind>
+      <liveliness_protection_kind>ENCRYPT</liveliness_protection_kind>
+      <rtps_protection_kind>ENCRYPT</rtps_protection_kind>
+      <topic_access_rules>
+        <topic_rule>
+          <topic_expression>*</topic_expression>
+          <enable_discovery_protection>true</enable_discovery_protection>
+          <enable_liveliness_protection>true</enable_liveliness_protection>
+          <enable_read_access_control>true</enable_read_access_control>
+          <enable_write_access_control>true</enable_write_access_control>
+          <metadata_protection_kind>ENCRYPT</metadata_protection_kind>
+          <data_protection_kind>ENCRYPT</data_protection_kind>
+        </topic_rule>
+      </topic_access_rules>
+    </domain_rule>
+  </domain_access_rules>
+</dds>
+""")
+
+    (dest / name / "security" / "README.md").write_text(f"""# SROS2 Security Configuration for {name}
+
+## Quick Start
+
+```bash
+# Create a keystore
+ros2 security create_keystore ~/sros2_keystore
+
+# Generate keys for this enclave
+ros2 security create_enclave ~/sros2_keystore /{name}
+
+# Generate permissions from policies
+ros2 security create_permission ~/sros2_keystore /{name} \\
+  security/policies.xml
+
+# Run with security enabled
+export ROS_SECURITY_KEYSTORE=~/sros2_keystore
+export ROS_SECURITY_ENABLE=true
+export ROS_SECURITY_STRATEGY=Enforce
+ros2 launch {name} bringup.launch.py
+```
+
+## Files
+
+- `policies.xml` — Node-level access control policies
+- `governance.xml` — Domain-level security governance rules
+- `enclaves/{name}/` — Generated keys and certificates (after `create_enclave`)
+""")
+
+
 def _class_name(name: str) -> str:
     """Convert a snake_case package name to CamelCase class name."""
     return "".join(w.capitalize() for w in name.split("_"))
@@ -752,7 +1270,9 @@ def main():
         description="Scaffold a ROS 2 package with best-practice structure")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("name", help="Package name (snake_case)")
-    parser.add_argument("--type", choices=["cpp", "python", "interfaces"],
+    parser.add_argument("--type",
+                        choices=["cpp", "python", "interfaces",
+                                 "hardware_interface"],
                         default="cpp", help="Package type")
     parser.add_argument("--dest", default=".", help="Destination directory")
     parser.add_argument("--component", action="store_true", default=False,
@@ -764,6 +1284,10 @@ def main():
                         help="Maintainer name for package.xml (default: TODO)")
     parser.add_argument("--maintainer-email", default="todo@todo.com",
                         help="Maintainer email for package.xml (default: todo@todo.com)")
+    parser.add_argument("--robots", type=int, default=0, metavar="N",
+                        help="Generate multi-robot fleet launch for N robots")
+    parser.add_argument("--sros2", action="store_true", default=False,
+                        help="Generate SROS2 security enclave and policy files")
     parser.add_argument("--force", action="store_true", default=False,
                         help="Overwrite existing package directory")
     args = parser.parse_args()
@@ -794,8 +1318,24 @@ def main():
             n, d, m_name, m_email, lifecycle=args.lifecycle),
         "interfaces": lambda n, d: create_interfaces_package(
             n, d, m_name, m_email),
+        "hardware_interface": lambda n, d: create_hardware_interface_package(
+            n, d, m_name, m_email),
     }
     creators[args.type](args.name, dest)
+
+    # Post-creation extras
+    if args.robots > 0 and args.type in ("cpp", "python"):
+        lifecycle = args.lifecycle or args.type == "cpp"
+        fleet_content = _generate_fleet_launch(
+            args.name, args.robots, lifecycle=lifecycle,
+            maintainer_name=m_name)
+        fleet_path = dest / args.name / "launch" / "fleet.launch.py"
+        fleet_path.write_text(fleet_content)
+        print(f"  + fleet launch for {args.robots} robots: {fleet_path}")
+
+    if args.sros2:
+        _generate_sros2_enclave(args.name, dest, maintainer_name=m_name)
+        print(f"  + SROS2 security enclave: {dest / args.name / 'security'}")
 
 
 if __name__ == "__main__":
