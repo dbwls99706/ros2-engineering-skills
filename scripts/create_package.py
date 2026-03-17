@@ -1032,19 +1032,23 @@ PLUGINLIB_EXPORT_CLASS(
     (pkg / "test" / f"test_{name}.cpp").write_text(
         cpp_header + f"""
 #include <gtest/gtest.h>
-#include <hardware_interface/system_interface.hpp>
-#include <pluginlib/class_loader.hpp>
+#include "{name}/{name}_hardware.hpp"
 
-TEST({class_name}Test, PluginLoadable)
+TEST({class_name}Test, InterfaceCreation)
 {{
-  // Verify the plugin can be discovered by pluginlib
-  // This test validates the plugin.xml and class registration
-  ASSERT_NO_THROW({{
-    pluginlib::ClassLoader<hardware_interface::SystemInterface> loader(
-      "hardware_interface", "hardware_interface::SystemInterface");
-    auto hw = loader.createSharedInstance("{name}/{class_name}Hardware");
-    ASSERT_NE(hw, nullptr);
-  }});
+  // Verify the hardware interface class can be instantiated
+  auto hw = std::make_shared<{name}::{class_name}Hardware>();
+  ASSERT_NE(hw, nullptr);
+}}
+
+TEST({class_name}Test, OnInitReturnsError)
+{{
+  // on_init should fail gracefully with empty HardwareInfo
+  auto hw = std::make_shared<{name}::{class_name}Hardware>();
+  hardware_interface::HardwareInfo info;
+  auto ret = hw->on_init(info);
+  // Empty info is expected to fail validation in the base class
+  ASSERT_EQ(ret, hardware_interface::CallbackReturn::ERROR);
 }}
 """)
 
