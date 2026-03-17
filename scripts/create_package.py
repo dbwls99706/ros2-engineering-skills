@@ -367,9 +367,71 @@ TEST_F({class_name}Test, NodeCreation)
     print(f"Created C++ package: {pkg}")
 
 
+def _generate_python_lifecycle_node(name: str, class_name: str,
+                                    maintainer_name: str = "TODO") -> str:
+    """Generate a Python LifecycleNode with proper callback hooks."""
+    py_header = _copyright_py(maintainer_name)
+    return py_header + f"""
+import rclpy
+from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+
+
+class {class_name}Node(LifecycleNode):
+
+    def __init__(self, **kwargs):
+        super().__init__('{name}', **kwargs)
+        self.get_logger().info('Node created (inactive)')
+
+    def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self.declare_parameter('publish_rate', 50.0)
+        rate = self.get_parameter('publish_rate').value
+        self.get_logger().info(f'Configuring with rate={{rate}} Hz')
+        self._timer_period = 1.0 / rate
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self.timer = self.create_timer(self._timer_period, self.timer_callback)
+        self.get_logger().info('Activated')
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self.destroy_timer(self.timer)
+        self.get_logger().info('Deactivated')
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self.get_logger().info('Cleaning up')
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self.get_logger().info('Shutting down')
+        return TransitionCallbackReturn.SUCCESS
+
+    def timer_callback(self):
+        pass  # Implement your logic here
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = {class_name}Node()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+"""
+
+
 def create_python_package(name: str, dest: Path,
                           maintainer_name: str = "TODO",
-                          maintainer_email: str = "todo@todo.com") -> None:
+                          maintainer_email: str = "todo@todo.com",
+                          lifecycle: bool = False) -> None:
     pkg = dest / name
     dirs = [
         pkg / name,
@@ -388,7 +450,11 @@ def create_python_package(name: str, dest: Path,
 
     class_name = _class_name(name)
 
-    (pkg / name / f"{name}_node.py").write_text(py_header + f"""
+    if lifecycle:
+        (pkg / name / f"{name}_node.py").write_text(
+            _generate_python_lifecycle_node(name, class_name, maintainer_name))
+    else:
+        (pkg / name / f"{name}_node.py").write_text(py_header + f"""
 import rclpy
 from rclpy.node import Node
 
@@ -458,7 +524,44 @@ install_scripts=$base/lib/{name}
     publish_rate: 50.0
 """)
 
-    (pkg / "test" / f"test_{name}.py").write_text(py_header + f"""
+    if lifecycle:
+        (pkg / "test" / f"test_{name}.py").write_text(py_header + f"""
+import pytest
+import rclpy
+from {name}.{name}_node import {class_name}Node
+
+
+@pytest.fixture(scope='module', autouse=True)
+def init_rclpy():
+    rclpy.init()
+    yield
+    rclpy.shutdown()
+
+
+def test_node_creation():
+    node = {class_name}Node()
+    assert node.get_name() == '{name}'
+    node.destroy_node()
+
+
+def test_lifecycle_configure():
+    from rclpy.lifecycle import TransitionCallbackReturn
+    node = {class_name}Node()
+    ret = node.trigger_configure()
+    assert ret == TransitionCallbackReturn.SUCCESS
+    node.destroy_node()
+
+
+def test_lifecycle_activate():
+    from rclpy.lifecycle import TransitionCallbackReturn
+    node = {class_name}Node()
+    node.trigger_configure()
+    ret = node.trigger_activate()
+    assert ret == TransitionCallbackReturn.SUCCESS
+    node.destroy_node()
+""")
+    else:
+        (pkg / "test" / f"test_{name}.py").write_text(py_header + f"""
 import pytest
 import rclpy
 from {name}.{name}_node import {class_name}Node
@@ -516,14 +619,18 @@ def test_pep257():
     assert rc == 0, 'Found errors'
 """)
 
-    # Generate launch file
+    # Generate launch file (lifecycle=True if Python lifecycle package)
     (pkg / "launch" / "bringup.launch.py").write_text(
-        _generate_launch_file(name, maintainer_name=maintainer_name))
+        _generate_launch_file(name, lifecycle=lifecycle,
+                              maintainer_name=maintainer_name))
 
     # Generate README
     (pkg / "README.md").write_text(_generate_readme(name))
 
-    _write_package_xml(pkg, name, "ament_python", ["rclpy"],
+    py_deps = ["rclpy"]
+    if lifecycle:
+        py_deps.append("rclpy_lifecycle")
+    _write_package_xml(pkg, name, "ament_python", py_deps,
                        maintainer_name=maintainer_name,
                        maintainer_email=maintainer_email,
                        extra_test=["ament_copyright", "ament_flake8",
@@ -650,6 +757,9 @@ def main():
     parser.add_argument("--dest", default=".", help="Destination directory")
     parser.add_argument("--component", action="store_true", default=False,
                         help="Register as a composable node component (C++ only)")
+    parser.add_argument("--lifecycle", action="store_true", default=False,
+                        help="Use LifecycleNode pattern (Python: rclpy LifecycleNode; "
+                             "C++: already lifecycle by default)")
     parser.add_argument("--maintainer-name", default="TODO",
                         help="Maintainer name for package.xml (default: TODO)")
     parser.add_argument("--maintainer-email", default="todo@todo.com",
@@ -681,7 +791,7 @@ def main():
         "cpp": lambda n, d: create_cpp_package(
             n, d, args.component, m_name, m_email),
         "python": lambda n, d: create_python_package(
-            n, d, m_name, m_email),
+            n, d, m_name, m_email, lifecycle=args.lifecycle),
         "interfaces": lambda n, d: create_interfaces_package(
             n, d, m_name, m_email),
     }

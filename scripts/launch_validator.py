@@ -73,6 +73,11 @@ class LaunchFileVisitor(ast.NodeVisitor):
         self.issues: list[Issue] = []
         self.node_names: list[tuple[str, str, int]] = []  # (name, namespace, line)
         self.has_generate_func = False
+        self._group_namespace_stack: list[Optional[str]] = []
+        self._condition_depth: int = 0
+        self._composable_containers: list[tuple[str, int]] = []  # (name, line)
+        self._composable_nodes: list[tuple[str, int]] = []  # (plugin, line)
+        self._included_files: list[str] = []
 
     def _add(self, node: ast.AST, severity: str, message: str) -> None:
         lineno = getattr(node, 'lineno', 0)
@@ -105,6 +110,15 @@ class LaunchFileVisitor(ast.NodeVisitor):
 
         elif func_name == "IncludeLaunchDescription":
             self._check_include_launch_description(node)
+
+        elif func_name == "GroupAction":
+            self._check_group_action(node)
+
+        elif func_name in ("IfCondition", "UnlessCondition"):
+            self._check_condition(node, func_name)
+
+        elif func_name == "PushRosNamespace":
+            self._check_push_ros_namespace(node)
 
         self.generic_visit(node)
 
@@ -194,6 +208,8 @@ class LaunchFileVisitor(ast.NodeVisitor):
         """Check ComposableNodeContainer for required arguments."""
         pkg_node = self._get_keyword_value(node, "package")
         output_node = self._get_keyword_value(node, "output")
+        name_node = self._get_keyword_value(node, "name")
+        comp_descs = self._get_keyword_value(node, "composable_node_descriptions")
 
         if pkg_node is None:
             self._add(node, "error",
@@ -205,28 +221,52 @@ class LaunchFileVisitor(ast.NodeVisitor):
                       "ComposableNodeContainer() has no 'output' argument. "
                       "Add output='screen' to see component logs in terminal.")
 
+        # Track container name
+        name_str = self._get_string_value(name_node) if name_node else None
+        if name_str:
+            self._composable_containers.append((name_str, node.lineno))
+
+        # Check for empty composable_node_descriptions
+        if comp_descs is not None:
+            if isinstance(comp_descs, ast.List) and len(comp_descs.elts) == 0:
+                self._add(node, "warning",
+                          "ComposableNodeContainer() has empty "
+                          "'composable_node_descriptions'. No components will be loaded.")
+        elif comp_descs is None:
+            self._add(node, "info",
+                      "ComposableNodeContainer() has no 'composable_node_descriptions'. "
+                      "Components can be loaded dynamically via LoadComposableNodes.")
+
     def _check_composable_node(self, node: ast.Call) -> None:
         """Check ComposableNode for required arguments."""
         plugin_node = self._get_keyword_value(node, "plugin")
+        pkg_node = self._get_keyword_value(node, "package")
 
         if plugin_node is None:
             self._add(node, "error",
                       "ComposableNode() missing required 'plugin' argument.")
+        else:
+            # Validate plugin string format (should be 'namespace::ClassName')
+            plugin_str = self._get_string_value(plugin_node)
+            if plugin_str is not None:
+                self._composable_nodes.append((plugin_str, node.lineno))
+                if "::" not in plugin_str:
+                    self._add(node, "warning",
+                              f"ComposableNode plugin '{plugin_str}' does not contain "
+                              f"'::'. Expected format: 'namespace::ClassName' "
+                              f"(e.g., 'my_pkg::MyNode').")
+
+        if pkg_node is None:
+            self._add(node, "error",
+                      "ComposableNode() missing required 'package' argument.")
 
     def _check_include_launch_description(self, node: ast.Call) -> None:
         """Check IncludeLaunchDescription for file existence."""
-        # Try to find the launch file path from the first positional argument.
-        # The typical pattern is:
-        #   IncludeLaunchDescription(
-        #       PythonLaunchDescriptionSource('path/to/file.launch.py')
-        #   )
-        # We only check simple string paths, not substitutions.
         if not node.args:
             return
 
         first_arg = node.args[0]
 
-        # Check if first arg is a call to *LaunchDescriptionSource(path_string)
         launch_path = None
         if isinstance(first_arg, ast.Call):
             source_name = self._get_call_name(first_arg)
@@ -236,19 +276,87 @@ class LaunchFileVisitor(ast.NodeVisitor):
         elif isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
             launch_path = first_arg.value
 
+        if launch_path is not None:
+            # Track for circular include detection
+            self._included_files.append(launch_path)
+
         if launch_path is not None and not os.path.isabs(launch_path):
-            # Resolve relative to the launch file's directory
             base_dir = os.path.dirname(self.filepath)
             resolved = os.path.normpath(os.path.join(base_dir, launch_path))
             if not os.path.exists(resolved):
                 self._add(node, "warning",
                           f"IncludeLaunchDescription references '{launch_path}' "
                           f"but the file was not found at '{resolved}'.")
+            elif os.path.abspath(resolved) == os.path.abspath(self.filepath):
+                self._add(node, "error",
+                          f"Circular include detected: '{launch_path}' "
+                          f"includes itself.")
         elif launch_path is not None and os.path.isabs(launch_path):
             if not os.path.exists(launch_path):
                 self._add(node, "warning",
                           f"IncludeLaunchDescription references '{launch_path}' "
                           f"but the file was not found.")
+            elif os.path.abspath(launch_path) == os.path.abspath(self.filepath):
+                self._add(node, "error",
+                          f"Circular include detected: '{launch_path}' "
+                          f"includes itself.")
+
+    def _check_group_action(self, node: ast.Call) -> None:
+        """Check GroupAction for common issues."""
+        actions_node = self._get_keyword_value(node, "actions")
+        if actions_node is None and not node.args:
+            self._add(node, "warning",
+                      "GroupAction() has no 'actions' argument. "
+                      "An empty group has no effect.")
+            return
+
+        # Check for scoped=False with PushRosNamespace (common mistake)
+        scoped_node = self._get_keyword_value(node, "scoped")
+        if scoped_node is not None:
+            if isinstance(scoped_node, ast.Constant) and scoped_node.value is False:
+                # scoped=False means PushRosNamespace inside won't create
+                # an isolated namespace scope — this is sometimes intentional
+                # but often a mistake
+                self._add(node, "info",
+                          "GroupAction(scoped=False): namespace push inside this "
+                          "group will affect the parent scope. Use scoped=True "
+                          "(default) for namespace isolation.")
+
+    def _check_condition(self, node: ast.Call, func_name: str) -> None:
+        """Check IfCondition/UnlessCondition for proper usage."""
+        if not node.args and not node.keywords:
+            self._add(node, "error",
+                      f"{func_name}() called without a condition argument.")
+            return
+
+        # Get the condition argument (first positional or 'predicate' keyword)
+        cond = node.args[0] if node.args else self._get_keyword_value(node, "predicate")
+        if cond is None:
+            return
+
+        # Check if condition is a raw string literal instead of LaunchConfiguration
+        if isinstance(cond, ast.Constant) and isinstance(cond.value, str):
+            val = cond.value.lower()
+            if val in ("true", "false", "1", "0"):
+                self._add(node, "warning",
+                          f"{func_name}('{cond.value}'): using a hardcoded string "
+                          f"makes this condition always {'true' if val in ('true', '1') else 'false'}. "
+                          f"Use LaunchConfiguration('arg_name') for dynamic conditions.")
+
+    def _check_push_ros_namespace(self, node: ast.Call) -> None:
+        """Check PushRosNamespace for common issues."""
+        if not node.args and not node.keywords:
+            self._add(node, "error",
+                      "PushRosNamespace() called without a namespace argument.")
+            return
+
+        ns_arg = node.args[0] if node.args else self._get_keyword_value(
+            node, "namespace")
+        if ns_arg is not None:
+            ns_str = self._get_string_value(ns_arg)
+            if ns_str is not None and ns_str == "":
+                self._add(node, "warning",
+                          "PushRosNamespace(''): empty namespace has no effect.")
 
     def check_duplicates(self) -> None:
         """Check for duplicate node names in the same namespace."""
