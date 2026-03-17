@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Static analysis for ROS 2 Python launch files.
+"""Static analysis for ROS 2 Python launch files (.launch.py only).
+
+XML (.launch.xml) and YAML (.launch.yaml) launch files are not supported.
 
 Usage:
     python launch_validator.py path/to/launch_dir/
@@ -24,6 +26,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+__version__ = "0.1.0"
 
 
 @dataclass
@@ -248,7 +252,7 @@ class LaunchFileVisitor(ast.NodeVisitor):
 
     def check_duplicates(self) -> None:
         """Check for duplicate node names in the same namespace."""
-        seen = {}
+        seen: dict[str, int] = {}
         for name, ns, line in self.node_names:
             key = f"{ns}/{name}"
             if key in seen:
@@ -274,19 +278,24 @@ def check_raw_patterns(filepath: str, source: str) -> list[Issue]:
         # Check for hardcoded paths
         if re.search(r'["\'][/~][\w/]+\.(yaml|urdf|xacro|rviz)', line):
             if "FindPackageShare" not in line and "PathJoinSubstitution" not in line:
-                issues.append(Issue(filepath, i, "warning",
+                issues.append(Issue(
+                    filepath, i, "warning",
                     "Hardcoded file path detected. Use FindPackageShare + "
                     "PathJoinSubstitution for portable paths."))
 
         # Check for sleep/time.sleep in launch files
         if re.search(r'\btime\.sleep\b', line):
-            issues.append(Issue(filepath, i, "warning",
-                "time.sleep() in launch file. Use TimerAction for delayed starts."))
+            issues.append(Issue(
+                filepath, i, "warning",
+                "time.sleep() in launch file. "
+                "Use TimerAction for delayed starts."))
 
         # Check for os.system or subprocess calls
         if re.search(r'\bos\.system\b|\bsubprocess\.(call|run|Popen)\b', line):
-            issues.append(Issue(filepath, i, "warning",
-                "Shell command in launch file. Use ExecuteProcess action instead."))
+            issues.append(Issue(
+                filepath, i, "warning",
+                "Shell command in launch file. "
+                "Use ExecuteProcess action instead."))
 
     return issues
 
@@ -312,7 +321,8 @@ def validate_file(filepath: str) -> list[Issue]:
     visitor.check_duplicates()
 
     if not visitor.has_generate_func:
-        issues.append(Issue(filepath, 0, "error",
+        issues.append(Issue(
+            filepath, 0, "error",
             "Missing generate_launch_description() function. "
             "Every ROS 2 launch file must define this function."))
 
@@ -341,14 +351,19 @@ def validate_directory(dirpath: str) -> ValidationResult:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Static analysis for ROS 2 Python launch files",
+        description="Static analysis for ROS 2 Python launch files "
+                    "(.launch.py only; XML/YAML launch files are not supported)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog="""\
 Examples:
   %(prog)s src/my_robot_bringup/launch/
   %(prog)s src/my_robot_bringup/launch/robot.launch.py
-  %(prog)s .  # Check all launch files recursively
+  %(prog)s .  # Check all .launch.py files recursively
+
+Note: Only Python launch files (.launch.py) are validated.
+      XML (.launch.xml) and YAML (.launch.yaml) files are not supported.
         """)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("path", help="Launch file or directory to validate")
     parser.add_argument("--severity", choices=["error", "warning", "info"],
                         default="info",

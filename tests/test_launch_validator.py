@@ -4,8 +4,6 @@ import os
 import subprocess
 import sys
 
-import pytest
-
 SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "launch_validator.py")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -314,6 +312,169 @@ class TestCLI:
         write_launch_file(tmp_path, "b.launch.py", VALID_LAUNCH)
         result = run_script(str(tmp_path))
         assert "Checked 2" in result.stdout
+
+
+EXECUTE_PROCESS_MISSING_CMD = """from launch import LaunchDescription
+from launch.actions import ExecuteProcess
+
+def generate_launch_description():
+    return LaunchDescription([
+        ExecuteProcess(),
+    ])
+"""
+
+INCLUDE_LAUNCH_RELATIVE = """from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+def generate_launch_description():
+    return LaunchDescription([
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource('nonexistent.launch.py')
+        ),
+    ])
+"""
+
+INCLUDE_LAUNCH_ABS = """from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+
+def generate_launch_description():
+    return LaunchDescription([
+        IncludeLaunchDescription('/nonexistent/path.launch.py'),
+    ])
+"""
+
+COMPOSABLE_CONTAINER_MISSING_PKG = """from launch import LaunchDescription
+from launch_ros.actions import ComposableNodeContainer
+
+def generate_launch_description():
+    return LaunchDescription([
+        ComposableNodeContainer(
+            name='container',
+            namespace='',
+            executable='component_container',
+        ),
+    ])
+"""
+
+
+class TestMainFunction:
+    """Test main() directly for coverage."""
+
+    def test_main_valid_file(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from launch_validator import main
+        path = write_launch_file(tmp_path, "good.launch.py", VALID_LAUNCH)
+        monkeypatch.setattr(
+            "sys.argv", ["launch_validator.py", path])
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_error_file(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from launch_validator import main
+        path = write_launch_file(tmp_path, "bad.launch.py", MISSING_GENERATE)
+        monkeypatch.setattr(
+            "sys.argv", ["launch_validator.py", path])
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_directory(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from launch_validator import main
+        write_launch_file(tmp_path, "a.launch.py", VALID_LAUNCH)
+        monkeypatch.setattr(
+            "sys.argv", ["launch_validator.py", str(tmp_path)])
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_severity_filter(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from launch_validator import main
+        path = write_launch_file(tmp_path, "info.launch.py", MISSING_OUTPUT)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["launch_validator.py", path, "--severity", "error"])
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_nonexistent(self, monkeypatch):
+        import pytest as _pytest
+        from launch_validator import main
+        monkeypatch.setattr(
+            "sys.argv", ["launch_validator.py", "/nonexistent/path"])
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_empty_directory(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from launch_validator import main
+        monkeypatch.setattr(
+            "sys.argv", ["launch_validator.py", str(tmp_path)])
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+
+class TestAdditionalVisitors:
+    """Test AST visitor paths not covered by main test constants."""
+
+    def test_execute_process_missing_cmd(self, tmp_path):
+        path = write_launch_file(tmp_path, "exec.launch.py",
+                                 EXECUTE_PROCESS_MISSING_CMD)
+        issues = validate_file(path)
+        errors = [i for i in issues if i.severity == "error"]
+        assert any("cmd" in i.message.lower() for i in errors)
+
+    def test_include_launch_relative_missing(self, tmp_path):
+        path = write_launch_file(tmp_path, "inc.launch.py",
+                                 INCLUDE_LAUNCH_RELATIVE)
+        issues = validate_file(path)
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any("not found" in i.message for i in warnings)
+
+    def test_include_launch_abs_missing(self, tmp_path):
+        path = write_launch_file(tmp_path, "inc_abs.launch.py",
+                                 INCLUDE_LAUNCH_ABS)
+        issues = validate_file(path)
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any("not found" in i.message for i in warnings)
+
+    def test_composable_container_missing_package(self, tmp_path):
+        path = write_launch_file(tmp_path, "cont.launch.py",
+                                 COMPOSABLE_CONTAINER_MISSING_PKG)
+        issues = validate_file(path)
+        errors = [i for i in issues if i.severity == "error"]
+        assert any("package" in i.message.lower() for i in errors)
+
+    def test_validation_result_counts(self, tmp_path):
+        from launch_validator import ValidationResult
+        result = ValidationResult()
+        result.issues.append(
+            Issue("test.py", 1, "error", "err"))
+        result.issues.append(
+            Issue("test.py", 2, "warning", "warn"))
+        result.issues.append(
+            Issue("test.py", 3, "info", "info"))
+        assert result.error_count == 1
+        assert result.warning_count == 1
+
+    def test_suppression_out_of_range_line(self):
+        from launch_validator import _line_has_suppression
+        assert _line_has_suppression("hello\nworld", 0) is False
+        assert _line_has_suppression("hello\nworld", 5) is False
+
+
+class TestVersion:
+    def test_version_flag(self):
+        result = run_script("--version")
+        assert result.returncode == 0
+        assert "0.1.0" in result.stdout
 
 
 class TestIssueDisplay:

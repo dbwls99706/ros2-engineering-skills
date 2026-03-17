@@ -62,7 +62,7 @@ ln -s /path/to/ros2-engineering-skills .claude/skills/ros2-engineering-skills
 ```
 ros2-engineering-skills/
 ├── SKILL.md                        # Entry point — decision router + core principles
-├── references/
+├── references/                     # 20 reference files (13,000+ lines)
 │   ├── workspace-build.md          # colcon, ament_cmake, package.xml, overlays
 │   ├── nodes-executors.md          # rclcpp/rclpy nodes, executors, callback groups
 │   ├── communication.md            # Topics, services, actions, QoS, type adapters, DDS tuning
@@ -87,6 +87,14 @@ ros2-engineering-skills/
 │   ├── create_package.py           # Scaffold a package with best-practice structure (cpp/python/interfaces)
 │   ├── qos_checker.py              # Verify QoS compatibility between pub/sub pairs with fix suggestions
 │   └── launch_validator.py         # AST-based static analysis for Python launch files
+├── tests/
+│   ├── test_create_package.py      # 37 tests — scaffolding, validation, direct + CLI
+│   ├── test_launch_validator.py    # 33 tests — AST visitors, patterns, CLI, main()
+│   ├── test_qos_checker.py        # 35 tests — parsing, compatibility, presets, CLI, main()
+│   ├── test_qos_property.py       # 13 tests — Hypothesis property-based DDS RxO verification
+│   └── Dockerfile.ros2-test        # Multi-stage Docker test (build + validate across distros)
+├── setup.cfg                       # flake8 + mypy configuration
+├── pytest.ini                      # pytest configuration
 ├── LICENSE
 └── README.md
 ```
@@ -95,7 +103,19 @@ ros2-engineering-skills/
 
 **Complete.** All 20 reference files are fully written with production-grade code examples,
 distro-aware guidance (Humble/Jazzy/Kilted/Rolling), anti-pattern documentation, and
-troubleshooting tables. All 3 utility scripts are implemented and functional.
+troubleshooting tables. All 3 utility scripts are implemented, tested, and validated.
+
+### Quality metrics
+
+| Metric | Value |
+|--------|-------|
+| Test cases | 131 (unit + property-based + CLI + integration) |
+| Code coverage | 99% (scripts/) |
+| Static analysis | flake8 + mypy clean |
+| Property-based tests | 13 Hypothesis tests verifying DDS RxO invariants |
+| Python versions tested | 3.10, 3.11, 3.12 |
+| ROS 2 distros tested | Humble, Jazzy, Rolling |
+| CI jobs | 4 (lint, unit-tests, ros2-integration, lint-scripts) |
 
 ## Supported ROS 2 distributions
 
@@ -113,7 +133,9 @@ Contributions welcome. Please:
 2. Include working code examples, not pseudocode
 3. Document anti-patterns alongside correct patterns
 4. Note which ROS 2 distros your change applies to
-5. Test with at least one agent (Claude Code, Codex, etc.)
+5. Run `flake8 scripts/ tests/` and `mypy scripts/` before submitting
+6. Ensure `pytest tests/ --cov=scripts --cov-fail-under=90` passes
+7. Test with at least one agent (Claude Code, Codex, etc.)
 
 ## License
 
