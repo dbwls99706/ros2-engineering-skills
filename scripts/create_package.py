@@ -761,6 +761,11 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 
+# Detect ros2_control API (rolling 6.x changed on_init signature)
+if(hardware_interface_VERSION VERSION_GREATER_EQUAL "6.0.0")
+  add_definitions(-DHARDWARE_INTERFACE_HAS_PARAMS_API)
+endif()
+
 add_library(${{PROJECT_NAME}} SHARED
   src/{name}_hardware.cpp
 )
@@ -817,13 +822,20 @@ ament_package()
 namespace {name}
 {{
 
+// Type alias for cross-distro compatibility (rolling 6.x API change)
+#ifdef HARDWARE_INTERFACE_HAS_PARAMS_API
+using OnInitArgType = hardware_interface::HardwareComponentInterfaceParams;
+#else
+using OnInitArgType = hardware_interface::HardwareInfo;
+#endif
+
 class {class_name}Hardware : public hardware_interface::SystemInterface
 {{
 public:
   RCLCPP_SHARED_PTR_DEFINITIONS({class_name}Hardware)
 
   hardware_interface::CallbackReturn on_init(
-    const hardware_interface::HardwareInfo & info) override;
+    const OnInitArgType & init_param) override;
 
   hardware_interface::CallbackReturn on_configure(
     const rclcpp_lifecycle::State & previous_state) override;
@@ -869,9 +881,9 @@ namespace {name}
 {{
 
 hardware_interface::CallbackReturn {class_name}Hardware::on_init(
-  const hardware_interface::HardwareInfo & info)
+  const OnInitArgType & init_param)
 {{
-  if (hardware_interface::SystemInterface::on_init(info) !=
+  if (hardware_interface::SystemInterface::on_init(init_param) !=
     hardware_interface::CallbackReturn::SUCCESS)
   {{
     return hardware_interface::CallbackReturn::ERROR;
@@ -1044,10 +1056,9 @@ TEST({class_name}Test, InterfaceCreation)
 
 TEST({class_name}Test, OnInitWithEmptyInfo)
 {{
-  // on_init with empty HardwareInfo succeeds (base class accepts it)
   auto hw = std::make_shared<{name}::{class_name}Hardware>();
-  hardware_interface::HardwareInfo info;
-  auto ret = hw->on_init(info);
+  {name}::OnInitArgType init_param;
+  auto ret = hw->on_init(init_param);
   ASSERT_EQ(ret, hardware_interface::CallbackReturn::SUCCESS);
 }}
 """)
