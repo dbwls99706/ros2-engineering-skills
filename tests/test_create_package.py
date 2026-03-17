@@ -148,6 +148,19 @@ class TestInterfacesPackage:
         exec_deps = [d.text for d in root.findall("exec_depend")]
         assert "rosidl_default_runtime" in exec_deps
 
+    def test_member_of_group_at_package_level(self, tmp_path):
+        """member_of_group must be a direct child of <package>, not inside <export>."""
+        run_script("my_interfaces", "--type", "interfaces", "--dest", str(tmp_path))
+        tree = ET.parse(tmp_path / "my_interfaces" / "package.xml")
+        root = tree.getroot()
+        # Must exist at package level
+        members = [m.text for m in root.findall("member_of_group")]
+        assert "rosidl_interface_packages" in members
+        # Must NOT be inside <export>
+        export = root.find("export")
+        export_members = [m.text for m in export.findall("member_of_group")]
+        assert len(export_members) == 0
+
 
 class TestValidation:
     def test_invalid_name_rejected(self, tmp_path):
