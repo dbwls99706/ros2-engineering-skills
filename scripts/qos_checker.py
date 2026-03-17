@@ -20,6 +20,13 @@ from enum import Enum
 __version__ = "0.1.0"
 
 
+class DDSVendor(Enum):
+    AUTO = "auto"
+    FASTDDS = "fastdds"
+    CYCLONEDDS = "cyclonedds"
+    CONNEXT = "connext"
+
+
 class Reliability(Enum):
     RELIABLE = "reliable"
     BEST_EFFORT = "best_effort"
@@ -336,7 +343,97 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
     return CompatibilityResult(compatible, issues, warnings, suggestions)
 
 
-def print_result(pub: QoSProfile, sub: QoSProfile, result: CompatibilityResult) -> None:
+def check_vendor_specific(pub: QoSProfile, sub: QoSProfile,
+                          vendor: DDSVendor) -> list[str]:
+    """Return vendor-specific warnings for known DDS implementation quirks.
+
+    These are behaviors that differ between DDS vendors and can cause
+    subtle production issues even when QoS profiles are technically compatible.
+    """
+    warnings = []
+
+    if vendor == DDSVendor.FASTDDS:
+        # FastDDS specific quirks
+        if pub.history == History.KEEP_LAST and pub.depth > 5000:
+            warnings.append(
+                f"[FastDDS] Publisher depth ({pub.depth}) is very large. "
+                f"FastDDS allocates history depth upfront in PREALLOCATED mode, "
+                f"causing high memory usage. Consider PREALLOCATED_WITH_REALLOC "
+                f"or reduce depth.")
+
+        if (pub.reliability == Reliability.RELIABLE
+                and pub.history == History.KEEP_LAST and pub.depth == 1):
+            warnings.append(
+                "[FastDDS] RELIABLE + KEEP_LAST(1): FastDDS may block the "
+                "publisher if the subscriber is slow to acknowledge. "
+                "Increase depth or use asynchronous publish mode.")
+
+        if pub.durability == Durability.TRANSIENT_LOCAL:
+            warnings.append(
+                "[FastDDS] TRANSIENT_LOCAL durability: FastDDS stores samples "
+                "in the DataWriter history cache. With large messages, this "
+                "increases memory significantly. Monitor with 'fastdds shm'.")
+
+        if (pub.liveliness == Liveliness.MANUAL_BY_TOPIC
+                and pub.liveliness_lease_ms > 0
+                and pub.liveliness_lease_ms < 100):
+            warnings.append(
+                f"[FastDDS] MANUAL_BY_TOPIC with lease {pub.liveliness_lease_ms}ms: "
+                f"FastDDS liveliness assertion granularity can be coarse. "
+                f"Leases under 100ms may trigger false liveliness-lost events.")
+
+    elif vendor == DDSVendor.CYCLONEDDS:
+        # CycloneDDS specific quirks
+        if pub.history == History.KEEP_ALL:
+            warnings.append(
+                "[CycloneDDS] KEEP_ALL history: CycloneDDS uses a shared memory "
+                "pool (max_samples). Default is 256 samples across ALL topics. "
+                "Set CYCLONEDDS_URI to increase MaxSamples for high-throughput "
+                "topics.")
+
+        if (pub.reliability == Reliability.RELIABLE
+                and sub.reliability == Reliability.RELIABLE):
+            warnings.append(
+                "[CycloneDDS] RELIABLE+RELIABLE: CycloneDDS uses a synchronous "
+                "delivery model. Large messages with RELIABLE can cause "
+                "head-of-line blocking. Set WHC (Writer History Cache) "
+                "high_watermark in CYCLONEDDS_URI for large payloads.")
+
+        if pub.deadline_ms > 0 and pub.deadline_ms < 10:
+            warnings.append(
+                f"[CycloneDDS] Deadline {pub.deadline_ms}ms: CycloneDDS deadline "
+                f"check resolution depends on the internal timer. Sub-10ms "
+                f"deadlines may not trigger missed-deadline events reliably.")
+
+    elif vendor == DDSVendor.CONNEXT:
+        # RTI Connext specific quirks
+        if pub.history == History.KEEP_LAST and pub.depth > 10000:
+            warnings.append(
+                f"[Connext] Publisher depth ({pub.depth}) exceeds typical "
+                f"Connext resource limits. Check max_samples_per_instance "
+                f"in QOS XML profile. Default is 32 in some configurations.")
+
+        if (pub.durability == Durability.TRANSIENT_LOCAL
+                and sub.durability == Durability.TRANSIENT_LOCAL):
+            warnings.append(
+                "[Connext] Both TRANSIENT_LOCAL: Connext implements durable "
+                "subscriptions via a built-in persistence service. Ensure "
+                "DurabilityService.history_depth is configured in the XML "
+                "QoS profile.")
+
+        if (pub.reliability == Reliability.RELIABLE
+                and pub.history == History.KEEP_ALL):
+            warnings.append(
+                "[Connext] RELIABLE + KEEP_ALL: Connext will block the writer "
+                "when resource limits are reached (max_samples). Set "
+                "reliability.max_blocking_time in QoS XML to avoid "
+                "indefinite blocking.")
+
+    return warnings
+
+
+def print_result(pub: QoSProfile, sub: QoSProfile, result: CompatibilityResult,
+                 vendor_warnings: list | None = None) -> None:
     """Print compatibility check results."""
     print("=" * 60)
     print("QoS Compatibility Check")
@@ -365,6 +462,12 @@ def print_result(pub: QoSProfile, sub: QoSProfile, result: CompatibilityResult) 
         for warning in result.warnings:
             print(f"  [WARN]  {warning}")
 
+    if vendor_warnings:
+        print()
+        print("DDS Vendor Warnings:")
+        for vw in vendor_warnings:
+            print(f"  [DDS]   {vw}")
+
     if result.suggestions:
         print()
         print("Suggestions:")
@@ -374,13 +477,15 @@ def print_result(pub: QoSProfile, sub: QoSProfile, result: CompatibilityResult) 
     print("=" * 60)
 
 
-def print_result_json(pub: QoSProfile, sub: QoSProfile, result: CompatibilityResult) -> None:
+def print_result_json(pub: QoSProfile, sub: QoSProfile, result: CompatibilityResult,
+                      vendor_warnings: list | None = None) -> None:
     """Print compatibility check results as JSON."""
     output = {
         "compatible": result.compatible,
         "warnings": result.warnings,
         "errors": result.issues,
         "suggestions": result.suggestions,
+        "vendor_warnings": vendor_warnings or [],
         "publisher": pub.to_dict(),
         "subscriber": sub.to_dict(),
     }
@@ -417,6 +522,11 @@ Presets: sensor, command, map, diagnostics, parameter_events, action_feedback, s
                         help="Use a predefined QoS preset")
     parser.add_argument("--json", action="store_true", default=False,
                         help="Output results as JSON")
+    parser.add_argument("--dds-vendor",
+                        choices=["auto", "fastdds", "cyclonedds", "connext"],
+                        default="auto",
+                        help="DDS vendor for implementation-specific warnings "
+                             "(default: auto = no vendor-specific checks)")
     args = parser.parse_args()
 
     if args.preset:
@@ -434,10 +544,15 @@ Presets: sensor, command, map, diagnostics, parameter_events, action_feedback, s
 
     result = check_compatibility(pub, sub)
 
+    vendor = DDSVendor(args.dds_vendor)
+    vendor_warnings = []
+    if vendor != DDSVendor.AUTO:
+        vendor_warnings = check_vendor_specific(pub, sub, vendor)
+
     if args.json:
-        print_result_json(pub, sub, result)
+        print_result_json(pub, sub, result, vendor_warnings)
     else:
-        print_result(pub, sub, result)
+        print_result(pub, sub, result, vendor_warnings)
 
     sys.exit(0 if result.compatible else 1)
 
