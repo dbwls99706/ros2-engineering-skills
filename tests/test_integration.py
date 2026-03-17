@@ -219,7 +219,7 @@ class TestPythonLifecyclePackageGeneration:
         root = tree.getroot()
         deps = [d.text for d in root.findall("depend")]
         assert "rclpy" in deps
-        assert "rclpy_lifecycle" in deps
+        assert "lifecycle_msgs" in deps
 
     def test_lifecycle_node_has_all_callbacks(self, tmp_path):
         create_python_package("lc_driver", tmp_path, lifecycle=True)

@@ -107,6 +107,25 @@ class TestCompatibilityChecks:
         assert result.compatible is False
         assert any("DEADLINE" in i for i in result.issues)
 
+    def test_deadline_incompatible_pub_no_deadline(self):
+        """Publisher has no deadline (infinite) but subscriber expects one."""
+        pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                         deadline_ms=0)
+        sub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                         deadline_ms=100)
+        result = check_compatibility(pub, sub)
+        assert result.compatible is False
+        assert any("DEADLINE" in i for i in result.issues)
+
+    def test_deadline_compatible_pub_has_sub_none(self):
+        """Publisher has deadline, subscriber has none (infinite) — compatible."""
+        pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                         deadline_ms=100)
+        sub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                         deadline_ms=0)
+        result = check_compatibility(pub, sub)
+        assert result.compatible is True
+
     def test_liveliness_incompatible(self):
         pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
                          liveliness=Liveliness.AUTOMATIC)
@@ -123,6 +142,16 @@ class TestCompatibilityChecks:
                          liveliness=Liveliness.MANUAL_BY_TOPIC, liveliness_lease_ms=200)
         result = check_compatibility(pub, sub)
         assert result.compatible is False
+
+    def test_liveliness_lease_incompatible_pub_no_lease(self):
+        """Publisher has no lease (infinite) but subscriber expects one."""
+        pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                         liveliness=Liveliness.MANUAL_BY_TOPIC, liveliness_lease_ms=0)
+        sub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
+                         liveliness=Liveliness.MANUAL_BY_TOPIC, liveliness_lease_ms=200)
+        result = check_compatibility(pub, sub)
+        assert result.compatible is False
+        assert any("LIVELINESS LEASE" in i for i in result.issues)
 
     def test_depth_zero_keep_last_warns(self):
         pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 0)

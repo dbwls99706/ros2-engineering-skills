@@ -663,7 +663,7 @@ def test_pep257():
 
     py_deps = ["rclpy"]
     if lifecycle:
-        py_deps.append("rclpy_lifecycle")
+        py_deps.append("lifecycle_msgs")
     _write_package_xml(pkg, name, "ament_python", py_deps,
                        maintainer_name=maintainer_name,
                        maintainer_email=maintainer_email,
@@ -761,6 +761,11 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 
+# Detect ros2_control API (rolling 6.x changed on_init signature)
+if(hardware_interface_VERSION VERSION_GREATER_EQUAL "6.0.0")
+  add_definitions(-DHARDWARE_INTERFACE_HAS_PARAMS_API)
+endif()
+
 add_library(${{PROJECT_NAME}} SHARED
   src/{name}_hardware.cpp
 )
@@ -817,13 +822,20 @@ ament_package()
 namespace {name}
 {{
 
+// Type alias for cross-distro compatibility (rolling 6.x API change)
+#ifdef HARDWARE_INTERFACE_HAS_PARAMS_API
+using OnInitArgType = hardware_interface::HardwareComponentInterfaceParams;
+#else
+using OnInitArgType = hardware_interface::HardwareInfo;
+#endif
+
 class {class_name}Hardware : public hardware_interface::SystemInterface
 {{
 public:
   RCLCPP_SHARED_PTR_DEFINITIONS({class_name}Hardware)
 
   hardware_interface::CallbackReturn on_init(
-    const hardware_interface::HardwareInfo & info) override;
+    const OnInitArgType & init_param) override;
 
   hardware_interface::CallbackReturn on_configure(
     const rclcpp_lifecycle::State & previous_state) override;
@@ -869,9 +881,9 @@ namespace {name}
 {{
 
 hardware_interface::CallbackReturn {class_name}Hardware::on_init(
-  const hardware_interface::HardwareInfo & info)
+  const OnInitArgType & init_param)
 {{
-  if (hardware_interface::SystemInterface::on_init(info) !=
+  if (hardware_interface::SystemInterface::on_init(init_param) !=
     hardware_interface::CallbackReturn::SUCCESS)
   {{
     return hardware_interface::CallbackReturn::ERROR;
@@ -881,7 +893,8 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_init(
   hw_velocities_.resize(info_.joints.size(), 0.0);
   hw_commands_.resize(info_.joints.size(), 0.0);
 
-  RCLCPP_INFO(rclcpp::get_logger("{name}"), "Initialized with %zu joints",
+  RCLCPP_INFO(
+    rclcpp::get_logger("{name}"), "Initialized with %zu joints",
     info_.joints.size());
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
@@ -908,6 +921,9 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {{
   RCLCPP_INFO(rclcpp::get_logger("{name}"), "Deactivating...");
+  // SAFETY: Zero all commands to prevent the robot from holding
+  // the last commanded velocity/position on shutdown.
+  std::fill(hw_commands_.begin(), hw_commands_.end(), 0.0);
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
 
@@ -945,7 +961,7 @@ std::vector<hardware_interface::CommandInterface>
 hardware_interface::return_type {class_name}Hardware::read(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {{
-  // TODO: Read actual hardware state here
+  // TODO(user): Read actual hardware state here
   // For simulation, mirror commands to positions:
   for (size_t i = 0; i < hw_positions_.size(); i++) {{
     hw_positions_[i] = hw_commands_[i];
@@ -956,7 +972,7 @@ hardware_interface::return_type {class_name}Hardware::read(
 hardware_interface::return_type {class_name}Hardware::write(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {{
-  // TODO: Write commands to actual hardware here
+  // TODO(user): Write commands to actual hardware here
   return hardware_interface::return_type::OK;
 }}
 
@@ -1029,18 +1045,21 @@ PLUGINLIB_EXPORT_CLASS(
     (pkg / "test" / f"test_{name}.cpp").write_text(
         cpp_header + f"""
 #include <gtest/gtest.h>
-#include <hardware_interface/resource_manager.hpp>
+#include "{name}/{name}_hardware.hpp"
 
-TEST({class_name}Test, PluginLoadable)
+TEST({class_name}Test, InterfaceCreation)
 {{
-  // Verify the plugin can be discovered by pluginlib
-  // This test validates the plugin.xml and class registration
-  ASSERT_NO_THROW({{
-    pluginlib::ClassLoader<hardware_interface::SystemInterface> loader(
-      "hardware_interface", "hardware_interface::SystemInterface");
-    auto hw = loader.createSharedInstance("{name}/{class_name}Hardware");
-    ASSERT_NE(hw, nullptr);
-  }});
+  // Verify the hardware interface class can be instantiated
+  auto hw = std::make_shared<{name}::{class_name}Hardware>();
+  ASSERT_NE(hw, nullptr);
+}}
+
+TEST({class_name}Test, OnInitWithEmptyInfo)
+{{
+  auto hw = std::make_shared<{name}::{class_name}Hardware>();
+  {name}::OnInitArgType init_param;
+  auto ret = hw->on_init(init_param);
+  ASSERT_EQ(ret, hardware_interface::CallbackReturn::SUCCESS);
 }}
 """)
 

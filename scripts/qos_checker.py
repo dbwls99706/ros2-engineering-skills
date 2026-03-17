@@ -292,7 +292,20 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         )
 
     # Deadline compatibility (DDS RxO: offered_deadline <= requested_deadline)
-    if pub.deadline_ms > 0 and sub.deadline_ms > 0 and pub.deadline_ms > sub.deadline_ms:
+    # deadline=0 means "no deadline" (infinite). If subscriber expects a deadline
+    # but publisher offers none, the connection is incompatible.
+    if sub.deadline_ms > 0 and pub.deadline_ms == 0:
+        issues.append(
+            f"INCOMPATIBLE DEADLINE: Publisher has no deadline (infinite) but "
+            f"subscriber requires {sub.deadline_ms}ms. DDS requires the publisher "
+            f"to offer a deadline <= the subscriber's requested deadline. "
+            f"Connection will silently fail."
+        )
+        suggestions.append(
+            f"Fix: Set the publisher deadline to <= {sub.deadline_ms}ms, "
+            f"or remove the subscriber deadline constraint."
+        )
+    elif pub.deadline_ms > 0 and sub.deadline_ms > 0 and pub.deadline_ms > sub.deadline_ms:
         issues.append(
             f"INCOMPATIBLE DEADLINE: Publisher offered deadline ({pub.deadline_ms}ms) "
             f"exceeds subscriber requested deadline ({sub.deadline_ms}ms). "
@@ -326,7 +339,21 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         )
 
     # Liveliness lease duration (DDS RxO: offered_lease <= requested_lease)
-    if (pub.liveliness_lease_ms > 0 and sub.liveliness_lease_ms > 0
+    # lease=0 means "infinite". If subscriber expects a specific lease but
+    # publisher offers none (infinite), the connection is incompatible.
+    if sub.liveliness_lease_ms > 0 and pub.liveliness_lease_ms == 0:
+        issues.append(
+            f"INCOMPATIBLE LIVELINESS LEASE: Publisher has no lease duration "
+            f"(infinite) but subscriber requires {sub.liveliness_lease_ms}ms. "
+            f"DDS requires offered lease <= requested lease. "
+            f"Connection will silently fail."
+        )
+        suggestions.append(
+            f"Fix: Set the publisher liveliness lease to "
+            f"<= {sub.liveliness_lease_ms}ms, or remove the subscriber lease "
+            f"constraint."
+        )
+    elif (pub.liveliness_lease_ms > 0 and sub.liveliness_lease_ms > 0
             and pub.liveliness_lease_ms > sub.liveliness_lease_ms):
         issues.append(
             f"INCOMPATIBLE LIVELINESS LEASE: Publisher lease ({pub.liveliness_lease_ms}ms) "

@@ -16,9 +16,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-c"]
 
 # osrf/ros:*-desktop already includes pytest, colcon, rclcpp, rosidl, etc.
+# Install ros2_control for hardware_interface package testing.
 # Humble (22.04) pip doesn't support --break-system-packages; Jazzy+ (24.04) requires it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pytest python3-pip \
+       ros-${ROS_DISTRO}-hardware-interface \
+       ros-${ROS_DISTRO}-ros2-control \
     && pip3 install hypothesis 2>/dev/null \
     || pip3 install --break-system-packages hypothesis \
     && rm -rf /var/lib/apt/lists/*
@@ -29,11 +32,12 @@ COPY . .
 # Stage 1: Pure-Python unit tests on the utility scripts
 RUN python3 -m pytest tests/ -v --tb=short
 
-# Stage 2: Scaffold packages (C++, Python, interfaces)
+# Stage 2: Scaffold packages (C++, Python, interfaces, hardware_interface)
 RUN mkdir -p /ws/test_ws/src \
     && python3 scripts/create_package.py test_cpp_pkg --type cpp --dest /ws/test_ws/src \
     && python3 scripts/create_package.py test_py_pkg --type python --dest /ws/test_ws/src \
-    && python3 scripts/create_package.py test_iface_pkg --type interfaces --dest /ws/test_ws/src
+    && python3 scripts/create_package.py test_iface_pkg --type interfaces --dest /ws/test_ws/src \
+    && python3 scripts/create_package.py test_hw_pkg --type hardware_interface --dest /ws/test_ws/src
 
 # Stage 3: Build all scaffolded packages WITH testing enabled
 # This compiles the generated gtest targets to verify the scaffolding is valid C++.
@@ -50,7 +54,7 @@ RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
     && colcon test \
          --executor sequential \
          --event-handlers console_direct+ \
-         --packages-select test_cpp_pkg test_iface_pkg \
+         --packages-select test_cpp_pkg test_iface_pkg test_hw_pkg \
     && colcon test-result --verbose
 
 # Stage 4b: Run Python package tests with pytest directly
