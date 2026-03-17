@@ -16,9 +16,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-c"]
 
 # osrf/ros:*-desktop already includes pytest, colcon, rclcpp, rosidl, etc.
+# Humble (22.04) pip doesn't support --break-system-packages; Jazzy+ (24.04) requires it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pytest python3-pip \
-    && pip3 install --break-system-packages hypothesis \
+    && pip3 install hypothesis 2>/dev/null \
+    || pip3 install --break-system-packages hypothesis \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ws/ros2-engineering-skills
