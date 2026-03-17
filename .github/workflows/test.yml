@@ -38,11 +38,16 @@ jobs:
         ros_distro: [humble, jazzy, rolling]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify Docker image exists
+        run: docker pull osrf/ros:${{ matrix.ros_distro }}-desktop
+
       - name: Build and test in ROS 2 ${{ matrix.ros_distro }}
         run: |
           docker build \
             -f tests/Dockerfile.ros2-test \
             --build-arg ROS_DISTRO=${{ matrix.ros_distro }} \
+            --progress=plain \
             -t ros2-test:${{ matrix.ros_distro }} \
             .
 
