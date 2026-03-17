@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [main, master]
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   # -------------------------------------------------------
   # Job 1: Pure-Python unit tests (fast, no Docker needed)
@@ -19,8 +16,8 @@ jobs:
       matrix:
         python-version: ['3.10', '3.11', '3.12']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest
@@ -37,7 +34,7 @@ jobs:
       matrix:
         ros_distro: [humble, jazzy, rolling]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Verify Docker image exists
         run: docker pull osrf/ros:${{ matrix.ros_distro }}-desktop
@@ -57,8 +54,8 @@ jobs:
   lint-scripts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Check scripts syntax
