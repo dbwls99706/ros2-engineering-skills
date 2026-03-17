@@ -311,7 +311,8 @@ namespace {name}
 void {class_name}Node::on_offered_qos_incompatible(
   rclcpp::QOSOfferedIncompatibleQoSInfo & event)
 {{
-  RCLCPP_WARN(get_logger(),
+  RCLCPP_WARN(
+    get_logger(),
     "Offered incompatible QoS: policy_kind=%d, total_count=%d",
     event.last_policy_kind, event.total_count);
 }}
@@ -319,7 +320,8 @@ void {class_name}Node::on_offered_qos_incompatible(
 void {class_name}Node::on_requested_qos_incompatible(
   rclcpp::QOSRequestedIncompatibleQoSInfo & event)
 {{
-  RCLCPP_WARN(get_logger(),
+  RCLCPP_WARN(
+    get_logger(),
     "Requested incompatible QoS: policy_kind=%d, total_count=%d",
     event.last_policy_kind, event.total_count);
 }}
