@@ -88,9 +88,9 @@ ros2-engineering-skills/
 │   ├── qos_checker.py              # Verify QoS compatibility between pub/sub pairs with fix suggestions
 │   └── launch_validator.py         # AST-based static analysis for Python launch files
 ├── tests/
-│   ├── test_create_package.py      # 37 tests — scaffolding, validation, direct + CLI
-│   ├── test_launch_validator.py    # 33 tests — AST visitors, patterns, CLI, main()
-│   ├── test_qos_checker.py        # 35 tests — parsing, compatibility, presets, CLI, main()
+│   ├── test_create_package.py      # 40 tests — scaffolding, validation, copyright, direct + CLI
+│   ├── test_launch_validator.py    # 38 tests — AST visitors, patterns, CLI, main()
+│   ├── test_qos_checker.py        # 46 tests — parsing, compatibility, presets, CLI, main()
 │   ├── test_qos_property.py       # 13 tests — Hypothesis property-based DDS RxO verification
 │   └── Dockerfile.ros2-test        # Multi-stage Docker test (build + validate across distros)
 ├── setup.cfg                       # flake8 + mypy configuration
@@ -109,7 +109,7 @@ troubleshooting tables. All 3 utility scripts are implemented, tested, and valid
 
 | Metric | Value |
 |--------|-------|
-| Test cases | 131 (unit + property-based + CLI + integration) |
+| Test cases | 137 (unit + property-based + CLI + integration) |
 | Code coverage | 99% (scripts/) |
 | Static analysis | flake8 + mypy clean |
 | Property-based tests | 13 Hypothesis tests verifying DDS RxO invariants |
