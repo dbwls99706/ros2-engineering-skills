@@ -881,7 +881,8 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_init(
   hw_velocities_.resize(info_.joints.size(), 0.0);
   hw_commands_.resize(info_.joints.size(), 0.0);
 
-  RCLCPP_INFO(rclcpp::get_logger("{name}"), "Initialized with %zu joints",
+  RCLCPP_INFO(
+    rclcpp::get_logger("{name}"), "Initialized with %zu joints",
     info_.joints.size());
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
@@ -948,7 +949,7 @@ std::vector<hardware_interface::CommandInterface>
 hardware_interface::return_type {class_name}Hardware::read(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {{
-  // TODO: Read actual hardware state here
+  // TODO(user): Read actual hardware state here
   // For simulation, mirror commands to positions:
   for (size_t i = 0; i < hw_positions_.size(); i++) {{
     hw_positions_[i] = hw_commands_[i];
@@ -959,7 +960,7 @@ hardware_interface::return_type {class_name}Hardware::read(
 hardware_interface::return_type {class_name}Hardware::write(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {{
-  // TODO: Write commands to actual hardware here
+  // TODO(user): Write commands to actual hardware here
   return hardware_interface::return_type::OK;
 }}
 
@@ -1041,14 +1042,13 @@ TEST({class_name}Test, InterfaceCreation)
   ASSERT_NE(hw, nullptr);
 }}
 
-TEST({class_name}Test, OnInitReturnsError)
+TEST({class_name}Test, OnInitWithEmptyInfo)
 {{
-  // on_init should fail gracefully with empty HardwareInfo
+  // on_init with empty HardwareInfo succeeds (base class accepts it)
   auto hw = std::make_shared<{name}::{class_name}Hardware>();
   hardware_interface::HardwareInfo info;
   auto ret = hw->on_init(info);
-  // Empty info is expected to fail validation in the base class
-  ASSERT_EQ(ret, hardware_interface::CallbackReturn::ERROR);
+  ASSERT_EQ(ret, hardware_interface::CallbackReturn::SUCCESS);
 }}
 """)
 
