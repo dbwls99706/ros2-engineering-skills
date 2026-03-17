@@ -16,7 +16,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-c"]
 
 # osrf/ros:*-desktop includes colcon, rclcpp, lifecycle, std_msgs, rosidl, etc.
-# Only install pytest if not already present.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pytest \
     && rm -rf /var/lib/apt/lists/*
@@ -28,42 +27,64 @@ COPY . .
 # ------------------------------------------------------------------
 # Stage 1: Pure-Python unit tests (no ROS dependencies)
 # ------------------------------------------------------------------
-RUN echo "=== [1/5] Python unit tests ===" \
-    && python3 -m pytest tests/ -v --tb=short
+RUN python3 -m pytest tests/ -v --tb=short
 
 # ------------------------------------------------------------------
 # Stage 2: Scaffold packages
 # ------------------------------------------------------------------
-RUN echo "=== [2/5] Scaffolding packages ===" \
-    && mkdir -p /ws/test_ws/src \
+RUN mkdir -p /ws/test_ws/src \
     && python3 scripts/create_package.py test_cpp_pkg --type cpp --dest /ws/test_ws/src \
     && python3 scripts/create_package.py test_py_pkg --type python --dest /ws/test_ws/src \
     && python3 scripts/create_package.py test_iface_pkg --type interfaces --dest /ws/test_ws/src
 
 # ------------------------------------------------------------------
-# Stage 3: Build scaffolded packages with colcon
-#   - Skip BUILD_TESTING to avoid ament_lint failures on generated
-#     template code (no copyright headers, etc.)
+# Stage 3: Build each package sequentially to isolate failures.
+#   - Use --executor sequential to avoid SIGABRT in Docker build.
+#   - Build interfaces first (others may depend on it in real use).
 # ------------------------------------------------------------------
-RUN echo "=== [3/5] colcon build ===" \
-    && source /opt/ros/${ROS_DISTRO}/setup.bash \
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
     && cd /ws/test_ws \
     && colcon build \
+         --executor sequential \
          --event-handlers console_direct+ \
-         --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+         --packages-select test_iface_pkg \
+         --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    || { echo "=== test_iface_pkg build failed, showing logs ==="; \
+         cat /ws/test_ws/log/latest_build/test_iface_pkg/stdout_stderr.log 2>/dev/null; \
+         exit 1; }
+
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && cd /ws/test_ws \
+    && colcon build \
+         --executor sequential \
+         --event-handlers console_direct+ \
+         --packages-select test_cpp_pkg \
+         --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    || { echo "=== test_cpp_pkg build failed, showing logs ==="; \
+         cat /ws/test_ws/log/latest_build/test_cpp_pkg/stdout_stderr.log 2>/dev/null; \
+         exit 1; }
+
+# Python package (ament_python — no cmake needed, just setuptools)
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && cd /ws/test_ws \
+    && colcon build \
+         --executor sequential \
+         --event-handlers console_direct+ \
+         --packages-select test_py_pkg \
+    || { echo "=== test_py_pkg build failed, showing logs ==="; \
+         cat /ws/test_ws/log/latest_build/test_py_pkg/stdout_stderr.log 2>/dev/null; \
+         exit 1; }
 
 # ------------------------------------------------------------------
 # Stage 4: Validate generated launch files
 # ------------------------------------------------------------------
-RUN echo "=== [4/5] Launch file validation ===" \
-    && python3 scripts/launch_validator.py /ws/test_ws/src/test_cpp_pkg/launch/ \
+RUN python3 scripts/launch_validator.py /ws/test_ws/src/test_cpp_pkg/launch/ \
     && python3 scripts/launch_validator.py /ws/test_ws/src/test_py_pkg/launch/
 
 # ------------------------------------------------------------------
 # Stage 5: QoS checker presets
 # ------------------------------------------------------------------
-RUN echo "=== [5/5] QoS checker ===" \
-    && python3 scripts/qos_checker.py --preset sensor \
+RUN python3 scripts/qos_checker.py --preset sensor \
     && python3 scripts/qos_checker.py --preset command \
     && python3 scripts/qos_checker.py --preset map \
     && python3 scripts/qos_checker.py --preset diagnostics
