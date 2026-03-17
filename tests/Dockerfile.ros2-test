@@ -44,13 +44,21 @@ RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
          --event-handlers console_direct+ \
          --cmake-args -DCMAKE_BUILD_TYPE=Release
 
-# Stage 4: Run generated tests (gtest for C++, lint for all)
+# Stage 4a: Run C++ and interfaces tests (CTest via colcon)
 RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
     && cd /ws/test_ws \
     && colcon test \
          --executor sequential \
          --event-handlers console_direct+ \
+         --packages-select test_cpp_pkg test_iface_pkg \
     && colcon test-result --verbose
+
+# Stage 4b: Run Python package tests with pytest directly
+# (colcon test uses unittest runner for ament_python, which cannot discover pytest-style tests)
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && source /ws/test_ws/install/setup.bash \
+    && cd /ws/test_ws/src/test_py_pkg \
+    && python3 -m pytest test/ -v
 
 # Stage 5: Validate generated launch files
 RUN python3 scripts/launch_validator.py /ws/test_ws/src/test_cpp_pkg/launch/ \

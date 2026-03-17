@@ -62,8 +62,6 @@ def _generate_launch_file(name: str, lifecycle: bool = False,
     header = _copyright_py(maintainer_name)
     if lifecycle:
         return header + f"""
-import lifecycle_msgs.msg
-
 from launch import LaunchDescription
 from launch.actions import EmitEvent, RegisterEventHandler
 from launch.substitutions import PathJoinSubstitution
@@ -71,6 +69,7 @@ from launch_ros.actions import LifecycleNode
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
+import lifecycle_msgs.msg
 
 
 def generate_launch_description():
