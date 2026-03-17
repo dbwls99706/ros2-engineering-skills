@@ -16,18 +16,62 @@ from typing import Optional
 
 __version__ = "0.1.0"
 
+# Apache-2.0 copyright/license headers for generated files
+_APACHE2_PY = """# Copyright 2024 {maintainer}
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
 
-def _generate_launch_file(name: str, lifecycle: bool = False) -> str:
+_APACHE2_CPP = """// Copyright 2024 {maintainer}
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+"""
+
+
+def _copyright_py(maintainer: str = "TODO") -> str:
+    return _APACHE2_PY.format(maintainer=maintainer)
+
+
+def _copyright_cpp(maintainer: str = "TODO") -> str:
+    return _APACHE2_CPP.format(maintainer=maintainer)
+
+
+def _generate_launch_file(name: str, lifecycle: bool = False,
+                          maintainer_name: str = "TODO") -> str:
     """Generate a basic bringup.launch.py file for the package."""
+    header = _copyright_py(maintainer_name)
     if lifecycle:
-        return f"""from launch import LaunchDescription
+        return header + f"""
+import lifecycle_msgs.msg
+
+from launch import LaunchDescription
+from launch.actions import EmitEvent, RegisterEventHandler
+from launch.substitutions import PathJoinSubstitution
 from launch_ros.actions import LifecycleNode
 from launch_ros.event_handlers import OnStateTransition
-from launch.actions import EmitEvent, RegisterEventHandler
 from launch_ros.events.lifecycle import ChangeState
-from launch.substitutions import PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
-import lifecycle_msgs.msg
+
 
 def generate_launch_description():
     config = PathJoinSubstitution([
@@ -65,10 +109,12 @@ def generate_launch_description():
     return LaunchDescription([node, configure_event, activate_event])
 """
     else:
-        return f"""from launch import LaunchDescription
-from launch_ros.actions import Node
+        return header + f"""
+from launch import LaunchDescription
 from launch.substitutions import PathJoinSubstitution
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+
 
 def generate_launch_description():
     config = PathJoinSubstitution([
@@ -117,6 +163,8 @@ def create_cpp_package(name: str, dest: Path, component: bool = False,
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
+
+    cpp_header = _copyright_cpp(maintainer_name)
 
     component_cmake = ""
     if component:
@@ -181,7 +229,10 @@ ament_package()
 
     class_name = _class_name(name)
 
-    (pkg / "include" / name / f"{name}_node.hpp").write_text(f"""#pragma once
+    (pkg / "include" / name / f"{name}_node.hpp").write_text(
+        cpp_header + f"""
+#pragma once
+
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 namespace {name}
@@ -207,7 +258,9 @@ public:
         component_include = "\n#include <rclcpp_components/register_node_macro.hpp>"
         component_register = f"\n\nRCLCPP_COMPONENTS_REGISTER_NODE({name}::{class_name}Node)\n"
 
-    (pkg / "src" / f"{name}_node.cpp").write_text(f"""#include "{name}/{name}_node.hpp"
+    (pkg / "src" / f"{name}_node.cpp").write_text(
+        cpp_header + f"""
+#include "{name}/{name}_node.hpp"
 {component_include}
 namespace {name}
 {{
@@ -249,7 +302,9 @@ namespace {name}
 }}  // namespace {name}
 {component_register}""")
 
-    (pkg / "src" / "main.cpp").write_text(f"""#include <rclcpp/rclcpp.hpp>
+    (pkg / "src" / "main.cpp").write_text(
+        cpp_header + f"""
+#include <rclcpp/rclcpp.hpp>
 #include "{name}/{name}_node.hpp"
 
 int main(int argc, char ** argv)
@@ -270,15 +325,23 @@ int main(int argc, char ** argv)
     publish_rate: 50.0
 """)
 
-    (pkg / "test" / f"test_{name}.cpp").write_text(f"""#include <gtest/gtest.h>
+    (pkg / "test" / f"test_{name}.cpp").write_text(
+        cpp_header + f"""
+#include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
 #include "{name}/{name}_node.hpp"
 
 class {class_name}Test : public ::testing::Test
 {{
 protected:
-  static void SetUpTestSuite() {{ rclcpp::init(0, nullptr); }}
-  static void TearDownTestSuite() {{ rclcpp::shutdown(); }}
+  static void SetUpTestSuite()
+  {{
+    rclcpp::init(0, nullptr);
+  }}
+  static void TearDownTestSuite()
+  {{
+    rclcpp::shutdown();
+  }}
 }};
 
 TEST_F({class_name}Test, NodeCreation)
@@ -290,7 +353,8 @@ TEST_F({class_name}Test, NodeCreation)
 
     # Generate launch file (lifecycle=True since C++ template uses LifecycleNode)
     (pkg / "launch" / "bringup.launch.py").write_text(
-        _generate_launch_file(name, lifecycle=True))
+        _generate_launch_file(name, lifecycle=True,
+                              maintainer_name=maintainer_name))
 
     # Generate README
     (pkg / "README.md").write_text(_generate_readme(name))
@@ -318,16 +382,20 @@ def create_python_package(name: str, dest: Path,
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 
-    (pkg / name / "__init__.py").write_text("")
+    py_header = _copyright_py(maintainer_name)
+
+    (pkg / name / "__init__.py").write_text(py_header)
     (pkg / "resource" / name).write_text("")
 
     class_name = _class_name(name)
 
-    (pkg / name / f"{name}_node.py").write_text(f"""import rclpy
+    (pkg / name / f"{name}_node.py").write_text(py_header + f"""
+import rclpy
 from rclpy.node import Node
 
 
 class {class_name}Node(Node):
+
     def __init__(self):
         super().__init__('{name}')
         self.declare_parameter('publish_rate', 50.0)
@@ -355,7 +423,8 @@ if __name__ == '__main__':
     main()
 """)
 
-    (pkg / "setup.py").write_text(f"""from setuptools import find_packages, setup
+    (pkg / "setup.py").write_text(py_header + f"""
+from setuptools import find_packages, setup
 
 package_name = '{name}'
 
@@ -390,7 +459,8 @@ install_scripts=$base/lib/{name}
     publish_rate: 50.0
 """)
 
-    (pkg / "test" / f"test_{name}.py").write_text(f"""import pytest
+    (pkg / "test" / f"test_{name}.py").write_text(py_header + f"""
+import pytest
 import rclpy
 from {name}.{name}_node import {class_name}Node
 
@@ -408,15 +478,57 @@ def test_node_creation():
     node.destroy_node()
 """)
 
+    # Standard ament lint test files for Python packages
+    (pkg / "test" / "test_copyright.py").write_text(py_header + """
+from ament_copyright.main import main
+import pytest
+
+
+@pytest.mark.copyright
+@pytest.mark.linter
+def test_copyright():
+    rc = main(argv=['.', 'test'])
+    assert rc == 0, 'Found errors'
+""")
+
+    (pkg / "test" / "test_flake8.py").write_text(py_header + """
+from ament_flake8.main import main_with_errors
+import pytest
+
+
+@pytest.mark.flake8
+@pytest.mark.linter
+def test_flake8():
+    rc, errors = main_with_errors(argv=[])
+    assert rc == 0, \\
+        'Found %d code style errors / warnings:\\n' % len(errors) + \\
+        '\\n'.join(errors)
+""")
+
+    (pkg / "test" / "test_pep257.py").write_text(py_header + """
+from ament_pep257.main import main
+import pytest
+
+
+@pytest.mark.pep257
+@pytest.mark.linter
+def test_pep257():
+    rc = main(argv=['.', 'test'])
+    assert rc == 0, 'Found errors'
+""")
+
     # Generate launch file
-    (pkg / "launch" / "bringup.launch.py").write_text(_generate_launch_file(name))
+    (pkg / "launch" / "bringup.launch.py").write_text(
+        _generate_launch_file(name, maintainer_name=maintainer_name))
 
     # Generate README
     (pkg / "README.md").write_text(_generate_readme(name))
 
     _write_package_xml(pkg, name, "ament_python", ["rclpy"],
                        maintainer_name=maintainer_name,
-                       maintainer_email=maintainer_email)
+                       maintainer_email=maintainer_email,
+                       extra_test=["ament_copyright", "ament_flake8",
+                                   "ament_pep257", "python3-pytest"])
     print(f"Created Python package: {pkg}")
 
 
@@ -454,6 +566,11 @@ rosidl_generate_interfaces(${{PROJECT_NAME}}
   DEPENDENCIES std_msgs
 )
 
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+endif()
+
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
 """)
@@ -482,7 +599,8 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
                        maintainer_email: str = "todo@todo.com",
                        extra_exec: Optional[list] = None,
                        extra_member: Optional[list] = None,
-                       extra_buildtool: Optional[list] = None) -> None:
+                       extra_buildtool: Optional[list] = None,
+                       extra_test: Optional[list] = None) -> None:
     dep_lines = "\n".join(f"  <depend>{d}</depend>" for d in deps)
     exec_lines = ""
     if extra_exec:
@@ -496,6 +614,11 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
     if extra_member:
         member_lines = "\n" + "\n".join(
             f"  <member_of_group>{m}</member_of_group>" for m in extra_member)
+    test_lines = "\n  <test_depend>ament_lint_auto</test_depend>" \
+                 "\n  <test_depend>ament_lint_common</test_depend>"
+    if extra_test:
+        test_lines += "\n" + "\n".join(
+            f"  <test_depend>{t}</test_depend>" for t in extra_test)
 
     (pkg / "package.xml").write_text(f"""<?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd"
@@ -509,9 +632,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
 
   <buildtool_depend>{build_type}</buildtool_depend>{buildtool_lines}
 {dep_lines}{exec_lines}
-
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+{test_lines}
 {member_lines}
   <export>
     <build_type>{build_type}</build_type>

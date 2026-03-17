@@ -11,7 +11,8 @@ SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "create_packag
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from create_package import (
     create_cpp_package, create_python_package, create_interfaces_package,
-    _class_name, _generate_launch_file, _generate_readme,
+    _class_name, _copyright_cpp, _copyright_py, _generate_launch_file,
+    _generate_readme,
 )
 
 
@@ -74,6 +75,18 @@ class TestCppPackage:
         launch = (tmp_path / "my_robot" / "launch" / "bringup.launch.py").read_text()
         assert "LifecycleNode" in launch
         assert "generate_launch_description" in launch
+        assert "Copyright" in launch
+
+    def test_cpp_files_have_copyright(self, tmp_path):
+        run_script("my_robot", "--type", "cpp", "--dest", str(tmp_path))
+        hpp = (tmp_path / "my_robot" / "include" / "my_robot" / "my_robot_node.hpp").read_text()
+        assert hpp.startswith("// Copyright")
+        cpp = (tmp_path / "my_robot" / "src" / "my_robot_node.cpp").read_text()
+        assert cpp.startswith("// Copyright")
+        main = (tmp_path / "my_robot" / "src" / "main.cpp").read_text()
+        assert main.startswith("// Copyright")
+        test = (tmp_path / "my_robot" / "test" / "test_my_robot.cpp").read_text()
+        assert test.startswith("// Copyright")
 
     def test_maintainer_args(self, tmp_path):
         run_script("my_robot", "--type", "cpp", "--dest", str(tmp_path),
@@ -96,6 +109,9 @@ class TestPythonPackage:
         assert (pkg / "launch" / "bringup.launch.py").exists()
         assert (pkg / "config" / "params.yaml").exists()
         assert (pkg / "test" / "test_my_monitor.py").exists()
+        assert (pkg / "test" / "test_copyright.py").exists()
+        assert (pkg / "test" / "test_flake8.py").exists()
+        assert (pkg / "test" / "test_pep257.py").exists()
         assert (pkg / "resource" / "my_monitor").exists()
 
     def test_package_xml_python_build_type(self, tmp_path):
@@ -118,6 +134,16 @@ class TestPythonPackage:
         node = (tmp_path / "my_monitor" / "my_monitor" / "my_monitor_node.py").read_text()
         assert "class MyMonitorNode" in node
         assert "def main" in node
+        assert "Copyright" in node
+
+    def test_python_files_have_copyright(self, tmp_path):
+        run_script("my_monitor", "--type", "python", "--dest", str(tmp_path))
+        init = (tmp_path / "my_monitor" / "my_monitor" / "__init__.py").read_text()
+        assert "Copyright" in init
+        setup = (tmp_path / "my_monitor" / "setup.py").read_text()
+        assert "Copyright" in setup
+        launch = (tmp_path / "my_monitor" / "launch" / "bringup.launch.py").read_text()
+        assert "Copyright" in launch
 
     def test_standard_launch_file(self, tmp_path):
         run_script("my_monitor", "--type", "python", "--dest", str(tmp_path))
@@ -181,12 +207,24 @@ class TestDirectFunctions:
         assert "Node(" in launch
         assert "package='test_pkg'" in launch
         assert "LifecycleNode" not in launch
+        assert "Copyright" in launch
 
     def test_generate_launch_file_lifecycle(self):
         launch = _generate_launch_file("test_pkg", lifecycle=True)
         assert "generate_launch_description" in launch
         assert "LifecycleNode(" in launch
         assert "package='test_pkg'" in launch
+        assert "Copyright" in launch
+
+    def test_copyright_py_header(self):
+        header = _copyright_py("TestMaintainer")
+        assert "Copyright 2024 TestMaintainer" in header
+        assert "Apache License" in header
+
+    def test_copyright_cpp_header(self):
+        header = _copyright_cpp("TestMaintainer")
+        assert "Copyright 2024 TestMaintainer" in header
+        assert "Apache License" in header
 
     def test_generate_readme(self):
         readme = _generate_readme("my_pkg")
