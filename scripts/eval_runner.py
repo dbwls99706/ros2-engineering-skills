@@ -21,7 +21,7 @@ import os
 import sys
 import time
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 
 def load_eval_config(eval_dir):
