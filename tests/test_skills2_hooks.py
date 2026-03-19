@@ -12,8 +12,6 @@ import os
 import subprocess
 import sys
 
-import pytest
-
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), '..', 'scripts')
 
 sys.path.insert(0, SCRIPTS_DIR)
@@ -435,3 +433,168 @@ class TestValidateHookCLI:
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data['status'] == 'pass'
+
+
+class TestStopHookMainDirect:
+    """Test skill_stop_hook.main() directly for coverage."""
+
+    def test_main_clean_workspace(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from skill_stop_hook import main
+        monkeypatch.setenv('SKILL_WORKSPACE', str(tmp_path))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_with_valid_launch(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from skill_stop_hook import main
+        (tmp_path / 'launch').mkdir()
+        (tmp_path / 'launch' / 'ok.launch.py').write_text(
+            'from launch import LaunchDescription\n'
+            'def generate_launch_description():\n'
+            '    return LaunchDescription([])\n'
+        )
+        monkeypatch.setenv('SKILL_WORKSPACE', str(tmp_path))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_with_error_launch(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from skill_stop_hook import main
+        (tmp_path / 'launch').mkdir()
+        (tmp_path / 'launch' / 'bad.launch.py').write_text(
+            'from launch import LaunchDescription\n'
+            'def wrong_name():\n'
+            '    return LaunchDescription([])\n'
+        )
+        monkeypatch.setenv('SKILL_WORKSPACE', str(tmp_path))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_with_package_xml(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from skill_stop_hook import main
+        (tmp_path / 'package.xml').write_text(
+            '<?xml version="1.0"?>\n'
+            '<package format="3"><name>t</name>'
+            '<license>Apache-2.0</license></package>\n'
+        )
+        monkeypatch.setenv('SKILL_WORKSPACE', str(tmp_path))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_missing_name_in_pkg_xml(self, tmp_path, monkeypatch):
+        import pytest as _pytest
+        from skill_stop_hook import main
+        (tmp_path / 'package.xml').write_text(
+            '<?xml version="1.0"?>\n'
+            '<package format="3"><license>Apache-2.0</license></package>\n'
+        )
+        monkeypatch.setenv('SKILL_WORKSPACE', str(tmp_path))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+
+class TestValidateHookMainDirect:
+    """Test skill_validate_hook.main() directly for coverage."""
+
+    def test_main_no_input(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', '')
+        monkeypatch.setenv('TOOL_INPUT', '')
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_write_clean(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', 'Write')
+        monkeypatch.setenv('TOOL_INPUT', json.dumps({
+            'file_path': 'test.py',
+            'content': 'import rclpy\n',
+        }))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_write_antipattern(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', 'Write')
+        monkeypatch.setenv('TOOL_INPUT', json.dumps({
+            'file_path': 'test.py',
+            'content': 'time.sleep(5)\n',
+        }))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0  # Warnings don't block
+
+    def test_main_edit_antipattern(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', 'Edit')
+        monkeypatch.setenv('TOOL_INPUT', json.dumps({
+            'file_path': 'test.py',
+            'new_string': 'global node_ref\n',
+        }))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_bash_dangerous(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', 'Bash')
+        monkeypatch.setenv('TOOL_INPUT', json.dumps({
+            'command': 'rm -rf /opt/ros',
+        }))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_bash_safe(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', 'Bash')
+        monkeypatch.setenv('TOOL_INPUT', json.dumps({
+            'command': 'colcon build',
+        }))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_bash_invalid_json(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', 'Bash')
+        monkeypatch.setenv('TOOL_INPUT', 'not json')
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_write_no_content(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', 'Write')
+        monkeypatch.setenv('TOOL_INPUT', json.dumps({
+            'file_path': 'test.py',
+        }))
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_main_invalid_json_write(self, monkeypatch):
+        import pytest as _pytest
+        from skill_validate_hook import main
+        monkeypatch.setenv('TOOL_NAME', 'Write')
+        monkeypatch.setenv('TOOL_INPUT', '{bad json')
+        with _pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0

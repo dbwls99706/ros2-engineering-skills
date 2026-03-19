@@ -410,3 +410,225 @@ class TestEvalRunnerCLI:
             capture_output=True, text=True,
         )
         assert result.returncode == 2
+
+
+class TestEvalRunnerCoverage:
+    """Additional tests to cover all code paths in eval_runner.py."""
+
+    def test_load_eval_config_non_dict_yaml(self, tmp_path):
+        """Cover line 49-50: yaml that parses to non-dict."""
+        import pytest
+        (tmp_path / 'eval.yaml').write_text('- just\n- a\n- list\n')
+        with pytest.raises(SystemExit):
+            load_eval_config(str(tmp_path))
+
+    def test_validate_criterion_dict_missing_description(self):
+        """Cover line 92: criterion dict without description."""
+        entry = {
+            'name': 'test',
+            'prompt': 'prompts/qos-compatibility.md',
+            'expected': 'expected/qos-compatibility.md',
+            'criteria': [{'id': 'no-desc', 'weight': 1.0}],
+            'timeout': 1000,
+        }
+        errors = validate_eval_entry(entry, EVALS_DIR)
+        assert any('description' in e for e in errors)
+
+    def test_validate_criterion_bad_type(self):
+        """Cover line 95: criterion that is neither str nor dict."""
+        entry = {
+            'name': 'test',
+            'prompt': 'prompts/qos-compatibility.md',
+            'expected': 'expected/qos-compatibility.md',
+            'criteria': [42],
+            'timeout': 1000,
+        }
+        errors = validate_eval_entry(entry, EVALS_DIR)
+        assert any('string or dict' in e for e in errors)
+
+    def test_validate_timeout_not_number(self):
+        """Cover line 100: timeout that is not a number."""
+        entry = {
+            'name': 'test',
+            'prompt': 'prompts/qos-compatibility.md',
+            'expected': 'expected/qos-compatibility.md',
+            'criteria': ['Must do X'],
+            'timeout': 'fast',
+        }
+        errors = validate_eval_entry(entry, EVALS_DIR)
+        assert any('number' in e for e in errors)
+
+    def test_run_eval_with_validation_errors(self):
+        """Cover line 179-180: run_eval with invalid entry."""
+        entry = {'name': 'broken'}  # Missing required fields
+        result = run_eval(entry, EVALS_DIR)
+        assert result['status'] == 'error'
+        assert len(result['errors']) > 0
+        assert result['pass_rate'] == 0.0
+
+    def test_print_report_pass(self, capsys):
+        """Cover lines 303-346: print_report with passing results."""
+        from eval_runner import print_report
+        report = {
+            'skill': 'test-skill',
+            'version': '1.0.0',
+            'classification': 'capability',
+            'deprecation_risk': 'medium',
+            'summary': {
+                'total_evals': 1,
+                'passed': 1,
+                'failed': 0,
+                'errors': 0,
+                'average_pass_rate': 100.0,
+                'total_execution_time_ms': 5.0,
+                'overall_status': 'pass',
+            },
+            'evals': [{
+                'name': 'test-eval',
+                'status': 'pass',
+                'pass_rate': 100.0,
+                'passed_criteria': 2,
+                'total_criteria': 2,
+                'execution_time_ms': 5.0,
+                'criteria_results': [
+                    {'criterion': 'Check A', 'passed': True,
+                     'coverage': 1.0, 'matched_terms': [], 'total_terms': 2},
+                    {'criterion': 'Check B', 'passed': True,
+                     'coverage': 1.0, 'matched_terms': [], 'total_terms': 2},
+                ],
+            }],
+            'parity_test': {
+                'enabled': True,
+                'threshold': 5.0,
+                'consecutive_failures_for_deprecation': 3,
+            },
+        }
+        print_report(report)
+        captured = capsys.readouterr()
+        assert 'PASS' in captured.out
+        assert 'test-skill' in captured.out
+        assert 'Parity Test' in captured.out
+
+    def test_print_report_fail_with_errors(self, capsys):
+        """Cover print_report with failing and error results."""
+        from eval_runner import print_report
+        report = {
+            'skill': 'test-skill',
+            'version': '1.0.0',
+            'classification': 'capability',
+            'deprecation_risk': 'medium',
+            'summary': {
+                'total_evals': 2,
+                'passed': 0,
+                'failed': 1,
+                'errors': 1,
+                'average_pass_rate': 25.0,
+                'total_execution_time_ms': 10.0,
+                'overall_status': 'fail',
+            },
+            'evals': [
+                {
+                    'name': 'fail-eval',
+                    'status': 'fail',
+                    'pass_rate': 50.0,
+                    'passed_criteria': 1,
+                    'total_criteria': 2,
+                    'execution_time_ms': 5.0,
+                    'criteria_results': [
+                        {'criterion': 'Short', 'passed': True,
+                         'coverage': 1.0, 'matched_terms': [],
+                         'total_terms': 1},
+                        {'criterion': 'A very long criterion that exceeds '
+                         'sixty characters in total length to test truncation '
+                         'behavior', 'passed': False,
+                         'coverage': 0.1, 'matched_terms': [],
+                         'total_terms': 10},
+                    ],
+                },
+                {
+                    'name': 'error-eval',
+                    'status': 'error',
+                    'pass_rate': 0.0,
+                    'passed_criteria': 0,
+                    'total_criteria': 0,
+                    'execution_time_ms': 1.0,
+                    'errors': ['Missing prompt file'],
+                    'criteria_results': [],
+                },
+            ],
+            'parity_test': None,
+        }
+        print_report(report)
+        captured = capsys.readouterr()
+        assert 'FAIL' in captured.out
+        assert 'ERR' in captured.out
+        assert 'ERROR' in captured.out
+
+    def test_print_report_no_parity_test(self, capsys):
+        """Cover print_report branch when parity_test is disabled."""
+        from eval_runner import print_report
+        report = {
+            'skill': 'test',
+            'version': '0.1.0',
+            'classification': 'workflow',
+            'deprecation_risk': 'none',
+            'summary': {
+                'total_evals': 0,
+                'passed': 0,
+                'failed': 0,
+                'errors': 0,
+                'average_pass_rate': 0.0,
+                'total_execution_time_ms': 0.0,
+                'overall_status': 'pass',
+            },
+            'evals': [],
+            'parity_test': {'enabled': False},
+        }
+        print_report(report)
+        captured = capsys.readouterr()
+        assert 'Parity Test' not in captured.out
+
+    def test_main_text_output(self, monkeypatch):
+        """Cover lines 350-388: main() with text output."""
+        import pytest
+        from eval_runner import main
+        monkeypatch.setattr(
+            'sys.argv',
+            ['eval_runner.py', '--eval-dir', EVALS_DIR])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        # May be 0 or 1 depending on eval pass rate
+        assert exc_info.value.code in (0, 1)
+
+    def test_main_json_output(self, monkeypatch):
+        """Cover main() with --json flag."""
+        import pytest
+        from eval_runner import main
+        monkeypatch.setattr(
+            'sys.argv',
+            ['eval_runner.py', '--eval-dir', EVALS_DIR, '--json'])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code in (0, 1)
+
+    def test_main_default_eval_dir(self, monkeypatch):
+        """Cover main() without --eval-dir (uses default path)."""
+        import pytest
+        from eval_runner import main
+        monkeypatch.setattr(
+            'sys.argv', ['eval_runner.py'])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code in (0, 1)
+
+    def test_main_specific_eval(self, monkeypatch):
+        """Cover main() with --eval-name."""
+        import pytest
+        from eval_runner import main
+        monkeypatch.setattr(
+            'sys.argv',
+            ['eval_runner.py', '--eval-dir', EVALS_DIR,
+             '--eval-name', 'qos-compatibility-analysis'])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code in (0, 1)
