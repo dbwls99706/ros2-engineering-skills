@@ -24,8 +24,10 @@ from skill_stop_hook import (
 from skill_validate_hook import (
     check_content,
     check_file,
+    _check_dangerous_commands,
     ANTIPATTERN_CHECKS,
     CHECKABLE_EXTENSIONS,
+    DANGEROUS_COMMAND_PATTERNS,
 )
 
 
@@ -327,6 +329,76 @@ class TestValidateHookAntiPatterns:
         assert '.py' in CHECKABLE_EXTENSIONS
         assert '.cpp' in CHECKABLE_EXTENSIONS
         assert '.hpp' in CHECKABLE_EXTENSIONS
+
+
+class TestDangerousCommandDetection:
+    """Test dangerous command detection in the PreToolUse hook."""
+
+    def test_rm_rf_root(self):
+        issues = _check_dangerous_commands('rm -rf /')
+        assert len(issues) >= 1
+        assert any('root' in i['message'].lower() for i in issues)
+
+    def test_rm_rf_root_star(self):
+        issues = _check_dangerous_commands('rm -rf /*')
+        assert len(issues) >= 1
+
+    def test_rm_rf_opt_ros(self):
+        issues = _check_dangerous_commands('rm -rf /opt/ros')
+        assert len(issues) >= 1
+        assert any('ROS' in i['message'] for i in issues)
+
+    def test_rm_rf_system_dirs(self):
+        for d in ['/usr', '/bin', '/etc', '/var', '/boot', '/lib']:
+            issues = _check_dangerous_commands(f'rm -rf {d}')
+            assert len(issues) >= 1, f"Should detect rm -rf {d}"
+
+    def test_rm_rf_home(self):
+        issues = _check_dangerous_commands('rm -rf ~')
+        assert len(issues) >= 1
+
+    def test_mkfs_detected(self):
+        issues = _check_dangerous_commands('mkfs.ext4 /dev/sda1')
+        assert len(issues) >= 1
+        assert any('mkfs' in i['message'] for i in issues)
+
+    def test_dd_to_disk(self):
+        issues = _check_dangerous_commands('dd if=/dev/zero of=/dev/sda')
+        assert len(issues) >= 1
+        assert any('dd' in i['message'].lower() for i in issues)
+
+    def test_chmod_777_root(self):
+        issues = _check_dangerous_commands('chmod -R 777 /')
+        assert len(issues) >= 1
+        assert any('chmod' in i['message'] for i in issues)
+
+    def test_safe_commands_pass(self):
+        safe_commands = [
+            'colcon build',
+            'ros2 run demo_nodes_cpp talker',
+            'rm -rf build/ install/ log/',
+            'cat /etc/os-release',
+        ]
+        for cmd in safe_commands:
+            issues = _check_dangerous_commands(cmd)
+            assert len(issues) == 0, f"Safe command flagged: {cmd}"
+
+    def test_dangerous_patterns_non_empty(self):
+        assert len(DANGEROUS_COMMAND_PATTERNS) >= 5
+
+    def test_rm_rf_root_cli(self):
+        """Test via CLI that rm -rf / is blocked."""
+        tool_input = json.dumps({'command': 'rm -rf /'})
+        result = subprocess.run(
+            [sys.executable,
+             os.path.join(SCRIPTS_DIR, 'skill_validate_hook.py')],
+            capture_output=True, text=True,
+            env={**os.environ,
+                 'TOOL_NAME': 'Bash', 'TOOL_INPUT': tool_input},
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data['status'] == 'fail'
 
 
 class TestValidateHookCLI:
