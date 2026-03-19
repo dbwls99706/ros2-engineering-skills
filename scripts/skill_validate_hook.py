@@ -90,6 +90,65 @@ def check_file(filepath):
         return []
 
 
+# Dangerous command patterns for Bash tool validation
+DANGEROUS_COMMAND_PATTERNS = [
+    {
+        'pattern': r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/\s*$',
+        'message': 'Refusing to remove root filesystem (rm -rf /)',
+    },
+    {
+        'pattern': r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/\*',
+        'message': 'Refusing to remove all files from root (rm -rf /*)',
+    },
+    {
+        'pattern': r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)/opt/ros\b',
+        'message': 'Refusing to remove ROS installation directory',
+    },
+    {
+        'pattern': r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)/(usr|bin|sbin|etc|var|boot|lib|lib64)\b',
+        'message': 'Refusing to remove critical system directory',
+    },
+    {
+        'pattern': r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)(~|\$HOME)\s*(/\s*)?$',
+        'message': 'Refusing to remove home directory',
+    },
+    {
+        'pattern': r'\bmkfs\b',
+        'message': 'Refusing to format filesystem (mkfs)',
+    },
+    {
+        'pattern': r'\bdd\s+.*\bof\s*=\s*/dev/(sd|nvme|vd|hd)',
+        'message': 'Refusing to write directly to block device (dd)',
+    },
+    {
+        'pattern': r'\bchmod\s+(-[a-zA-Z]*R[a-zA-Z]*\s+)777\s+/',
+        'message': 'Refusing to recursively chmod 777 on root filesystem',
+    },
+    {
+        'pattern': r':\s*\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:',
+        'message': 'Refusing to execute fork bomb',
+    },
+    {
+        'pattern': r'>\s*/dev/(sd|nvme|vd|hd)',
+        'message': 'Refusing to overwrite block device',
+    },
+]
+
+
+def _check_dangerous_commands(command):
+    """Check a bash command string for dangerous patterns."""
+    issues = []
+    for check in DANGEROUS_COMMAND_PATTERNS:
+        if re.search(check['pattern'], command):
+            issues.append({
+                'file': '<bash>',
+                'line': 0,
+                'severity': 'error',
+                'message': check['message'],
+            })
+    return issues
+
+
 def main():
     # Read tool context from environment or stdin
     tool_input = os.environ.get('TOOL_INPUT', '')
@@ -113,13 +172,7 @@ def main():
         try:
             data = json.loads(tool_input)
             command = data.get('command', '')
-            if 'rm -rf /opt/ros' in command:
-                issues.append({
-                    'file': '<bash>',
-                    'line': 0,
-                    'severity': 'error',
-                    'message': 'Refusing to remove ROS installation directory',
-                })
+            issues.extend(_check_dangerous_commands(command))
         except (json.JSONDecodeError, AttributeError):
             pass
 
