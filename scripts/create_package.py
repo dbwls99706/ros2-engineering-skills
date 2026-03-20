@@ -17,6 +17,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+
+def _write(path: Path, text: str) -> None:
+    """Write text to a file with explicit UTF-8 encoding (Windows safe)."""
+    path.write_text(text, encoding='utf-8')
+
 __version__ = "0.1.0"
 
 # Apache-2.0 copyright/license headers for generated files
@@ -178,7 +183,7 @@ rclcpp_components_register_node(${{PROJECT_NAME}}_lib
 )
 """
 
-    (pkg / "CMakeLists.txt").write_text(f"""cmake_minimum_required(VERSION 3.8)
+    _write(pkg / "CMakeLists.txt", f"""cmake_minimum_required(VERSION 3.8)
 project({name})
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -231,7 +236,7 @@ ament_package()
 
     class_name = _class_name(name)
 
-    (pkg / "include" / name / f"{name}_node.hpp").write_text(
+    _write(pkg / "include" / name / f"{name}_node.hpp", 
         cpp_header + f"""
 #pragma once
 
@@ -267,7 +272,7 @@ private:
         component_include = "\n#include <rclcpp_components/register_node_macro.hpp>"
         component_register = f"\n\nRCLCPP_COMPONENTS_REGISTER_NODE({name}::{class_name}Node)\n"
 
-    (pkg / "src" / f"{name}_node.cpp").write_text(
+    _write(pkg / "src" / f"{name}_node.cpp", 
         cpp_header + f"""
 #include "{name}/{name}_node.hpp"
 {component_include}
@@ -329,7 +334,7 @@ void {class_name}Node::on_requested_qos_incompatible(
 }}  // namespace {name}
 {component_register}""")
 
-    (pkg / "src" / "main.cpp").write_text(
+    _write(pkg / "src" / "main.cpp", 
         cpp_header + f"""
 #include <rclcpp/rclcpp.hpp>
 #include "{name}/{name}_node.hpp"
@@ -346,13 +351,13 @@ int main(int argc, char ** argv)
 }}
 """)
 
-    (pkg / "config" / "params.yaml").write_text(f"""{name}:
+    _write(pkg / "config" / "params.yaml", f"""{name}:
   ros__parameters:
     # Add parameters here
     publish_rate: 50.0
 """)
 
-    (pkg / "test" / f"test_{name}.cpp").write_text(
+    _write(pkg / "test" / f"test_{name}.cpp", 
         cpp_header + f"""
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
@@ -379,12 +384,12 @@ TEST_F({class_name}Test, NodeCreation)
 """)
 
     # Generate launch file (lifecycle=True since C++ template uses LifecycleNode)
-    (pkg / "launch" / "bringup.launch.py").write_text(
+    _write(pkg / "launch" / "bringup.launch.py", 
         _generate_launch_file(name, lifecycle=True,
                               maintainer_name=maintainer_name))
 
     # Generate README
-    (pkg / "README.md").write_text(_generate_readme(name))
+    _write(pkg / "README.md", _generate_readme(name))
 
     deps = ["rclcpp", "rclcpp_lifecycle"]
     if component:
@@ -473,16 +478,16 @@ def create_python_package(name: str, dest: Path,
 
     py_header = _copyright_py(maintainer_name)
 
-    (pkg / name / "__init__.py").write_text(py_header)
-    (pkg / "resource" / name).write_text("")
+    _write(pkg / name / "__init__.py", py_header)
+    _write(pkg / "resource" / name, "")
 
     class_name = _class_name(name)
 
     if lifecycle:
-        (pkg / name / f"{name}_node.py").write_text(
+        _write(pkg / name / f"{name}_node.py", 
             _generate_python_lifecycle_node(name, class_name, maintainer_name))
     else:
-        (pkg / name / f"{name}_node.py").write_text(py_header + f"""
+        _write(pkg / name / f"{name}_node.py", py_header + f"""
 import rclpy
 from rclpy.node import Node
 
@@ -522,7 +527,7 @@ if __name__ == '__main__':
     main()
 """)
 
-    (pkg / "setup.py").write_text(py_header + f"""
+    _write(pkg / "setup.py", py_header + f"""
 from setuptools import find_packages, setup
 
 package_name = '{name}'
@@ -547,19 +552,19 @@ setup(
 )
 """)
 
-    (pkg / "setup.cfg").write_text(f"""[develop]
+    _write(pkg / "setup.cfg", f"""[develop]
 script_dir=$base/lib/{name}
 [install]
 install_scripts=$base/lib/{name}
 """)
 
-    (pkg / "config" / "params.yaml").write_text(f"""{name}:
+    _write(pkg / "config" / "params.yaml", f"""{name}:
   ros__parameters:
     publish_rate: 50.0
 """)
 
     if lifecycle:
-        (pkg / "test" / f"test_{name}.py").write_text(py_header + f"""
+        _write(pkg / "test" / f"test_{name}.py", py_header + f"""
 import pytest
 import rclpy
 from {name}.{name}_node import {class_name}Node
@@ -595,7 +600,7 @@ def test_lifecycle_activate():
     node.destroy_node()
 """)
     else:
-        (pkg / "test" / f"test_{name}.py").write_text(py_header + f"""
+        _write(pkg / "test" / f"test_{name}.py", py_header + f"""
 import pytest
 import rclpy
 from {name}.{name}_node import {class_name}Node
@@ -615,7 +620,7 @@ def test_node_creation():
 """)
 
     # Standard ament lint test files for Python packages
-    (pkg / "test" / "test_copyright.py").write_text(py_header + """
+    _write(pkg / "test" / "test_copyright.py", py_header + """
 from ament_copyright.main import main
 import pytest
 
@@ -627,7 +632,7 @@ def test_copyright():
     assert rc == 0, 'Found errors'
 """)
 
-    (pkg / "test" / "test_flake8.py").write_text(py_header + """
+    _write(pkg / "test" / "test_flake8.py", py_header + """
 from ament_flake8.main import main_with_errors
 import pytest
 
@@ -641,7 +646,7 @@ def test_flake8():
         '\\n'.join(errors)
 """)
 
-    (pkg / "test" / "test_pep257.py").write_text(py_header + """
+    _write(pkg / "test" / "test_pep257.py", py_header + """
 from ament_pep257.main import main
 import pytest
 
@@ -654,12 +659,12 @@ def test_pep257():
 """)
 
     # Generate launch file (lifecycle=True if Python lifecycle package)
-    (pkg / "launch" / "bringup.launch.py").write_text(
+    _write(pkg / "launch" / "bringup.launch.py", 
         _generate_launch_file(name, lifecycle=lifecycle,
                               maintainer_name=maintainer_name))
 
     # Generate README
-    (pkg / "README.md").write_text(_generate_readme(name))
+    _write(pkg / "README.md", _generate_readme(name))
 
     py_deps = ["rclpy"]
     if lifecycle:
@@ -680,20 +685,20 @@ def create_interfaces_package(name: str, dest: Path,
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 
-    (pkg / "msg" / "Status.msg").write_text("""std_msgs/Header header
+    _write(pkg / "msg" / "Status.msg", """std_msgs/Header header
 uint8 mode
 string description
 float64 battery_voltage
 """)
 
-    (pkg / "srv" / "SetMode.srv").write_text("""string mode
+    _write(pkg / "srv" / "SetMode.srv", """string mode
 bool force
 ---
 bool success
 string message
 """)
 
-    (pkg / "CMakeLists.txt").write_text(f"""cmake_minimum_required(VERSION 3.8)
+    _write(pkg / "CMakeLists.txt", f"""cmake_minimum_required(VERSION 3.8)
 project({name})
 
 find_package(ament_cmake REQUIRED)
@@ -716,7 +721,7 @@ ament_package()
 """)
 
     # Generate README
-    (pkg / "README.md").write_text(_generate_readme(name))
+    _write(pkg / "README.md", _generate_readme(name))
 
     _write_package_xml(pkg, name, "ament_cmake",
                        ["std_msgs"],
@@ -748,7 +753,7 @@ def create_hardware_interface_package(
     class_name = _class_name(name)
 
     # --- CMakeLists.txt ---
-    (pkg / "CMakeLists.txt").write_text(f"""cmake_minimum_required(VERSION 3.8)
+    _write(pkg / "CMakeLists.txt", f"""cmake_minimum_required(VERSION 3.8)
 project({name})
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -805,7 +810,7 @@ ament_package()
 """)
 
     # --- Header ---
-    (pkg / "include" / name / f"{name}_hardware.hpp").write_text(
+    _write(pkg / "include" / name / f"{name}_hardware.hpp", 
         cpp_header + f"""
 #pragma once
 
@@ -869,7 +874,7 @@ private:
 """)
 
     # --- Source ---
-    (pkg / "src" / f"{name}_hardware.cpp").write_text(
+    _write(pkg / "src" / f"{name}_hardware.cpp", 
         cpp_header + f"""
 #include "{name}/{name}_hardware.hpp"
 
@@ -984,7 +989,7 @@ PLUGINLIB_EXPORT_CLASS(
 """)
 
     # --- Plugin description XML ---
-    (pkg / f"{name}_plugin.xml").write_text(
+    _write(pkg / f"{name}_plugin.xml", 
         f"""<library path="{name}">
   <class name="{name}/{class_name}Hardware"
          type="{name}::{class_name}Hardware"
@@ -997,7 +1002,7 @@ PLUGINLIB_EXPORT_CLASS(
 """)
 
     # --- ros2_control URDF snippet ---
-    (pkg / "config" / f"{name}.ros2_control.xacro").write_text(
+    _write(pkg / "config" / f"{name}.ros2_control.xacro", 
         f"""<?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <ros2_control name="{class_name}System" type="system">
@@ -1019,7 +1024,7 @@ PLUGINLIB_EXPORT_CLASS(
 """)
 
     # --- Controller config ---
-    (pkg / "config" / "controllers.yaml").write_text("""controller_manager:
+    _write(pkg / "config" / "controllers.yaml", """controller_manager:
   ros__parameters:
     update_rate: 100  # Hz
 
@@ -1042,7 +1047,7 @@ PLUGINLIB_EXPORT_CLASS(
 """)
 
     # --- Test ---
-    (pkg / "test" / f"test_{name}.cpp").write_text(
+    _write(pkg / "test" / f"test_{name}.cpp", 
         cpp_header + f"""
 #include <gtest/gtest.h>
 #include "{name}/{name}_hardware.hpp"
@@ -1064,7 +1069,7 @@ TEST({class_name}Test, OnInitWithEmptyInfo)
 """)
 
     # --- README ---
-    (pkg / "README.md").write_text(f"""# {name}
+    _write(pkg / "README.md", f"""# {name}
 
 ros2_control hardware interface package.
 
@@ -1148,7 +1153,7 @@ def _generate_sros2_enclave(name: str, dest: Path,
     enclave = dest / name / "security" / "enclaves" / name
     enclave.mkdir(parents=True, exist_ok=True)
 
-    (dest / name / "security" / "policies.xml").write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+    _write(dest / name / "security" / "policies.xml", f"""<?xml version="1.0" encoding="UTF-8"?>
 <policy version="0.2.0">
   <enclaves>
     <enclave path="/{name}">
@@ -1170,7 +1175,7 @@ def _generate_sros2_enclave(name: str, dest: Path,
 </policy>
 """)
 
-    (dest / name / "security" / "governance.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+    _write(dest / name / "security" / "governance.xml", """<?xml version="1.0" encoding="UTF-8"?>
 <dds xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
      xsi:noNamespaceSchemaLocation="omg_shared_ca_governance.xsd">
   <domain_access_rules>
@@ -1202,7 +1207,7 @@ def _generate_sros2_enclave(name: str, dest: Path,
 </dds>
 """)
 
-    (dest / name / "security" / "README.md").write_text(f"""# SROS2 Security Configuration for {name}
+    _write(dest / name / "security" / "README.md", f"""# SROS2 Security Configuration for {name}
 
 ## Quick Start
 
@@ -1264,7 +1269,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
         test_lines += "\n" + "\n".join(
             f"  <test_depend>{t}</test_depend>" for t in extra_test)
 
-    (pkg / "package.xml").write_text(f"""<?xml version="1.0"?>
+    _write(pkg / "package.xml", f"""<?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd"
   schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
@@ -1350,7 +1355,7 @@ def main():
             args.name, args.robots, lifecycle=lifecycle,
             maintainer_name=m_name)
         fleet_path = dest / args.name / "launch" / "fleet.launch.py"
-        fleet_path.write_text(fleet_content)
+        _write(fleet_path, fleet_content)
         print(f"  + fleet launch for {args.robots} robots: {fleet_path}")
 
     if args.sros2:
