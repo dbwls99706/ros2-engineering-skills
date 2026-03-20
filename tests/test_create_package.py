@@ -59,7 +59,9 @@ class TestCppPackage:
 
     def test_cpp_class_name_camelcase(self, tmp_path):
         run_script("my_cool_robot", "--type", "cpp", "--dest", str(tmp_path))
-        hpp = (tmp_path / "my_cool_robot" / "include" / "my_cool_robot" / "my_cool_robot_node.hpp").read_text(encoding="utf-8")
+        hpp_path = (tmp_path / "my_cool_robot" / "include"
+                    / "my_cool_robot" / "my_cool_robot_node.hpp")
+        hpp = hpp_path.read_text(encoding="utf-8")
         assert "MyCoolRobotNode" in hpp
 
     def test_component_flag(self, tmp_path):

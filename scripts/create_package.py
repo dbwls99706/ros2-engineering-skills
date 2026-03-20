@@ -22,6 +22,7 @@ def _write(path: Path, text: str) -> None:
     """Write text to a file with explicit UTF-8 encoding (Windows safe)."""
     path.write_text(text, encoding='utf-8')
 
+
 __version__ = "0.1.0"
 
 # Apache-2.0 copyright/license headers for generated files
@@ -236,8 +237,7 @@ ament_package()
 
     class_name = _class_name(name)
 
-    _write(pkg / "include" / name / f"{name}_node.hpp", 
-        cpp_header + f"""
+    _write(pkg / "include" / name / f"{name}_node.hpp", cpp_header + f"""
 #pragma once
 
 #include <rclcpp/rclcpp.hpp>
@@ -272,8 +272,7 @@ private:
         component_include = "\n#include <rclcpp_components/register_node_macro.hpp>"
         component_register = f"\n\nRCLCPP_COMPONENTS_REGISTER_NODE({name}::{class_name}Node)\n"
 
-    _write(pkg / "src" / f"{name}_node.cpp", 
-        cpp_header + f"""
+    _write(pkg / "src" / f"{name}_node.cpp", cpp_header + f"""
 #include "{name}/{name}_node.hpp"
 {component_include}
 namespace {name}
@@ -334,8 +333,7 @@ void {class_name}Node::on_requested_qos_incompatible(
 }}  // namespace {name}
 {component_register}""")
 
-    _write(pkg / "src" / "main.cpp", 
-        cpp_header + f"""
+    _write(pkg / "src" / "main.cpp", cpp_header + f"""
 #include <rclcpp/rclcpp.hpp>
 #include "{name}/{name}_node.hpp"
 
@@ -357,8 +355,7 @@ int main(int argc, char ** argv)
     publish_rate: 50.0
 """)
 
-    _write(pkg / "test" / f"test_{name}.cpp", 
-        cpp_header + f"""
+    _write(pkg / "test" / f"test_{name}.cpp", cpp_header + f"""
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
 #include "{name}/{name}_node.hpp"
@@ -384,9 +381,9 @@ TEST_F({class_name}Test, NodeCreation)
 """)
 
     # Generate launch file (lifecycle=True since C++ template uses LifecycleNode)
-    _write(pkg / "launch" / "bringup.launch.py", 
-        _generate_launch_file(name, lifecycle=True,
-                              maintainer_name=maintainer_name))
+    launch_content = _generate_launch_file(
+        name, lifecycle=True, maintainer_name=maintainer_name)
+    _write(pkg / "launch" / "bringup.launch.py", launch_content)
 
     # Generate README
     _write(pkg / "README.md", _generate_readme(name))
@@ -484,8 +481,9 @@ def create_python_package(name: str, dest: Path,
     class_name = _class_name(name)
 
     if lifecycle:
-        _write(pkg / name / f"{name}_node.py", 
-            _generate_python_lifecycle_node(name, class_name, maintainer_name))
+        lifecycle_src = _generate_python_lifecycle_node(
+            name, class_name, maintainer_name)
+        _write(pkg / name / f"{name}_node.py", lifecycle_src)
     else:
         _write(pkg / name / f"{name}_node.py", py_header + f"""
 import rclpy
@@ -659,9 +657,9 @@ def test_pep257():
 """)
 
     # Generate launch file (lifecycle=True if Python lifecycle package)
-    _write(pkg / "launch" / "bringup.launch.py", 
-        _generate_launch_file(name, lifecycle=lifecycle,
-                              maintainer_name=maintainer_name))
+    launch_content = _generate_launch_file(
+        name, lifecycle=lifecycle, maintainer_name=maintainer_name)
+    _write(pkg / "launch" / "bringup.launch.py", launch_content)
 
     # Generate README
     _write(pkg / "README.md", _generate_readme(name))
@@ -810,8 +808,7 @@ ament_package()
 """)
 
     # --- Header ---
-    _write(pkg / "include" / name / f"{name}_hardware.hpp", 
-        cpp_header + f"""
+    _write(pkg / "include" / name / f"{name}_hardware.hpp", cpp_header + f"""
 #pragma once
 
 #include <string>
@@ -874,8 +871,7 @@ private:
 """)
 
     # --- Source ---
-    _write(pkg / "src" / f"{name}_hardware.cpp", 
-        cpp_header + f"""
+    _write(pkg / "src" / f"{name}_hardware.cpp", cpp_header + f"""
 #include "{name}/{name}_hardware.hpp"
 
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
@@ -989,8 +985,7 @@ PLUGINLIB_EXPORT_CLASS(
 """)
 
     # --- Plugin description XML ---
-    _write(pkg / f"{name}_plugin.xml", 
-        f"""<library path="{name}">
+    _write(pkg / f"{name}_plugin.xml", f"""<library path="{name}">
   <class name="{name}/{class_name}Hardware"
          type="{name}::{class_name}Hardware"
          base_class_type="hardware_interface::SystemInterface">
@@ -1002,8 +997,7 @@ PLUGINLIB_EXPORT_CLASS(
 """)
 
     # --- ros2_control URDF snippet ---
-    _write(pkg / "config" / f"{name}.ros2_control.xacro", 
-        f"""<?xml version="1.0"?>
+    _write(pkg / "config" / f"{name}.ros2_control.xacro", f"""<?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <ros2_control name="{class_name}System" type="system">
     <hardware>
@@ -1047,8 +1041,7 @@ PLUGINLIB_EXPORT_CLASS(
 """)
 
     # --- Test ---
-    _write(pkg / "test" / f"test_{name}.cpp", 
-        cpp_header + f"""
+    _write(pkg / "test" / f"test_{name}.cpp", cpp_header + f"""
 #include <gtest/gtest.h>
 #include "{name}/{name}_hardware.hpp"
 
