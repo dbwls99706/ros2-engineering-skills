@@ -1278,7 +1278,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
 {member_lines}
   <export>
     <build_type>{build_type}</build_type>
-  </export>{member_lines}
+  </export>
 </package>
 """)
 
