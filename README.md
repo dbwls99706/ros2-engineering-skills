@@ -191,8 +191,8 @@ ros2-engineering-skills/
 
 | | |
 |---|---|
-| **137 tests** | Unit + property-based (Hypothesis) + CLI + integration |
-| **99% coverage** | All scripts verified with flake8 + mypy clean |
+| **398 tests** | Unit + property-based (Hypothesis) + CLI + integration |
+| **94% coverage** | All scripts verified with flake8 + mypy clean |
 | **3 distros** | Humble, Jazzy, Rolling — tested on Python 3.10 / 3.11 / 3.12 |
 | **4 CI jobs** | Lint, unit-tests, ros2-integration, lint-scripts |
 
