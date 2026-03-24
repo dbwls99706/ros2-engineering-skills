@@ -119,9 +119,13 @@ A `SKILL.md`-based knowledge module that gives AI coding agents deep ROS 2 engin
 
 ### Claude Code
 ```bash
-# From plugin marketplace
+# From plugin marketplace (terminal)
 claude plugin marketplace add dbwls99706/ros2-engineering-skills
 claude plugin install ros2-engineering@ros2-engineering-skills
+
+# Or use slash commands (inside Claude Code)
+/plugin marketplace add dbwls99706/ros2-engineering-skills
+/plugin install ros2-engineering@ros2-engineering-skills
 
 # Or clone directly
 git clone https://github.com/dbwls99706/ros2-engineering-skills.git ~/.claude/skills/ros2-engineering-skills
