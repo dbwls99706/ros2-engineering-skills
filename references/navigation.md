@@ -49,6 +49,9 @@
 - `smoother_server` — smooths planned paths (optional)
 - `waypoint_follower` — executes multi-waypoint missions
 - `velocity_smoother` — smooths `cmd_vel` output (optional)
+- `docking_server` (Jazzy+) — automated docking/undocking with charging stations
+- `route_server` (Kilted) — graph-based route planning for large-scale environments
+- `loopback_simulator` (Kilted) — lightweight sim that feeds Nav2 outputs back as inputs (no Gazebo needed, useful for CI/testing)
 
 ### Minimal Nav2 launch
 
