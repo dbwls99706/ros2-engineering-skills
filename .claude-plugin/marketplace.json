@@ -1,0 +1,22 @@
+{
+  "name": "ros2-engineering-skills",
+  "owner": {
+    "name": "YuJin Hong",
+    "email": "dbwls99706@github.com"
+  },
+  "metadata": {
+    "description": "Comprehensive ROS 2 engineering skill for AI coding agents",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "ros2-engineering",
+      "description": "ROS 2 engineering guide covering workspace, nodes, communication, ros2_control, lifecycle, launch, tf2/URDF, real-time, Nav2, MoveIt 2, perception, testing, debugging, deployment, and ROS 1 migration",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    }
+  ]
+}
