@@ -43,6 +43,12 @@
 - **Trajectory Execution Manager:** Sends planned trajectories to controllers
 - **MoveIt Servo:** Real-time Cartesian/joint jogging
 
+**Migration notes (MoveIt 2 from MoveIt 1):**
+- Headers migrated from `.h` to `.hpp` (e.g., `move_group_interface.h` -> `.hpp`). Old `.h` headers are deprecated and will be removed.
+- Namespace `robot_state::` / `robot_model::` deprecated; use `moveit::core::` instead.
+- `Eigen::Affine3d` replaced with `Eigen::Isometry3d` throughout the API.
+- `CollisionRobot` + `CollisionWorld` merged into a single `CollisionEnv` class.
+
 ## 2. Move group configuration
 
 ### SRDF (Semantic Robot Description Format)
@@ -106,6 +112,9 @@ arm:
   # kinematics_solver: pick_ik/PickIkPlugin   # Faster for complex IK
 ```
 
+> **Note:** The LMA (Levenberg-Marquardt) kinematics plugin has been removed.
+> Use KDL or TracIK (`track_ik_kinematics_plugin/TrackIKKinematicsPlugin`) instead.
+
 ### Joint limits override
 
 ```yaml
@@ -128,7 +137,8 @@ joint_limits:
 ### Adding collision objects (C++)
 
 ```cpp
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.hpp>
+// Note: .h headers are deprecated; use .hpp equivalents
 
 void add_table(moveit::planning_interface::PlanningSceneInterface & psi)
 {
@@ -182,14 +192,14 @@ psi.applyAttachedCollisionObject(attached);
 ### Using MoveGroupInterface (C++)
 
 ```cpp
-#include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit/move_group_interface/move_group_interface.hpp>
 
 auto move_group = moveit::planning_interface::MoveGroupInterface(node, "arm");
 
 // Set planning parameters
 move_group.setPlanningTime(5.0);           // Max planning time
-move_group.setMaxVelocityScalingFactor(0.5);
-move_group.setMaxAccelerationScalingFactor(0.5);
+move_group.setMaxVelocityScalingFactor(0.5);   // Default is now 0.1 (was 1.0)
+move_group.setMaxAccelerationScalingFactor(0.5); // Default is now 0.1 (was 1.0)
 move_group.setNumPlanningAttempts(10);
 
 // Move to named state
@@ -239,6 +249,20 @@ double fraction = move_group.computeCartesianPath(
 
 if (fraction > 0.95) {  // Successfully planned >95% of the path
   move_group.execute(trajectory);
+}
+```
+
+### Trajectory processing
+
+Trajectory time-parameterization now uses factory methods that return `std::optional`
+instead of raw constructors. Check the return value before using the result:
+
+```cpp
+// New API pattern for trajectory processing
+auto time_param = trajectory_processing::TimeOptimalTrajectoryGeneration::create(
+    path_tolerance);
+if (time_param) {
+  time_param->computeTimeStamps(trajectory, max_velocity_scaling, max_acceleration_scaling);
 }
 ```
 
@@ -337,9 +361,9 @@ bin picking, and assembly. Each task is composed of stages (compute IK, approach
 retreat, place) that can be configured independently.
 
 ```cpp
-#include <moveit/task_constructor/task.h>
-#include <moveit/task_constructor/stages.h>
-#include <moveit/task_constructor/solvers.h>
+#include <moveit/task_constructor/task.hpp>
+#include <moveit/task_constructor/stages.hpp>
+#include <moveit/task_constructor/solvers.hpp>
 
 auto task = std::make_unique<moveit::task_constructor::Task>();
 // Load robot model via RobotModelLoader (node->getRobotModel() does not exist)
@@ -397,6 +421,9 @@ Install: `sudo apt install ros-jazzy-pick-ik`
 MoveIt Servo enables real-time Cartesian and joint-space velocity control,
 useful for teleoperation, visual servoing, and force-guided motions.
 
+> **Rename:** `ServoServer` has been renamed to `ServoNode`. Update launch files
+> and any references accordingly.
+
 ### Configuration
 
 ```yaml
@@ -442,6 +469,7 @@ twist.twist.linear.x = 0.1    # Move forward at 0.1 m/s
 twist.twist.angular.z = 0.05  # Rotate slowly
 
 servo_twist_pub.publish(twist)  # Publish to /servo_node/delta_twist_cmds
+# (topic was /servo_server/... in older versions; now /servo_node/...)
 ```
 
 ## 7. Integration with ros2_control
@@ -498,6 +526,12 @@ moveit_simple_controller_manager:
 ```
 
 ## 8. Collision-aware planning
+
+### Collision environment
+
+`CollisionRobot` and `CollisionWorld` have been merged into a single `CollisionEnv`
+class. Code that previously obtained separate collision checkers should now use
+`planning_scene->getCollisionEnv()`.
 
 ### Allowed collision matrix (ACM)
 

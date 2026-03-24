@@ -21,7 +21,7 @@
 |---|---|---|---|
 | Humble | Fortress (LTS) | `ros-humble-ros-gz-*` (or `ros-humble-ros-ign-*` legacy) | Last release using Ignition branding |
 | Jazzy | Harmonic (LTS) | `ros-jazzy-ros-gz-*` | Recommended for new projects |
-| Kilted | Ionic | `ros-kilted-ros-gz-*` | Non-LTS distro |
+| Kilted | Ionic | `ros-kilted-ros-gz-*` | Non-LTS distro; Ubuntu 22.04 support dropped |
 | Rolling | Jetty / latest | `ros-rolling-ros-gz-*` | Tracks latest Gazebo |
 
 **Critical**: Do NOT mix Gazebo versions with the wrong ROS 2 distro. The `ros_gz`

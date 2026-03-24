@@ -138,10 +138,10 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC
   ${my_robot_interfaces_TARGETS}
 )
 
-# Humble compatibility note: ament_target_dependencies() still works in Humble and
-# Jazzy but is deprecated starting from Kilted. Use target_link_libraries with
-# imported CMake targets everywhere — it works on all distros (Humble+).
-# Only use ament_target_dependencies() for deps that lack CMake target exports (rare).
+# ament_target_dependencies() is deprecated in Kilted (2025.05) and must be
+# migrated to target_link_libraries() with modern CMake targets as shown above.
+# target_link_libraries works on all active distros (Humble+).
+# Only fall back to ament_target_dependencies() for deps that lack CMake target exports (rare).
 
 # Executable (thin wrapper around library)
 add_executable(driver_node src/driver_node_main.cpp)
@@ -183,8 +183,14 @@ ament_package()
 find_package(rclcpp_components REQUIRED)
 
 add_library(driver_component SHARED src/driver_component.cpp)
-target_link_libraries(driver_component ${PROJECT_NAME}_lib)
-ament_target_dependencies(driver_component rclcpp rclcpp_components)
+target_link_libraries(driver_component
+  ${PROJECT_NAME}_lib
+  rclcpp::rclcpp
+  rclcpp_components::component
+)
+# NOTE: ament_target_dependencies() is deprecated in Kilted (2025.05) and will
+# be removed in a future distro. Migrate to target_link_libraries() with modern
+# CMake targets (e.g. rclcpp::rclcpp) as shown above.
 
 rclcpp_components_register_nodes(driver_component "my_robot_driver::DriverComponent")
 
@@ -454,7 +460,7 @@ vcs pull src
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Could not find package X` in CMake | Missing `find_package()` or `package.xml` dep | Add both `find_package(X REQUIRED)` and `<depend>X</depend>` |
-| Header not found despite package installed | Missing `target_include_directories` or `ament_target_dependencies` | Use `ament_target_dependencies` which handles include paths automatically |
+| Header not found despite package installed | Missing `target_include_directories` or `target_link_libraries` | Use `target_link_libraries` with modern CMake targets (e.g. `rclcpp::rclcpp`), which handles include paths automatically. `ament_target_dependencies` is deprecated in Kilted (2025.05). |
 | `setup.py` changes not reflected | Built without `--symlink-install` | Rebuild with `colcon build --symlink-install` |
 | "Package not found" after build | Forgot to source `install/setup.bash` | Source after every build, or use `direnv` |
 | Circular dependency error | Package A depends on B and B depends on A | Extract shared interfaces into a third package |
