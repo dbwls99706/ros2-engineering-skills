@@ -37,6 +37,101 @@ ros2 doctor --report --include-network
 - Topic/service/action availability
 - Node connectivity
 
+### Expected output examples
+
+**`ros2 doctor` (healthy system):**
+```
+All 5 checks passed
+```
+
+**`ros2 doctor` (problem detected):**
+```
+1/5 checks failed
+
+Failed modules:
+  TopicCheck: node /camera_driver is publishing on /image_raw but no subscribers found
+```
+
+**`ros2 doctor --report` (excerpt):**
+```
+NETWORK CONFIGURATION
+  inet addr: 192.168.1.100
+  multicast: enabled
+
+DISTRIBUTION INFO
+  distro: jazzy
+  rmw_implementation: rmw_cyclonedds_cpp
+
+TOPIC LIST
+  /cmd_vel [geometry_msgs/msg/Twist] 1 pub(s), 1 sub(s)
+  /scan [sensor_msgs/msg/LaserScan] 1 pub(s), 2 sub(s)
+  /joint_states [sensor_msgs/msg/JointState] 1 pub(s), 1 sub(s)
+```
+
+**`ros2 topic info /cmd_vel -v` (QoS mismatch diagnosis):**
+```
+Type: geometry_msgs/msg/Twist
+
+Publisher count: 1
+
+Node name: nav2_controller
+Node namespace: /
+Topic type: geometry_msgs/msg/Twist
+Endpoint type: PUBLISHER
+GID: 01.0f.d0.1a.00.00.00.01.00.00.00.00|00.00.12.03
+QoS profile:
+  Reliability: RELIABLE
+  History (Depth): KEEP_LAST (1)
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+
+Subscription count: 1
+
+Node name: diff_drive_controller
+Node namespace: /
+Topic type: geometry_msgs/msg/Twist
+Endpoint type: SUBSCRIPTION
+GID: 01.0f.d0.1a.00.00.00.02.00.00.00.00|00.00.15.04
+QoS profile:
+  Reliability: BEST_EFFORT         ← mismatch! subscriber won't receive messages
+  History (Depth): KEEP_LAST (10)
+  Durability: VOLATILE
+  Lifespan: Infinite
+  Deadline: Infinite
+  Liveliness: AUTOMATIC
+  Liveliness lease duration: Infinite
+```
+Use this output to diagnose QoS mismatches — if publisher is `BEST_EFFORT` and subscriber is `RELIABLE`, no messages will be delivered. Compare the `Reliability` and `Durability` fields between publisher and subscriber.
+
+**`ros2 topic hz /joint_states` (rate check):**
+```
+average rate: 50.012
+        min: 0.019s max: 0.021s std dev: 0.00048s window: 50
+```
+If the rate is significantly lower than expected (e.g., 30 Hz instead of 500 Hz), check the hardware interface update rate or serial bandwidth.
+
+**`ros2 node info /controller_manager` (connection check):**
+```
+/controller_manager
+  Subscribers:
+    /robot_description: [std_msgs/msg/String]
+  Publishers:
+    /joint_states: [sensor_msgs/msg/JointState]
+    /robot_description: [std_msgs/msg/String]
+    /rosout: [rcl_interfaces/msg/Log]
+  Service Servers:
+    /controller_manager/list_controllers: [controller_manager_msgs/srv/ListControllers]
+    /controller_manager/load_controller: [controller_manager_msgs/srv/LoadController]
+    /controller_manager/switch_controller: [controller_manager_msgs/srv/SwitchController]
+  Action Servers:
+
+  Action Clients:
+```
+If a node shows no publishers/subscribers when it should have them, the node is not spinning or has a namespace mismatch.
+
 ### Topic introspection
 
 ```bash

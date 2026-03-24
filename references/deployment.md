@@ -434,7 +434,7 @@ sd_notify(0, "READY=1");
 | Variable | Purpose | Default |
 |---|---|---|
 | `ROS_DOMAIN_ID` | DDS domain isolation | 0 |
-| `RMW_IMPLEMENTATION` | DDS middleware selection | `rmw_cyclonedds_cpp` (Jazzy) |
+| `RMW_IMPLEMENTATION` | DDS middleware selection | `rmw_fastrtps_cpp` (Humble/Jazzy/Kilted) |
 | `CYCLONEDDS_URI` | CycloneDDS configuration file | None |
 | `ROS_LOCALHOST_ONLY` | Restrict to localhost | 0 (disabled) |
 | `ROS_LOG_DIR` | Log file directory | `~/.ros/log` |

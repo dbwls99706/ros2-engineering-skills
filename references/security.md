@@ -562,7 +562,7 @@ Development          Testing              Production
 (Jazzy+) or `ROS_LOCALHOST_ONLY=1` (Humble) and domain IDs for isolation.
 
 **Zenoh note (Kilted+):** SROS2/DDS Security plugins only apply when using a DDS-based
-RMW (`rmw_cyclonedds_cpp`, `rmw_fastdds_cpp`). When using `rmw_zenoh_cpp` (Tier 1
+RMW (`rmw_cyclonedds_cpp`, `rmw_fastrtps_cpp`). When using `rmw_zenoh_cpp` (Tier 1
 in Kilted), security is handled via Zenoh's own TLS configuration, NOT SROS2.
 If you switch to Zenoh without configuring Zenoh TLS, your system is unprotected
 even with `ROS_SECURITY_ENABLE=true`.

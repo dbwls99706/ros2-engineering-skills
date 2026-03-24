@@ -102,6 +102,21 @@ colcon list --topological-order
 
 ## 3. ament_cmake in depth
 
+### CMake linking: distro comparison
+
+| Feature | Humble (2022.05) | Jazzy (2024.05) | Kilted (2025.05) |
+|---|---|---|---|
+| `ament_target_dependencies()` | Primary method | Works, but modern CMake preferred | **Deprecated** (emits warning) |
+| `target_link_libraries()` with CMake targets | Not available for most ROS pkgs | **Primary method** (`rclcpp::rclcpp`, `${msg_TARGETS}`) | Primary method (same as Jazzy) |
+| `${pkg_TARGETS}` for message packages | Not available | Available (`${sensor_msgs_TARGETS}`) | Available |
+| `pkg::pkg` for non-message packages | Not available | Available (`rclcpp::rclcpp`) | Available |
+| rosbag2 default storage | SQLite3 | MCAP | MCAP |
+
+**Migration path:**
+- **Humble → Jazzy**: Replace `ament_target_dependencies(target dep1 dep2)` with `target_link_libraries(target PUBLIC dep1::dep1 ${dep2_TARGETS})`
+- **Jazzy → Kilted**: Same syntax; if you haven't migrated yet, the build will now emit deprecation warnings
+- **Cross-distro code**: `target_link_libraries()` with modern targets works on Jazzy+ only. For Humble compatibility, keep `ament_target_dependencies()` behind a version guard or maintain separate branches.
+
 ### Minimal CMakeLists.txt for a library + node
 
 ```cmake
@@ -392,7 +407,7 @@ The ultimate tool for pipeline latency. It profiles the exact microseconds it ta
 ```bash
 sudo apt install ros-jazzy-ros2trace ros-jazzy-tracetools-launch
 # Start tracing with full ROS 2 instrumentation
-ros2 trace start my_trace -e ros2:*
+ros2 trace start my_trace
 # Run your nodes...
 ros2 trace stop
 ```

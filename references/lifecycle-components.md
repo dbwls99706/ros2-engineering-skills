@@ -419,7 +419,7 @@ container = ComposableNodeContainer(
     namespace='',
     package='rclcpp_components',
     executable='component_container_isolated',
-    # Each component gets its own SingleThreadedExecutor
+    # Each component gets its own executor (SingleThreadedExecutor by default, MultiThreadedExecutor also available)
     composable_node_descriptions=[
         ComposableNode(
             package='my_robot_perception',
@@ -623,8 +623,10 @@ void callback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
 1. Both publisher and subscriber in the same process (e.g., same `ComposableNodeContainer` or same `main()`)
 2. Both have `use_intra_process_comms: true`
 3. Publisher uses `std::unique_ptr` with `publish(std::move(msg))`
-4. QoS uses `KEEP_LAST` (not `KEEP_ALL`)
-5. Only one subscriber reads the message (otherwise a copy is made for each)
+
+**Performance caveat:** If multiple subscribers exist, the first receives the original
+(zero-copy) and additional subscribers receive copies. Intra-process still works but
+the zero-copy benefit is reduced.
 
 ### Performance impact
 

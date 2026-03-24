@@ -371,8 +371,7 @@ fastdds discovery -i 0 -l 192.168.1.1 -p 11811   # start server
 ```
 
 ```bash
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp  # Humble, Jazzy
-# export RMW_IMPLEMENTATION=rmw_fastdds_cpp  # Kilted, Rolling (renamed)
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp  # Humble, Jazzy, Kilted, Rolling (name unchanged)
 export FASTRTPS_DEFAULT_PROFILES_FILE=/path/to/fastdds_client_profile.xml
 ```
 

@@ -395,9 +395,9 @@ auto sub = create_subscription<sensor_msgs::msg::Temperature>(
   options);
 ```
 
-**Limitation:** Content filters operate on top-level message fields only. You cannot
-filter on nested fields (e.g., `status[].level` inside `DiagnosticArray`). For nested
-filtering, subscribe normally and filter in your callback.
+**Limitation:** Content filters support dot-notation for nested fields (e.g.,
+`header.frame_id`) but cannot filter on array elements (e.g., `status[0].level`
+inside `DiagnosticArray`). Support for nested fields may vary by DDS vendor.
 
 ### Practical example: filtering by string field
 
@@ -446,13 +446,13 @@ compliance auditing, and building service-level observability tools.
 
 ```bash
 # Enable service introspection on a running node
-ros2 param set /my_node service_introspection.set_mode "contents"
+ros2 param set /my_node service_configure_introspection "contents"
 
 # Echo service request/response pairs in real time
 ros2 service echo /my_service
 
 # Available modes:
-#   "off"       — no introspection (default)
+#   "disabled"  — no introspection (default)
 #   "metadata"  — publish only metadata (timestamps, client/server IDs)
 #   "contents"  — publish full request/response contents
 ```
@@ -478,7 +478,7 @@ public:
     srv->configure_introspection(
       get_clock(),
       rclcpp::SystemDefaultsQoS(),
-      rcl_service_introspection_contents);  // or rcl_service_introspection_metadata
+      RCL_SERVICE_INTROSPECTION_CONTENTS);  // or RCL_SERVICE_INTROSPECTION_METADATA
   }
 };
 ```
@@ -720,7 +720,7 @@ export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 - **Client mode:** For constrained devices (e.g., microcontrollers, edge devices),
   connect to a router without participating in mesh routing:
   ```bash
-  export ZENOH_ROUTER_CONFIG_URI=file://$(pwd)/zenoh_client_config.json5
+  export ZENOH_SESSION_CONFIG_URI=file://$(pwd)/zenoh_client_config.json5
   ```
 
 **Shared memory:** Zenoh supports shared memory transport via the Zenoh SHM plugin,

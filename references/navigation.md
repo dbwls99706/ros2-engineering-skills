@@ -53,6 +53,27 @@
 - `route_server` (Kilted) — graph-based route planning for large-scale environments
 - `loopback_simulator` (Kilted) — lightweight sim that feeds Nav2 outputs back as inputs (no Gazebo needed, useful for CI/testing)
 
+### Nav2 feature: distro comparison
+
+| Feature | Humble | Jazzy | Kilted |
+|---|---|---|---|
+| BehaviorTree.CPP version | v3 | v3 → v4 transition (XML port remapping syntax changed) | v4 |
+| `cmd_vel` message type | `geometry_msgs/Twist` | `Twist` (default), `TwistStamped` opt-in via `enable_stamped_cmd_vel: true` | **`TwistStamped` default**; set `enable_stamped_cmd_vel: false` for backward compat |
+| Recovery/Behavior server | `recoveries_server` + `recovery_plugins` | **Renamed**: `behavior_server` + `behavior_plugins` | `behavior_server` (same as Jazzy) |
+| Recovery plugin namespace | `nav2_recoveries/` | **Changed**: `nav2_behaviors/` | `nav2_behaviors/` |
+| Docking server | Not available | **New**: `docking_server` | Enhanced: non-charging docks, RViz panel |
+| Route server | Not available | Not available | **New**: graph-based route planning |
+| Loopback simulator | Not available | Not available | **New**: `nav2_loopback_sim` (no Gazebo needed) |
+| MPPI controller | Available | Available | **Rewritten** with Eigen (40–50% faster, ARM support), new trajectory validator plugin |
+| Collision monitor | Available | Enhanced (velocity polygon, dynamic reconfig) | Available + toggle service |
+| Error code propagation | `error_code_names` param | `error_code_names` param | **Replaced**: `error_code_name_prefixes` (old param causes runtime exception) |
+| Nav2 node interface | `nav2_util::LifecycleNode` | `nav2_util::LifecycleNode` | **New**: `nav2::LifecycleNode` from `nav2_ros_common` (all plugins must migrate) |
+| BT new nodes | — | — | `GetPoseFromPath`, `RemoveInCollisionGoals`, `IsStopped`, `NonblockingSequence`, `PersistentSequence` |
+
+**Migration path:**
+- **Humble → Jazzy**: Rename `recoveries_server`→`behavior_server`, `recovery_plugins`→`behavior_plugins`, update plugin namespaces from `nav2_recoveries/`→`nav2_behaviors/`, migrate BT XMLs if using custom v3 syntax
+- **Jazzy → Kilted**: Set `enable_stamped_cmd_vel: true` on robot subscriber (or it won't receive cmd_vel), replace `error_code_names` with `error_code_name_prefixes`, migrate plugins to `nav2::LifecycleNode` with factory methods
+
 ### Minimal Nav2 launch
 
 ```python
@@ -453,7 +474,7 @@ trails" in the costmap. For populated environments, consider:
 
 ### Nav2 Collision Monitor
 
-The collision monitor (Jazzy+) is an independent safety node that monitors sensor
+The collision monitor (Humble+, significantly enhanced in Jazzy) is an independent safety node that monitors sensor
 data and **directly overrides `cmd_vel`** — it is NOT just a warning system. When
 an obstacle enters the stop polygon, the monitor publishes zero velocity regardless
 of what the controller commands. This provides a last-line-of-defense safety layer
@@ -518,9 +539,6 @@ def main():
         pose.pose.orientation.w = cos(yaw / 2)
         waypoints.append(pose)
 
-    # Kilted: use nav_msgs::msg::Goals instead of list of PoseStamped
-    # for multi-goal interfaces (NavigateThroughPoses, followWaypoints).
-    # The BasicNavigator API adapts automatically.
     navigator.followWaypoints(waypoints)
 
     while not navigator.isTaskComplete():
