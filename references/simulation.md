@@ -150,19 +150,21 @@ swapping the `<plugin>` via xacro conditionals.
 </ros2_control>
 ```
 
-**Distro-specific plugin names**: Humble uses `ign_ros2_control/IgnitionSystem`.
-Jazzy/Kilted use `gz_ros2_control/GazeboSimSystem`.
+**Distro-specific plugin names**: All current distros (Humble, Jazzy, Kilted) now use
+`gz_ros2_control/GazeboSimSystem`. Early Humble releases used `ign_ros2_control/IgnitionSystem`
+but the package was renamed in-place — current Humble binaries ship `gz_ros2_control`.
+The old `ign_ros2_control` package exists as a shim that depends on `gz_ros2_control`.
 
 ### Gazebo SDF plugin tag
 
 ```xml
-<!-- Jazzy / Harmonic -->
+<!-- All current distros (Humble / Jazzy / Kilted) -->
 <plugin filename="gz_ros2_control-system"
         name="gz_ros2_control::GazeboSimROS2ControlPlugin">
   <parameters>$(find my_robot_bringup)/config/controllers.yaml</parameters>
 </plugin>
 
-<!-- Humble / Fortress -->
+<!-- Legacy Humble (early releases, pre-rename) — still works via shim -->
 <plugin filename="ign_ros2_control-system"
         name="ign_ros2_control::IgnitionROS2ControlPlugin">
   <parameters>$(find my_robot_bringup)/config/controllers.yaml</parameters>

@@ -64,7 +64,7 @@ msg.header.frame_id = 'camera_optical_frame'
 | Clock type | Source | When to use |
 |---|---|---|
 | `ROS_TIME` | `/clock` topic (when `use_sim_time: true`) or system clock | Default — works in sim and real |
-| `SYSTEM_TIME` | OS monotonic clock | Never for message stamps |
+| `SYSTEM_TIME` | OS wall clock (may jump due to NTP) | Never for message stamps |
 | `STEADY_TIME` | Monotonic, never adjusted | Internal timing (loop measurement), not for messages |
 
 ### Common time mistakes

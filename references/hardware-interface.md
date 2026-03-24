@@ -64,6 +64,26 @@ When creating a `<ros2_control>` tag, you must specify the `type`:
 - Use **Actuator** only if each motor is truly independent (e.g., driven by separate GPIO pins) and you want maximum modularity.
 - Use **Sensor** for dedicated measurement devices that don't belong to a specific actuator.
 
+### ros2_control API: distro comparison
+
+| Feature | Humble (2.x) | Jazzy (4.x) | Kilted (5.x) |
+|---|---|---|---|
+| Interface export | Manual `export_state_interfaces()` / `export_command_interfaces()` override required | **Auto-generated** from `<ros2_control>` URDF tag; override `on_export_*_interfaces()` only for extras | Auto-generated (same as Jazzy) |
+| Interface memory | Manual `std::vector<double>` allocation | Framework-managed; use `set_state()` / `get_state()` / `set_command()` / `get_command()` | Framework-managed (same as Jazzy) |
+| Interface data types | `double` only | `double`, `bool` + `float32`, `uint8/16/32`, `int8/16/32` | Same expanded types as Jazzy |
+| Interface maps | N/A (manual vectors) | `joint_state_interfaces_`, `joint_command_interfaces_`, `sensor_state_interfaces_`, `gpio_command_interfaces_` | Same maps |
+| `on_init()` signature | `on_init(const HardwareInfo & info)` | Same as Humble | **Changed**: `on_init(const HardwareComponentInterfaceParams & params)` — access `HardwareInfo` via `params.hardware_info` |
+| Controller `init()` | `init()` (no args) | `init(const ControllerInterfaceParams & params)` (Humble form deprecated) | `init(const ControllerInterfaceParams & params)` (Humble form removed) |
+| Lifecycle state methods | `get_state()` / `set_state()` | **Renamed**: `get_lifecycle_state()` / `set_lifecycle_state()` | Same as Jazzy |
+| Handle value access | `get_value()` / `set_value()` | `get_optional()` returns `std::optional<T>`; `set_value()` returns `bool` | Same as Jazzy |
+| Gripper controller | `gripper_action_controller` | **Replaced**: `parallel_gripper_action_controller` | Same as Jazzy |
+| Hardware-layer joint limiters | Not available | Available (Jazzy 4.28+) | **Enabled by default** |
+| Async hardware scheduling | Not available | Not available | `synchronized` and `detached` policies |
+
+**Migration path:**
+- **Humble → Jazzy**: Remove `export_*_interfaces()` overrides, delete manual `std::vector<double>` members, switch to `set_state()`/`get_command()` helpers, rename `get_state()`→`get_lifecycle_state()` for lifecycle methods
+- **Jazzy → Kilted**: Update `on_init()` to accept `HardwareComponentInterfaceParams`, replace `thread_priority` with `async_params`
+
 ## 2. Writing a hardware interface plugin
 
 ### System interface (Jazzy 4.x API)

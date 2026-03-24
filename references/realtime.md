@@ -353,7 +353,7 @@ public:
     });
   }
 
-  ~DualExecutorRunner()
+  ~RTExecutor()
   {
     if (rt_executor_) { rt_executor_->cancel(); }
     if (rt_thread_.joinable()) { rt_thread_.join(); }
@@ -530,7 +530,7 @@ hardware_interface::return_type MyHardware::read(
 
 ```bash
 # Enable tracing (requires ros2_tracing package)
-ros2 trace start my_trace -e ros2:*
+ros2 trace start my_trace
 
 # Run your system
 ros2 launch my_robot_bringup robot.launch.py
@@ -550,7 +550,7 @@ platform — never assume these numbers transfer directly.
 
 | Metric | Without PREEMPT_RT | With PREEMPT_RT |
 |---|---|---|
-| cyclictest max latency (1kHz, 10 min) | 50-500 us, spikes to 10+ ms | 8-15 us |
+| cyclictest max latency (1kHz, 10 min) | 50-500 us, spikes to 10+ ms | 15-50 us |
 | cyclictest avg latency | 2-5 us | 1-3 us |
 | Worst-case jitter (p99.9) | 200-2000 us | 10-20 us |
 

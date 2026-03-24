@@ -180,9 +180,15 @@ executor.spin();  // Uses std::thread::hardware_concurrency() threads
 Callbacks can run in parallel. You **must** pair this with callback groups to
 control which callbacks may overlap (see section 3).
 
-### StaticSingleThreadedExecutor
+### StaticSingleThreadedExecutor (deprecated)
+
+> **Deprecated in Jazzy/Kilted, removed in Rolling.** Migrate to
+> `SingleThreadedExecutor` or `EventsExecutor`. The performance gap between
+> `SingleThreadedExecutor` and `StaticSingleThreadedExecutor` has been largely
+> eliminated in recent releases.
 
 ```cpp
+// Deprecated — shown for reference only
 rclcpp::executors::StaticSingleThreadedExecutor executor;
 executor.add_node(node);
 executor.spin();
@@ -192,21 +198,14 @@ Like `SingleThreadedExecutor` but pre-computes the callback schedule at startup.
 Lower overhead per spin iteration — use for nodes with a fixed set of subscriptions
 and timers (no dynamic creation/destruction at runtime).
 
-**Performance trade-off:** Unlike `SingleThreadedExecutor`, which re-scans all entities
-on every spin iteration, `StaticSingleThreadedExecutor` builds its entity list once
-and only updates it when topology changes (node/subscription added or removed). This
-reduces per-iteration overhead but means entity discovery is slightly delayed compared
-to the regular executor. For nodes whose subscription set is truly fixed at startup,
-this executor offers the lowest overhead.
-
 ### EventsExecutor (Jazzy+)
 
 Event-driven instead of polling-based. Lower CPU usage when idle, faster wake-up
 on incoming data. Preferred for systems with many nodes and intermittent traffic.
 
-In Rolling and Kilted, `EventsExecutor` graduated from the experimental namespace
-to `rclcpp::executors::EventsExecutor`. For Jazzy, use the experimental namespace.
-In Kilted, `EventsExecutor` was also ported to rclpy as `rclpy.executors.EventsExecutor`.
+`EventsExecutor` remains in the experimental namespace across all current distros
+(Jazzy, Kilted, Rolling): `rclcpp::experimental::executors::EventsExecutor`.
+There is no rclpy port of `EventsExecutor` — it is C++ only.
 
 **Benchmark note:** Per the iRobot 2023 paper, `EventsExecutor` achieves approximately
 90% reduction in wake-up latency compared to polling-based `SingleThreadedExecutor`
@@ -221,34 +220,10 @@ pattern (section 5) lets you use `SingleThreadedExecutor` on the RT path and
 `EventsExecutor` on the non-RT path.
 
 ```cpp
-// Jazzy — experimental namespace
+// All distros (Jazzy / Kilted / Rolling) — experimental namespace
 rclcpp::experimental::executors::EventsExecutor executor;
 executor.add_node(node);
 executor.spin();
-```
-
-```cpp
-// Kilted / Rolling — graduated namespace
-rclcpp::executors::EventsExecutor executor;
-executor.add_node(node);
-executor.spin();
-```
-
-```python
-# Kilted+ — rclpy EventsExecutor
-import rclpy
-from rclpy.executors import EventsExecutor
-
-rclpy.init()
-node = MyNode()
-executor = EventsExecutor()
-executor.add_node(node)
-try:
-    executor.spin()
-finally:
-    executor.shutdown()
-    node.destroy_node()
-    rclpy.shutdown()
 ```
 
 ### Choosing an executor
@@ -256,7 +231,7 @@ finally:
 | Scenario | Executor | Why |
 |---|---|---|
 | Simple node, few callbacks | `SingleThreadedExecutor` | Simplest, no thread-safety concerns |
-| Fixed callback set, low overhead | `StaticSingleThreadedExecutor` | Reduced per-spin cost |
+| Fixed callback set, low overhead | `EventsExecutor` (or `SingleThreadedExecutor`) | `StaticSingleThreadedExecutor` is deprecated; `EventsExecutor` offers similar benefits |
 | Multiple nodes or slow callbacks | `MultiThreadedExecutor` | Prevents one slow callback from blocking others |
 | Many nodes, intermittent data | `EventsExecutor` | Lower CPU when idle |
 | Custom scheduling requirements | Custom executor | Full control over callback ordering and priority |
@@ -521,7 +496,7 @@ public:
     client_group_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
     client_ = create_client<MySrv>("my_service",
-      rmw_qos_profile_services_default, client_group_);
+      rclcpp::ServicesQoS(), client_group_);
   }
 
 private:
@@ -577,7 +552,7 @@ cmd_sub_ = create_subscription<Twist>("/cmd_vel", 10, cmd_cb, state_opts);
 
 // Service client on its own group — safe to call from sensor or state callbacks
 mode_client_ = create_client<SetMode>("/set_mode",
-  rmw_qos_profile_services_default, client_group);
+  rclcpp::ServicesQoS(), client_group);
 ```
 
 ### Python callback groups (rclpy)
@@ -967,7 +942,7 @@ public:
     // Service client in the background group — safe to call from bg callbacks
     param_client_ = create_client<example_interfaces::srv::SetBool>(
       "/configure_sensor",
-      rmw_qos_profile_services_default,
+      rclcpp::ServicesQoS(),
       bg_group_);
 
     // Slow subscription in the background group
@@ -1179,7 +1154,7 @@ class ImageProcessor : public rclcpp::Node
 - **Avoid `shared_ptr` cycles:** Node → Subscription → Callback → Node.
   Use `weak_ptr` or capture `this` as raw pointer with guaranteed lifetime.
 - **Pre-allocate messages** in real-time paths. Do not allocate in callbacks.
-- **Use `StaticSingleThreadedExecutor`** when the callback set is fixed.
+- **Use `EventsExecutor`** when the callback set is fixed and idle CPU usage matters (`StaticSingleThreadedExecutor` is deprecated).
 - **Measure with `ros2 topic delay`** and **tracing** before optimizing.
 - **Python GIL:** For CPU-bound Python nodes, use `ProcessPoolExecutor` for
   parallel computation, or rewrite the hot path in C++ as a component.
