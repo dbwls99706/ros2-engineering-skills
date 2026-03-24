@@ -361,9 +361,9 @@ bin picking, and assembly. Each task is composed of stages (compute IK, approach
 retreat, place) that can be configured independently.
 
 ```cpp
-#include <moveit/task_constructor/task.h>
-#include <moveit/task_constructor/stages.h>
-#include <moveit/task_constructor/solvers.h>
+#include <moveit/task_constructor/task.hpp>
+#include <moveit/task_constructor/stages.hpp>
+#include <moveit/task_constructor/solvers.hpp>
 
 auto task = std::make_unique<moveit::task_constructor::Task>();
 // Load robot model via RobotModelLoader (node->getRobotModel() does not exist)
@@ -526,6 +526,12 @@ moveit_simple_controller_manager:
 ```
 
 ## 8. Collision-aware planning
+
+### Collision environment
+
+`CollisionRobot` and `CollisionWorld` have been merged into a single `CollisionEnv`
+class. Code that previously obtained separate collision checkers should now use
+`planning_scene->getCollisionEnv()`.
 
 ### Allowed collision matrix (ACM)
 
