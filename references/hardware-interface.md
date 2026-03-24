@@ -76,6 +76,11 @@ The framework provides maps to access interfaces:
 - `joint_state_interfaces_` / `joint_command_interfaces_` — keyed by fully qualified name
 - `sensor_state_interfaces_` / `gpio_command_interfaces_` — for sensors and GPIO
 
+> **Kilted (5.x) changes to hardware/controller interfaces:**
+> - **Struct-based controller constructors:** Controllers now receive a `ControllerInterfaceParams` struct instead of individual arguments. Custom controllers must update their constructors accordingly.
+> - **Handle copy/move deleted:** `CommandInterface` and `StateInterface` handles can no longer be copied or moved. Store them by reference or pointer; passing by value will not compile.
+> - **Multiple data type support:** Interfaces are no longer limited to `double`. The framework supports additional data types (e.g., `bool`, `int`), enabling richer GPIO and sensor modeling without encoding everything as a `double`.
+
 ```cpp
 #include <hardware_interface/system_interface.hpp>
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
@@ -272,7 +277,7 @@ pluginlib_export_plugin_description_file(
 </library>
 ```
 
-**Hardware-layer joint limiters (2025+):** ros2_control now supports joint limits enforced directly at the hardware interface layer via `<limits>` tags in the URDF. These act as a safety net below the controller -- even if a controller sends an out-of-range command, the hardware interface clips it. Configure in URDF:
+**Hardware-layer joint limiters (Jazzy 4.28+ / Kilted 5.x):** ros2_control supports joint limits enforced directly at the hardware interface layer via `<limits>` tags in the URDF. These act as a safety net below the controller -- even if a controller sends an out-of-range command, the hardware interface clips it. In Kilted, joint limit enforcement is fully built into the framework and enabled by default; no additional controller-side configuration is needed. Configure in URDF:
 ```xml
 <joint name="joint_1">
   <command_interface name="position">
@@ -295,6 +300,10 @@ pluginlib_export_plugin_description_file(
 | `parallel_gripper_action_controller` | position | Parallel gripper with action interface (Jazzy+; replaces deprecated `gripper_action_controller`) |
 | `pid_controller` | effort | Low-level PID for torque control |
 | `admittance_controller` | position | Force-compliant manipulation |
+| `mecanum_drive_controller` | velocity | Mecanum-wheel omnidirectional base (Kilted 5.x+) |
+| `ackermann_steering_controller` | position/velocity | Ackermann-steered vehicles (Kilted 5.x+) |
+| `bicycle_steering_controller` | position/velocity | Bicycle-model steered robots (Kilted 5.x+) |
+| `tricycle_steering_controller` | position/velocity | Tricycle-steered mobile bases (Kilted 5.x+) |
 
 ### Controller configuration (YAML)
 

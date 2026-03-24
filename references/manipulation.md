@@ -43,6 +43,12 @@
 - **Trajectory Execution Manager:** Sends planned trajectories to controllers
 - **MoveIt Servo:** Real-time Cartesian/joint jogging
 
+**Migration notes (MoveIt 2 from MoveIt 1):**
+- Headers migrated from `.h` to `.hpp` (e.g., `move_group_interface.h` -> `.hpp`). Old `.h` headers are deprecated and will be removed.
+- Namespace `robot_state::` / `robot_model::` deprecated; use `moveit::core::` instead.
+- `Eigen::Affine3d` replaced with `Eigen::Isometry3d` throughout the API.
+- `CollisionRobot` + `CollisionWorld` merged into a single `CollisionEnv` class.
+
 ## 2. Move group configuration
 
 ### SRDF (Semantic Robot Description Format)
@@ -106,6 +112,9 @@ arm:
   # kinematics_solver: pick_ik/PickIkPlugin   # Faster for complex IK
 ```
 
+> **Note:** The LMA (Levenberg-Marquardt) kinematics plugin has been removed.
+> Use KDL or TracIK (`track_ik_kinematics_plugin/TrackIKKinematicsPlugin`) instead.
+
 ### Joint limits override
 
 ```yaml
@@ -128,7 +137,8 @@ joint_limits:
 ### Adding collision objects (C++)
 
 ```cpp
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.hpp>
+// Note: .h headers are deprecated; use .hpp equivalents
 
 void add_table(moveit::planning_interface::PlanningSceneInterface & psi)
 {

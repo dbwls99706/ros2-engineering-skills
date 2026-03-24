@@ -270,6 +270,8 @@ local_costmap:
 Nav2 uses BehaviorTree.CPP to orchestrate navigation. The default BT handles
 planning, following, and recovery.
 
+**Kilted migration note:** Nav2 moved from BT.CPP v3 to v4 starting in Jazzy. BT.CPP v4 changes the XML format (e.g., port remapping syntax). A conversion script is provided in the Nav2 repo (`tools/bt_converter.py`) to migrate custom BT XMLs.
+
 ### Default navigation BT flow
 
 ```
@@ -365,7 +367,7 @@ planner_server:
 |---|---|---|
 | `DWBLocalPlanner` | Dynamic Window | General purpose, differential drive |
 | `RegulatedPurePursuitController` | Pure pursuit | Smooth, regulated tracking |
-| `MPPIController` | Model Predictive | Complex dynamics, obstacle avoidance |
+| `MPPIController` | Model Predictive | Complex dynamics, obstacle avoidance (Kilted: reimplemented with Eigen, 40-50% faster, adds ARM support) |
 | `RotationShimController` | Wraps other controllers | Rotate in place before following path |
 
 ```yaml
@@ -382,6 +384,9 @@ controller_server:
       max_vel_theta: 1.0
       min_speed_xy: 0.0
       max_speed_xy: 0.5
+      # Kilted: TwistStamped is now the default cmd_vel type.
+      # Set enable_stamped_cmd_vel: true in your controller config.
+      # Humble/Jazzy used geometry_msgs/Twist by default.
       acc_lim_x: 2.5
       acc_lim_y: 0.0
       acc_lim_theta: 3.2
@@ -510,6 +515,9 @@ def main():
         pose.pose.orientation.w = cos(yaw / 2)
         waypoints.append(pose)
 
+    # Kilted: use nav_msgs::msg::Goals instead of list of PoseStamped
+    # for multi-goal interfaces (NavigateThroughPoses, followWaypoints).
+    # The BasicNavigator API adapts automatically.
     navigator.followWaypoints(waypoints)
 
     while not navigator.isTaskComplete():
