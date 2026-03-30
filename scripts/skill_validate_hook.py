@@ -61,12 +61,54 @@ ANTIPATTERN_CHECKS = [
 CHECKABLE_EXTENSIONS = {'.py', '.cpp', '.hpp', '.h', '.cc', '.cxx'}
 
 
+def _is_in_comment(content, pos):
+    """Heuristically check if a position falls inside a single-line comment.
+
+    This reduces false positives from anti-pattern regex checks that match
+    inside inline comments or docstring-style comment lines.  The heuristic
+    is intentionally conservative: it only skips matches clearly inside
+    ``#`` or ``//`` comments.  It does NOT skip string literals, because
+    code like ``os.environ["ROS_LOCALHOST_ONLY"]`` is real usage even though
+    the variable name appears adjacent to quotes.
+    """
+    line_start = content.rfind('\n', 0, pos) + 1
+    line_end = content.find('\n', pos)
+    if line_end == -1:
+        line_end = len(content)
+    line = content[line_start:line_end]
+    col = pos - line_start
+
+    # Python / C++ single-line comment: if the first #/‍/ on the line is
+    # before the match position, the match is in a comment.
+    for marker in ('#', '//'):
+        idx = line.find(marker)
+        if idx != -1 and col > idx:
+            # Make sure the '#' isn't inside a string on that line
+            # by checking that there's no odd number of quotes before it
+            prefix = line[:idx]
+            in_str = False
+            for q in ('"', "'"):
+                if len(re.findall(r'(?<!\\)' + q, prefix)) % 2 == 1:
+                    in_str = True
+                    break
+            if not in_str:
+                return True
+
+    return False
+
+
 def check_content(content, filename='<input>'):
-    """Check content for ROS 2 anti-patterns."""
+    """Check content for ROS 2 anti-patterns.
+
+    Matches inside comments and string literals are skipped to reduce
+    false positives (e.g. a docstring mentioning ``time.sleep()``).
+    """
     issues = []
     for check in ANTIPATTERN_CHECKS:
         matches = list(re.finditer(check['pattern'], content))
         for match in matches:
+            if _is_in_comment(content, match.start()):
+                continue
             line_num = content[:match.start()].count('\n') + 1
             issues.append({
                 'file': filename,
@@ -156,11 +198,16 @@ def main():
 
     issues = []
 
+    # Normalize tool name for resilient matching across runtime variations.
+    # This avoids silent bypass if the harness ever changes casing or adds
+    # prefixes (e.g. "write" vs "Write", "mcp__Write", "bash_tool").
+    tool_name_lower = tool_name.lower().rstrip('_')
+
     # If the tool is writing or editing a file, validate the content
-    if tool_name in ('Write', 'Edit') and tool_input:
+    if tool_name_lower in ('write', 'edit', 'create_file', 'write_file') and tool_input:
         try:
             data = json.loads(tool_input)
-            filepath = data.get('file_path', '')
+            filepath = data.get('file_path', '') or data.get('path', '')
             content = data.get('content', '') or data.get('new_string', '')
             if content:
                 issues = check_content(content, filepath)
@@ -168,7 +215,7 @@ def main():
             pass
 
     # For Bash tool, check for dangerous patterns
-    if tool_name == 'Bash' and tool_input:
+    if tool_name_lower in ('bash', 'shell', 'command', 'terminal') and tool_input:
         try:
             data = json.loads(tool_input)
             command = data.get('command', '')

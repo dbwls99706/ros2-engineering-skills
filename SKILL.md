@@ -67,6 +67,33 @@ evals:
       - "Must identify TRANSIENT_LOCAL playback issues"
       - "Must recommend --read-ahead-queue-size for large bags"
     timeout: 60000
+  - name: sros2-security-config
+    prompt: evals/prompts/sros2-security.md
+    expected: evals/expected/sros2-security.md
+    criteria:
+      - "Must generate correct SROS2 keystore and enclave CLI commands"
+      - "Must set ROS_SECURITY_STRATEGY=Enforce for production"
+      - "Must apply least-privilege policy for safety_monitor (subscribe-only except /e_stop)"
+      - "Must configure all three DDS security plugins"
+    timeout: 60000
+  - name: multi-robot-fleet-design
+    prompt: evals/prompts/multi-robot-fleet.md
+    expected: evals/expected/multi-robot-fleet.md
+    criteria:
+      - "Must address DDS discovery isolation between robots"
+      - "Must define namespace strategy with per-robot prefixes"
+      - "Must handle tf frame conventions for multi-robot (frame_prefix)"
+      - "Must describe fleet manager communication pattern"
+    timeout: 60000
+  - name: micro-ros-firmware-design
+    prompt: evals/prompts/micro-ros-firmware.md
+    expected: evals/expected/micro-ros-firmware.md
+    criteria:
+      - "Must use rclc API correctly (not rclcpp/rclpy)"
+      - "Must configure static memory allocation (no dynamic malloc in publish loop)"
+      - "Must include XRCE-DDS agent setup and connection parameters"
+      - "Must handle agent disconnection with reconnection strategy"
+    timeout: 60000
 ---
 
 # ROS 2 Engineering Skills
@@ -144,6 +171,14 @@ which cross-cutting concerns apply to the user's specific situation.
 These apply to every ROS 2 artifact you produce, regardless of domain.
 
 ### 1. Distro awareness
+
+<!-- LAST_UPDATED: 2026-03-30 — Review this table every 6 months or when a new distro is released. -->
+<!-- NEXT_REVIEW: 2026-09-30 -->
+> **Staleness warning:** The table below was last verified on **2026-03-30**.
+> If the current date is more than 6 months past that, re-verify EOL dates and
+> feature support against https://docs.ros.org/en/rolling/Releases.html before
+> relying on this table. When you update it, change both `LAST_UPDATED` and
+> `NEXT_REVIEW` comments above.
 
 Always ask which ROS 2 distribution the user targets. Key differences:
 
@@ -379,6 +414,7 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 
 ## Distro-specific migration notes
 
+<!-- LAST_UPDATED: 2026-03-30 — Keep in sync with the distro table in Principle 1. -->
 When upgrading between distributions, check these breaking changes first:
 
 **Foxy → Humble:**

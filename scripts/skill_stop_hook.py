@@ -16,14 +16,38 @@ import sys
 import ast
 
 
+# Maximum directory depth to walk (relative to workspace root).
+# Keeps scan cost bounded for large workspaces with deeply nested vendor trees.
+_MAX_SCAN_DEPTH = 6
+
+# Directory names to always skip (in addition to hidden dirs).
+_SKIP_DIRS = frozenset((
+    'build', 'install', 'log', 'node_modules', '__pycache__',
+    '.git', '.svn', 'venv', '.venv', 'third_party', 'vendor',
+))
+
+
+def _should_skip(dirpath, workspace):
+    """Return True if *dirpath* should be pruned from the walk."""
+    rel = os.path.relpath(dirpath, workspace)
+    if rel == '.':
+        return False  # never skip the workspace root itself
+    parts = rel.split(os.sep)
+    if len(parts) > _MAX_SCAN_DEPTH:
+        return True
+    return any(p.startswith('.') or p in _SKIP_DIRS for p in parts)
+
+
 def find_generated_launch_files(workspace):
-    """Find all .launch.py files in the workspace."""
+    """Find all .launch.py files in the workspace (depth-limited)."""
     launch_files = []
-    for root, _dirs, files in os.walk(workspace):
-        # Skip hidden dirs, build, install, log
-        if any(part.startswith('.') or part in ('build', 'install', 'log')
-               for part in root.split(os.sep)):
+    for root, dirs, files in os.walk(workspace):
+        if _should_skip(root, workspace):
+            dirs.clear()  # prune subtree
             continue
+        # In-place prune to avoid descending into skippable children
+        dirs[:] = [d for d in dirs
+                   if not d.startswith('.') and d not in _SKIP_DIRS]
         for f in files:
             if f.endswith('.launch.py'):
                 launch_files.append(os.path.join(root, f))
@@ -94,12 +118,14 @@ def validate_package_xml(filepath):
 
 
 def find_package_xmls(workspace):
-    """Find all package.xml files in the workspace."""
+    """Find all package.xml files in the workspace (depth-limited)."""
     results = []
-    for root, _dirs, files in os.walk(workspace):
-        if any(part.startswith('.') or part in ('build', 'install', 'log')
-               for part in root.split(os.sep)):
+    for root, dirs, files in os.walk(workspace):
+        if _should_skip(root, workspace):
+            dirs.clear()
             continue
+        dirs[:] = [d for d in dirs
+                   if not d.startswith('.') and d not in _SKIP_DIRS]
         for f in files:
             if f == 'package.xml':
                 results.append(os.path.join(root, f))

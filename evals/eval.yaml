@@ -118,6 +118,72 @@ evals:
     timeout: 60000
     tags: [rosbag2, playback, qos]
 
+  - name: sros2-security-config
+    description: >
+      Validates that the skill correctly configures SROS2 security artifacts,
+      DDS security plugins, and least-privilege policies for production deployment.
+    prompt: prompts/sros2-security.md
+    expected: expected/sros2-security.md
+    criteria:
+      - id: keystore-enclave-cli
+        description: "Must generate correct SROS2 keystore and enclave CLI commands"
+        weight: 1.0
+      - id: enforce-strategy
+        description: "Must set ROS_SECURITY_STRATEGY=Enforce for production"
+        weight: 1.0
+      - id: least-privilege-policy
+        description: "Must apply least-privilege policy for safety_monitor (subscribe-only except /e_stop)"
+        weight: 1.0
+      - id: dds-security-plugins
+        description: "Must configure all three DDS security plugins"
+        weight: 0.8
+    timeout: 60000
+    tags: [sros2, security, dds, production]
+
+  - name: multi-robot-fleet-design
+    description: >
+      Validates that the skill designs a correct multi-robot fleet architecture
+      with proper DDS discovery isolation, namespacing, and tf conventions.
+    prompt: prompts/multi-robot-fleet.md
+    expected: expected/multi-robot-fleet.md
+    criteria:
+      - id: discovery-isolation
+        description: "Must address DDS discovery isolation between robots"
+        weight: 1.0
+      - id: namespace-strategy
+        description: "Must define namespace strategy with per-robot prefixes"
+        weight: 1.0
+      - id: tf-frame-conventions
+        description: "Must handle tf frame conventions for multi-robot (frame_prefix)"
+        weight: 0.8
+      - id: fleet-manager-pattern
+        description: "Must describe fleet manager communication pattern"
+        weight: 0.8
+    timeout: 60000
+    tags: [multi-robot, fleet, dds, namespace, nav2]
+
+  - name: micro-ros-firmware-design
+    description: >
+      Validates that the skill correctly outlines micro-ROS firmware using rclc,
+      static memory allocation, XRCE-DDS agent setup, and reconnection handling.
+    prompt: prompts/micro-ros-firmware.md
+    expected: expected/micro-ros-firmware.md
+    criteria:
+      - id: rclc-api-usage
+        description: "Must use rclc API correctly (not rclcpp/rclpy)"
+        weight: 1.0
+      - id: static-memory-allocation
+        description: "Must configure static memory allocation (no dynamic malloc in publish loop)"
+        weight: 1.0
+      - id: xrce-dds-agent
+        description: "Must include XRCE-DDS agent setup and connection parameters"
+        weight: 0.8
+      - id: reconnection-strategy
+        description: "Must handle agent disconnection with reconnection strategy"
+        weight: 0.8
+    timeout: 60000
+    tags: [micro-ros, firmware, rclc, xrce-dds, embedded]
+
 # Parity test configuration for deprecation assessment
 parity_test:
   enabled: true
