@@ -191,13 +191,13 @@ ros2-engineering-skills/
 
 ## Current status
 
-**Complete.** 20 reference files, 13,000+ lines of production-grade guidance, 3 utility scripts — all tested and CI-validated.
+**Complete & Verified.** 20 reference files, 13,000+ lines of production-grade guidance, 3 utility scripts — all tested and **validated on live ROS 2 Jazzy environments.**
 
 | | |
 |---|---|
 | **398 tests** | Unit + property-based (Hypothesis) + CLI + integration |
 | **94% coverage** | All scripts verified with flake8 + mypy clean |
-| **3 distros** | Humble, Jazzy, Rolling — tested on Python 3.10 / 3.11 / 3.12 |
+| **Real-world Evals** | **Validated on WSL (Ubuntu 24.04 + ROS 2 Jazzy)** for SROS2, micro-ROS `rclc`, and Multi-robot fleet scenarios |
 | **4 CI jobs** | Lint, unit-tests, ros2-integration, lint-scripts |
 
 ## Supported ROS 2 distributions
