@@ -12,6 +12,7 @@ FROM osrf/ros:${ROS_DISTRO}-desktop
 
 # Re-declare ARG after FROM (Docker scoping rules)
 ARG ROS_DISTRO
+ENV ROS_DISTRO=${ROS_DISTRO}
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-c"]
 
