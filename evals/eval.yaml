@@ -9,7 +9,7 @@
 #   - token_count: approximate tokens consumed
 
 skill: ros2-engineering-skills
-version: 1.0.0
+version: 1.1.0
 classification: capability
 deprecation-risk: medium
 
