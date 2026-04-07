@@ -282,6 +282,139 @@ class TestCheckPlaybackCompatibility:
         assert results["total_topics"] == 2
 
 
+class TestMainDirect:
+    """Test main() directly for coverage (subprocess doesn't count)."""
+
+    def test_main_basic(self, tmp_path, monkeypatch):
+        path = _write_yaml(tmp_path, "metadata.yaml", SAMPLE_METADATA)
+        monkeypatch.setattr("sys.argv", ["rosbag2_qos_checker.py", path])
+        from rosbag2_qos_checker import main
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 0
+
+    def test_main_json(self, tmp_path, monkeypatch, capsys):
+        path = _write_yaml(tmp_path, "metadata.yaml", SAMPLE_METADATA)
+        monkeypatch.setattr("sys.argv",
+                            ["rosbag2_qos_checker.py", path, "--json"])
+        from rosbag2_qos_checker import main
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "topics" in data
+
+    def test_main_with_sub(self, tmp_path, monkeypatch):
+        path = _write_yaml(tmp_path, "metadata.yaml", SAMPLE_METADATA)
+        monkeypatch.setattr("sys.argv",
+                            ["rosbag2_qos_checker.py", path,
+                             "--sub", "reliable,volatile,keep_last,10"])
+        from rosbag2_qos_checker import main
+        with pytest.raises(SystemExit) as exc:
+            main()
+        # /scan is best_effort, sub is reliable → incompatible → exit 1
+        assert exc.value.code == 1
+
+    def test_main_text_output_incompatible(self, tmp_path, monkeypatch, capsys):
+        path = _write_yaml(tmp_path, "metadata.yaml", SAMPLE_METADATA)
+        monkeypatch.setattr("sys.argv",
+                            ["rosbag2_qos_checker.py", path,
+                             "--sub", "reliable,volatile,keep_last,10"])
+        from rosbag2_qos_checker import main
+        with pytest.raises(SystemExit):
+            main()
+        out = capsys.readouterr().out
+        assert "INCOMPATIBLE" in out
+        assert "Summary:" in out
+
+    def test_main_text_output_with_warnings(self, tmp_path, monkeypatch, capsys):
+        path = _write_yaml(tmp_path, "metadata.yaml", METADATA_NO_QOS)
+        monkeypatch.setattr("sys.argv", ["rosbag2_qos_checker.py", path])
+        from rosbag2_qos_checker import main
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "global warning" in out or "WARN" in out or "topic(s)" in out
+
+    def test_main_version(self, monkeypatch):
+        monkeypatch.setattr("sys.argv",
+                            ["rosbag2_qos_checker.py", "--version"])
+        from rosbag2_qos_checker import main
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 0
+
+
+class TestEdgeCases:
+    """Cover remaining edge-case branches."""
+
+    def test_parse_yaml_qos_handles_unknown_reliability(self):
+        """Unknown reliability falls back to default (RELIABLE)."""
+        result = _parse_yaml_qos({"reliability": "invalid_value"})
+        assert result is not None
+        assert result.reliability == Reliability.RELIABLE
+
+    def test_parse_metadata_dict_qos_profile(self, tmp_path):
+        """Cover branch: offered_qos_profiles is a dict (not string/list)."""
+        content = """\
+rosbag2_bagfile_information:
+  version: 8
+  topics_with_message_count:
+    - topic_metadata:
+        name: /test
+        type: std_msgs/msg/String
+        serialization_format: cdr
+        offered_qos_profiles:
+          reliability: reliable
+          durability: volatile
+          history: keep_last
+          depth: 1
+      message_count: 10
+"""
+        path = _write_yaml(tmp_path, "metadata.yaml", content)
+        topics = parse_metadata(path)
+        assert len(topics) == 1
+        assert len(topics[0]["qos_profiles"]) == 1
+
+    def test_parse_metadata_alternative_format(self, tmp_path):
+        """Cover branch: no rosbag2_bagfile_information key."""
+        content = """\
+topics_with_message_count:
+  - topic_metadata:
+      name: /alt
+      type: std_msgs/msg/String
+      serialization_format: cdr
+      offered_qos_profiles: ""
+    message_count: 5
+"""
+        path = _write_yaml(tmp_path, "metadata.yaml", content)
+        topics = parse_metadata(path)
+        assert len(topics) == 1
+        assert topics[0]["topic"] == "/alt"
+
+    def test_parse_yaml_qos_single_dict_from_string(self, tmp_path):
+        """Cover branch: YAML string parses to a single dict (not list)."""
+        content = """\
+rosbag2_bagfile_information:
+  version: 8
+  topics_with_message_count:
+    - topic_metadata:
+        name: /single
+        type: std_msgs/msg/String
+        serialization_format: cdr
+        offered_qos_profiles: |
+          reliability: reliable
+          durability: volatile
+          history: keep_last
+          depth: 1
+      message_count: 10
+"""
+        path = _write_yaml(tmp_path, "metadata.yaml", content)
+        topics = parse_metadata(path)
+        assert len(topics[0]["qos_profiles"]) == 1
+
+
 class TestCLI:
     def test_basic_run(self, tmp_path):
         path = _write_yaml(tmp_path, "metadata.yaml", SAMPLE_METADATA)
