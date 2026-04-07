@@ -1,6 +1,7 @@
 # Multi-Robot Systems
 
 ## Table of contents
+
 1. Communication isolation strategies
 2. Namespace-based multi-robot patterns
 3. Open-RMF for fleet management

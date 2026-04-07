@@ -1,6 +1,7 @@
 # Nodes and Executors
 
 ## Table of contents
+
 1. Node anatomy — rclcpp and rclpy
 2. Executor models
 3. Callback groups
@@ -119,6 +120,7 @@ def main(args=None):
 ```
 
 **Key differences:**
+
 - rclcpp uses `SharedPtr` everywhere — understand ownership semantics
 - rclpy GIL limits true parallelism — offload CPU work to C++ or `concurrent.futures`
 - Both: always declare parameters in constructor, never use undeclared params
@@ -273,7 +275,7 @@ handle your own synchronization.
 There are scenarios where `MutuallyExclusiveCallbackGroup` fundamentally cannot
 work and `ReentrantCallbackGroup` is the only correct choice:
 
-**a) Action server with concurrent goals**
+#### a) Action server with concurrent goals
 
 `rclcpp_action::create_server` registers goal, cancel, and accepted/execute
 callbacks. When a goal is executing (publishing feedback in a loop), the executor
@@ -357,7 +359,7 @@ private:
 };
 ```
 
-**b) Parallel high-frequency sensor processing**
+#### b) Parallel high-frequency sensor processing
 
 When a node subscribes to 4 cameras at 30 Hz each (120 callbacks/sec) and each
 callback takes 20 ms, a `MutuallyExclusiveCallbackGroup` can only handle
@@ -416,7 +418,7 @@ int main(int argc, char ** argv)
 }
 ```
 
-**c) Timer + slow subscription overlap**
+#### c) Timer + slow subscription overlap
 
 A 100 Hz control loop timer must not be blocked by a slow data-processing
 subscription callback. If both share a `MutuallyExclusiveCallbackGroup`, the
@@ -678,6 +680,7 @@ class AsyncServiceCallerNode(Node):
 ```
 
 **Key rules for rclpy service calls from callbacks:**
+
 - Always use `call_async()`, never `call()`, inside a callback
 - Make the callback `async def` and `await` the future
 - Put the service client in a separate `MutuallyExclusiveCallbackGroup`
@@ -700,6 +703,7 @@ auto node = std::make_shared<MyNode>(options);
 ```
 
 **Requirements:**
+
 - Publisher and subscriber must be in the same process
 - Use `std::unique_ptr<MessageT>` when publishing (transfers ownership)
 - Both must use compatible QoS (typically `KEEP_LAST`, depth 1)
@@ -717,11 +721,13 @@ void callback(const sensor_msgs::msg::Image::ConstSharedPtr msg) {
 ```
 
 **When intra-process shines:**
+
 - Image pipelines (camera → detector → tracker in one process)
 - Sensor fusion (IMU + encoder → odometry in one process)
 - Any high-bandwidth data path within one process
 
 **Limitations:**
+
 - Does not work across processes (falls back to DDS)
 - Every participating node must enable `use_intra_process_comms(true)` in its `NodeOptions`
 - `KEEP_ALL` history breaks zero-copy optimization
@@ -1008,6 +1014,7 @@ int main(int argc, char ** argv)
 ```
 
 **When to use this pattern:**
+
 - A node has both hard-real-time callbacks (control loops) and soft/non-RT
   callbacks (logging, service calls, parameter updates)
 - You want to set different thread priorities (e.g., `SCHED_FIFO` on the RT

@@ -1,6 +1,7 @@
 # Real-Time Constraints
 
 ## Table of contents
+
 1. Why real-time matters in robotics
 2. PREEMPT_RT kernel setup
 3. Thread priority and scheduling
@@ -22,12 +23,14 @@ that runs at 1 kHz with ±50 µs jitter is real-time. A loop that runs at 10
 kHz but occasionally stalls for 5 ms is not.
 
 **Where real-time matters:**
+
 - Motor control loops (100–1000 Hz, <100 µs jitter)
 - Force/torque feedback (500+ Hz, <50 µs jitter)
 - Safety-critical monitoring (e.g., collision detection)
 - High-frequency sensor fusion (IMU at 1 kHz)
 
 **Where real-time does NOT matter:**
+
 - Navigation planning (runs at 1–10 Hz, tolerates 50 ms delay)
 - Perception pipelines (30 Hz, tolerates 100 ms delay)
 - Telemetry and logging
@@ -393,6 +396,7 @@ pthread_mutex_t create_pi_mutex()
 ### Prefer lock-free designs
 
 In the RT path, avoid mutexes entirely where possible:
+
 - Use `std::atomic` for simple shared state
 - Use lock-free queues for producer/consumer patterns
 - Use double-buffering (RT reads buffer A, non-RT writes buffer B, swap atomically)

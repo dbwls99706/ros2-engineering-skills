@@ -1,6 +1,7 @@
 # Workspace and Build System
 
 ## Table of contents
+
 1. Workspace layout
 2. colcon essentials
 3. ament_cmake in depth
@@ -15,7 +16,7 @@
 
 ## 1. Workspace layout
 
-```
+```text
 ros2_ws/
 ├── src/
 │   ├── my_robot_bringup/       # Launch files, top-level config
@@ -31,6 +32,7 @@ ros2_ws/
 ```
 
 **Why this decomposition matters:**
+
 - Interface packages compile first with zero downstream deps — fast CI iteration
 - Description packages are pure data — no code compilation, instant rebuild
 - Driver packages isolate hardware deps — other packages stay testable without hardware
@@ -77,12 +79,14 @@ colcon build --mixin ccache
 ### Build isolation
 
 colcon builds each package in isolation by default. This means:
+
 - Each package gets its own `build/<pkg>` directory
 - CMake cannot accidentally see headers from sibling packages
 - Missing `find_package()` or `package.xml` deps break the build immediately (good)
 
 To merge all packages into a single install prefix (not recommended — hides
 missing `package.xml` dependencies, but simplifies Docker `PATH`/`LD_LIBRARY_PATH`):
+
 ```bash
 colcon build --merge-install
 ```
@@ -113,6 +117,7 @@ colcon list --topological-order
 | rosbag2 default storage | SQLite3 | MCAP | MCAP |
 
 **Migration path:**
+
 - **Humble → Jazzy**: Replace `ament_target_dependencies(target dep1 dep2)` with `target_link_libraries(target PUBLIC dep1::dep1 ${dep2_TARGETS})`
 - **Jazzy → Kilted**: Same syntax; if you haven't migrated yet, the build will now emit deprecation warnings
 - **Cross-distro code**: `target_link_libraries()` with modern targets works on Jazzy+ only. For Humble compatibility, keep `ament_target_dependencies()` behind a version guard or maintain separate branches.
@@ -316,6 +321,7 @@ or utilities in the same package.
 ```
 
 **`<depend>` vs `<build_depend>` vs `<exec_depend>`:**
+
 - `<depend>` = build + exec (most common, use by default)
 - `<build_depend>` = headers/libraries needed only at compile time
 - `<exec_depend>` = needed at runtime only (e.g. launch file deps)
@@ -325,13 +331,14 @@ or utilities in the same package.
 
 ROS 2 workspaces form a chain of overlays:
 
-```
+```text
 /opt/ros/jazzy/          ← underlay (system install)
   └── ~/ros2_ws/install/  ← overlay (your workspace)
        └── ~/dev_ws/install/ ← overlay (experimental)
 ```
 
 **Rules:**
+
 - Source underlays before building the overlay
 - A package in the overlay shadows the same package in the underlay
 - `colcon build --symlink-install` creates symlinks to source files,
@@ -402,6 +409,7 @@ ros2 run performance_test perf_test -c CycloneDDS -m Array1k -r 1000 -p 1 -s 1 -
 *Metrics to watch:* Look at the `T_lat` (latency) and `jitter` columns. If your $99.99^{th}$ percentile latency is high, your network stack or CPU governor needs tuning.
 
 **2. `ros2_tracing` (LTTng)**
+
 The ultimate tool for pipeline latency. It profiles the exact microseconds it takes for your message to go from the UDP socket into your callback.
 
 ```bash
@@ -414,7 +422,9 @@ ros2 trace stop
 *Analysis:* Use the `tracetools_analysis` Jupyter notebooks to generate flame graphs and callback duration histograms.
 
 **3. `ros2 topic delay` and `ros2 topic hz`**
+
 Quick CLI checks for end-to-end latency and frequency drops.
+
 ```bash
 # Requires the publisher to populate the std_msgs/Header.stamp field!
 ros2 topic delay /camera/image_raw
@@ -445,6 +455,7 @@ my_custom_lib:
 ```
 
 Register it:
+
 ```bash
 echo "yaml file://$(pwd)/rosdep.yaml" | sudo tee /etc/ros/rosdep/sources.list.d/50-custom.list
 rosdep update

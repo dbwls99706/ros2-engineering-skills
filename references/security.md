@@ -1,6 +1,7 @@
 # Security
 
 ## Table of contents
+
 1. Threat model for ROS 2 systems
 2. SROS2 workflow
 3. DDS security plugins
@@ -172,7 +173,7 @@ The RMW reads `ROS_SECURITY_KEYSTORE` and `ROS_SECURITY_ENCLAVE_OVERRIDE` to loc
 
 ### Keystore directory structure
 
-```
+```text
 ~/sros2_keystore/
 +-- enclaves/
 |   +-- my_robot/
@@ -550,7 +551,7 @@ openssl speed -evp aes-256-gcm
 
 ### Three-stage security adoption
 
-```
+```text
 Development          Testing              Production
 +-----------+     +------------+     +---------------+
 | No SROS2  |     | Enforce    |     | Enforce       |

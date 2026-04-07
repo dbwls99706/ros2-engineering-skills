@@ -1,6 +1,7 @@
 # ROS 1 → ROS 2 Migration
 
 ## Table of contents
+
 1. Migration strategy
 2. ros1_bridge setup and configuration
 3. Message type mapping
@@ -21,7 +22,7 @@
 
 Migrate one package at a time while keeping the rest on ROS 1 via `ros1_bridge`.
 
-```
+```text
 Phase 1: Bridge setup
   ROS 1 nodes ←── ros1_bridge ──► ROS 2 nodes (new)
 
@@ -33,6 +34,7 @@ Phase 3: Bridge removal
 ```
 
 **Migration order (recommended):**
+
 1. Interface packages (messages, services, actions) — create ROS 2 `*_interfaces` packages
 2. Utility / library packages (no ROS dependencies) — often just CMake changes
 3. Leaf nodes (subscribers, simple publishers) — least dependencies
@@ -158,7 +160,8 @@ ros2 run ros1_bridge dynamic_bridge --bridge-all-topics
 ### Custom message migration
 
 **ROS 1:**
-```
+
+```text
 # my_robot_msgs/msg/RobotStatus.msg
 Header header
 uint8 mode
@@ -167,7 +170,8 @@ float64 battery_voltage
 ```
 
 **ROS 2:**
-```
+
+```text
 # my_robot_interfaces/msg/RobotStatus.msg
 std_msgs/Header header
 uint8 mode
@@ -176,6 +180,7 @@ float64 battery_voltage
 ```
 
 Key differences:
+
 - `Header` → `std_msgs/Header` (must be fully qualified in ROS 2)
 - Package naming: `*_msgs` → `*_interfaces` (convention, not required)
 - Place in dedicated `*_interfaces` package with `rosidl_generate_interfaces`
@@ -201,6 +206,7 @@ Key differences:
 ### ROS 1 XML → ROS 2 Python
 
 **ROS 1 (XML):**
+
 ```xml
 <launch>
   <arg name="robot_name" default="my_robot"/>
@@ -226,6 +232,7 @@ Key differences:
 ```
 
 **ROS 2 (Python):**
+
 ```python
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction
@@ -415,6 +422,7 @@ my_node:
 ### CMakeLists.txt migration
 
 **catkin (ROS 1):**
+
 ```cmake
 cmake_minimum_required(VERSION 3.0)
 project(my_package)
@@ -428,6 +436,7 @@ target_link_libraries(my_node ${PROJECT_NAME})
 ```
 
 **ament (ROS 2):**
+
 ```cmake
 cmake_minimum_required(VERSION 3.8)
 project(my_package)
@@ -459,6 +468,7 @@ ament_package()
 ### package.xml migration
 
 **format 2 (ROS 1):**
+
 ```xml
 <buildtool_depend>catkin</buildtool_depend>
 <build_depend>roscpp</build_depend>
@@ -466,6 +476,7 @@ ament_package()
 ```
 
 **format 3 (ROS 2):**
+
 ```xml
 <buildtool_depend>ament_cmake</buildtool_depend>
 <depend>rclcpp</depend>  <!-- replaces build_depend + exec_depend -->

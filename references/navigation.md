@@ -1,6 +1,7 @@
 # Navigation (Nav2)
 
 ## Table of contents
+
 1. Nav2 architecture overview
 2. SLAM integration
 3. Costmap configuration
@@ -16,7 +17,7 @@
 
 ## 1. Nav2 architecture overview
 
-```
+```text
                     ┌─────────────────┐
                     │   BT Navigator   │ ← Behavior tree orchestrates navigation
                     └────────┬────────┘
@@ -42,6 +43,7 @@
 ```
 
 **Key lifecycle nodes (all managed):**
+
 - `bt_navigator` — orchestrates navigation tasks via behavior trees
 - `planner_server` — computes global paths
 - `controller_server` — generates velocity commands to follow paths
@@ -71,6 +73,7 @@
 | BT new nodes | — | — | `GetPoseFromPath`, `RemoveInCollisionGoals`, `IsStopped`, `NonblockingSequence`, `PersistentSequence` |
 
 **Migration path:**
+
 - **Humble → Jazzy**: Rename `recoveries_server`→`behavior_server`, `recovery_plugins`→`behavior_plugins`, update plugin namespaces from `nav2_recoveries/`→`nav2_behaviors/`, migrate BT XMLs if using custom v3 syntax
 - **Jazzy → Kilted**: Set `enable_stamped_cmd_vel: true` on robot subscriber (or it won't receive cmd_vel), replace `error_code_names` with `error_code_name_prefixes`, migrate plugins to `nav2::LifecycleNode` with factory methods
 
@@ -186,6 +189,7 @@ amcl:
 ```
 
 When to use AMCL vs SLAM:
+
 | Scenario | Use |
 |---|---|
 | Known, static environment | AMCL with pre-built map |
@@ -298,7 +302,7 @@ planning, following, and recovery.
 
 ### Default navigation BT flow
 
-```
+```text
 NavigateRecovery
 ├── NavigateWithReplanning
 │   ├── ComputePathToPose → Planner Server
@@ -446,6 +450,7 @@ recoveries_server:
 ```
 
 **Custom recovery sequence:**
+
 1. Clear costmaps (remove phantom obstacles)
 2. Wait 5 seconds (let dynamic obstacles pass)
 3. Spin 180° (look for alternative paths)
@@ -468,6 +473,7 @@ obstacles (humans walking at 1.5 m/s, forklifts) require additional strategies:
 **Limitation:** The standard `ObstacleLayer` uses a clearing/marking model that
 assumes obstacles are static between scans. Fast-moving objects can leave "ghost
 trails" in the costmap. For populated environments, consider:
+
 1. Reducing `obstacle_max_range` to limit stale markings
 2. Using the `VoxelLayer` with 3D clearing
 3. Adding a people-tracking costmap layer
@@ -633,6 +639,7 @@ inertia. The robot overshoots, replans, overshoots in the opposite direction, an
 loops.
 
 **Rules:**
+
 - `xy_goal_tolerance` should be ≥ `max_vel_x / controller_frequency` (minimum
   stopping distance at max speed). E.g., 0.5 m/s at 20 Hz → tolerance ≥ 0.025 m.
 - If using `RegulatedPurePursuitController`, its `regulated_linear_scaling_min_speed`

@@ -1,6 +1,7 @@
 # TF2 and URDF/Xacro
 
 ## Table of contents
+
 1. TF2 concepts
 2. Static vs dynamic broadcasters
 3. Transform listener patterns
@@ -21,7 +22,7 @@ relate to each other.
 
 ### Frame tree structure
 
-```
+```text
 map                          ← global fixed frame (SLAM/localization)
  └── odom                   ← odometry frame (continuous, drifts)
       └── base_footprint    ← ground projection (z=0, per REP-105)
@@ -37,6 +38,7 @@ map                          ← global fixed frame (SLAM/localization)
 ```
 
 **Key conventions (REP-105):**
+
 - `map` → `odom`: published by localization (AMCL, EKF)
 - `odom` → `base_link`: published by odometry (wheel encoders, visual odometry)
 - `base_link` → sensors: published by `robot_state_publisher` from URDF
@@ -349,6 +351,7 @@ auto t_advanced = tf_buffer_->lookupTransform(
 ```
 
 **Rules of thumb for inertia:**
+
 - Box: `ixx = m/12 * (y² + z²)`, `iyy = m/12 * (x² + z²)`, `izz = m/12 * (x² + y²)`
 - Cylinder (Z-axis): `ixx = iyy = m/12 * (3r² + h²)`, `izz = m/2 * r²`
 - Sphere: `ixx = iyy = izz = 2/5 * m * r²`
@@ -358,6 +361,7 @@ auto t_advanced = tf_buffer_->lookupTransform(
 ### Why xacro
 
 URDF is verbose and repetitive. Xacro adds:
+
 - Properties (variables)
 - Macros (reusable blocks)
 - Math expressions
@@ -556,7 +560,7 @@ This produces frames like `robot_1/base_link`, `robot_1/laser_link`, etc.
 
 ### Multi-robot frame tree
 
-```
+```text
 map
  ├── robot_1/odom
  │    └── robot_1/base_link

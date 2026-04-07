@@ -357,6 +357,7 @@ ESP32 native WiFi. Higher latency, potential packet loss. Use `BEST_EFFORT` QoS 
 Lower latency than UART, higher throughput. Devices appear as `/dev/ttyACM*`. Works with Teensy, STM32 OTG, RP2040 native USB.
 
 ### Custom transport
+
 Implement `open`, `close`, `write`, `read` callbacks for CAN, Bluetooth, SPI, etc.:
 
 ```c

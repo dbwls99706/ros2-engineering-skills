@@ -338,7 +338,7 @@ Bridge: `/navsat@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat`
 
 Bridge entries:
 
-```
+```text
 /depth_camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image
 /depth_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked
 ```
@@ -613,6 +613,7 @@ class TestSimulation(unittest.TestCase):
 ### The determinism problem
 
 Gazebo simulations are **not perfectly deterministic** across runs due to:
+
 - Thread scheduling order affecting physics solver convergence
 - Floating-point operation ordering differences
 - DDS discovery timing affecting when nodes start publishing

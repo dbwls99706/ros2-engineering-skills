@@ -1,6 +1,7 @@
 # Testing
 
 ## Table of contents
+
 1. Unit testing with gtest (C++) and pytest (Python)
 2. Node-level testing
 3. launch_testing for integration tests

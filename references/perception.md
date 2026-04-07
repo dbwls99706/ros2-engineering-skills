@@ -1,6 +1,7 @@
 # Perception Pipelines
 
 ## Table of contents
+
 1. image_transport
 2. cv_bridge for OpenCV integration
 3. Point cloud processing with PCL
@@ -305,7 +306,7 @@ ros2 launch realsense2_camera rs_launch.py \
 
 ### Depth to point cloud pipeline
 
-```
+```text
 RealSense D435 → /camera/depth/image_rect_raw (depth)
                 → /camera/color/image_raw (RGB)
                 → /camera/depth/camera_info (intrinsics)
@@ -549,6 +550,7 @@ class YOLODetector(Node):
 ### Isaac ROS for GPU-accelerated perception (Jetson)
 
 NVIDIA Isaac ROS provides GPU-accelerated perception packages for Jetson platforms:
+
 - `isaac_ros_visual_slam`: GPU-accelerated visual SLAM
 - `isaac_ros_object_detection`: DNN-based detection (SSD, YOLO)
 - `isaac_ros_apriltag`: GPU-accelerated AprilTag detection
