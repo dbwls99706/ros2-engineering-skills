@@ -8,3 +8,17 @@ config:
     siblings_only: true
   # Allow bare URLs in code blocks
   MD034: false
+  # Blanks around headings — too strict for dense reference docs
+  MD022: false
+  # Blanks around fences — too strict for interleaved code/text patterns
+  MD031: false
+  # Blanks around lists — too strict for compact reference format
+  MD032: false
+  # Emphasis used as heading — used intentionally for sub-items
+  MD036: false
+  # Fenced code language — many blocks are output/diagrams without a language
+  MD040: false
+  # Files should end with newline
+  MD047: false
+  # Blanks around tables
+  MD058: false
