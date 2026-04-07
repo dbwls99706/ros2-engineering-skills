@@ -1,6 +1,7 @@
 # Lifecycle Nodes and Component Composition
 
 ## Table of contents
+
 1. Lifecycle node state machine
 2. Implementing lifecycle transitions (rclcpp)
 3. Implementing lifecycle transitions (rclpy)
@@ -21,7 +22,7 @@ in the [Managed Nodes design article](https://design.ros2.org/articles/node_life
 resources (hardware drivers, sensor pipelines, planners, controllers) should
 be a lifecycle node.
 
-```
+```text
                      ┌───────────────┐
       create() ────► │  Unconfigured  │ ◄──── on_cleanup()
                      └───────┬───────┘
@@ -55,6 +56,7 @@ be a lifecycle node.
 | Finalized | Terminated, cannot be restarted | Released |
 
 **Why lifecycle matters:**
+
 - Deterministic startup ordering (configure sensors before controllers)
 - Clean error recovery (deactivate → cleanup → reconfigure)
 - Resource management without shutdown/restart
@@ -393,6 +395,7 @@ ros2 component unload /my_container 1
 ```
 
 **When to use runtime composition:**
+
 - Hot-swapping perception modules during operation
 - Debugging (load one component at a time)
 - Systems where components join/leave dynamically (e.g., multi-robot)
@@ -406,6 +409,7 @@ ros2 component unload /my_container 1
 | `component_container_isolated` | Per-component executor | Maximum isolation, each component has its own executor thread(s) |
 
 **Selection guide:**
+
 - Default to `component_container_mt` — most flexible
 - Use `component_container_isolated` when one component's slow callback
   must not block others (e.g., ML inference alongside control)

@@ -1,6 +1,7 @@
 # Manipulation (MoveIt 2)
 
 ## Table of contents
+
 1. MoveIt 2 architecture
 2. Move group configuration (SRDF, kinematics)
 3. Planning scene management
@@ -15,7 +16,7 @@
 
 ## 1. MoveIt 2 architecture
 
-```
+```text
                     ┌──────────────────┐
                     │   Move Group     │ ← Central coordination node
                     │   Node           │
@@ -37,6 +38,7 @@
 ```
 
 **Key components:**
+
 - **Move Group Node:** Central interface for planning and execution
 - **Planning Pipeline:** Planner + post-processing (smoothing, time parameterization)
 - **Planning Scene:** World model with robot state, collision objects, and attached objects
@@ -44,6 +46,7 @@
 - **MoveIt Servo:** Real-time Cartesian/joint jogging
 
 **Migration notes (MoveIt 2 from MoveIt 1):**
+
 - Headers migrated from `.h` to `.hpp` (e.g., `move_group_interface.h` -> `.hpp`). Old `.h` headers are deprecated and will be removed.
 - Namespace `robot_state::` / `robot_model::` deprecated; use `moveit::core::` instead.
 - `Eigen::Affine3d` replaced with `Eigen::Isometry3d` throughout the API.

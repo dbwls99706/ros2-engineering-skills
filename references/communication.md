@@ -1,6 +1,7 @@
 # Communication Patterns
 
 ## Table of contents
+
 1. Choosing the right pattern
 2. Topics
 3. Services
@@ -28,6 +29,7 @@
 | Typical use | Sensor data, state, commands | Parameter queries, mode set | Navigation, trajectory exec |
 
 **Decision rule:**
+
 - Data flows continuously → Topic
 - Client needs a result from a specific request → Service
 - Task takes time and client wants progress/cancellation → Action
@@ -231,7 +233,7 @@ client->async_send_goal(goal, send_goal_options);
 
 ### Message definition (.msg)
 
-```
+```text
 # my_robot_interfaces/msg/RobotStatus.msg
 std_msgs/Header header
 string robot_id
@@ -244,7 +246,7 @@ bool emergency_stop_active
 
 ### Service definition (.srv)
 
-```
+```text
 # my_robot_interfaces/srv/SetMode.srv
 string mode
 bool force
@@ -255,7 +257,7 @@ string message
 
 ### Action definition (.action)
 
-```
+```text
 # my_robot_interfaces/action/MoveToPosition.action
 # Goal
 geometry_msgs/Point target_position
@@ -273,6 +275,7 @@ float64 distance_remaining
 ```
 
 **Interface design rules:**
+
 - Use existing `std_msgs`, `geometry_msgs`, `sensor_msgs` types when possible
 - Add a `Header` field to any message that represents a measurement in time
 - Use fixed-size arrays when the length is known; variable arrays otherwise
@@ -712,13 +715,16 @@ export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 **Router modes:**
 
 - **Standalone router:** Required for multi-machine setups. Start before launching nodes:
+
   ```bash
   ros2 run rmw_zenoh_cpp rmw_zenohd
   ```
+
 - **Peer-to-peer:** For small deployments (e.g., single robot), nodes can discover
   each other directly without a router using multicast scouting.
 - **Client mode:** For constrained devices (e.g., microcontrollers, edge devices),
   connect to a router without participating in mesh routing:
+
   ```bash
   export ZENOH_SESSION_CONFIG_URI=file://$(pwd)/zenoh_client_config.json5
   ```
@@ -857,12 +863,14 @@ Rule of thumb for planning bandwidth:
 | `CompressedImage` (JPEG) | ~50 KB | ~1.5 MB/s |
 
 For high-bandwidth data (images, point clouds):
+
 - Use `image_transport` with compression
 - Use intra-process communication within the same process
 - Consider shared memory transport (Jazzy+)
 - **Message pre-allocation for high-throughput:** In tight loops (>100 Hz), avoid
   creating new message objects per publish cycle. Pre-allocate the message once and
   reuse it, only updating the fields that change:
+
   ```cpp
   // Pre-allocate once in constructor
   auto msg = std::make_unique<sensor_msgs::msg::PointCloud2>();
@@ -875,6 +883,7 @@ For high-bandwidth data (images, point clouds):
   msg = std::make_unique<sensor_msgs::msg::PointCloud2>();  // Reallocate for next cycle
   // For true zero-allocation, use intra-process with a message pool pattern
   ```
+
 - **Agnocast (2025 research):** A publish-subscribe framework enabling true zero-copy
   for variable-size messages (`PointCloud2`, `Image`) without serialization. Unlike
   standard intra-process which requires `unique_ptr` ownership transfer, Agnocast uses

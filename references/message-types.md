@@ -1,6 +1,7 @@
 # Message Types & Semantic Conventions
 
 ## Table of contents
+
 1. The Stamped vs Unstamped rule
 2. Time and Header conventions (ROS 2 specific)
 3. Sensor data (`sensor_msgs`) implicit rules
@@ -46,6 +47,7 @@ simulation time (`use_sim_time: true`).
 ### Populating headers
 
 **C++ (`rclcpp`):**
+
 ```cpp
 auto msg = std::make_shared<sensor_msgs::msg::Image>();
 msg->header.stamp = this->get_clock()->now();
@@ -53,6 +55,7 @@ msg->header.frame_id = "camera_optical_frame";
 ```
 
 **Python (`rclpy`):**
+
 ```python
 msg = Image()
 msg.header.stamp = self.get_clock().now().to_msg()
@@ -96,7 +99,7 @@ by the compiler or serializer** — only by convention and downstream consumers.
 
 ### `sensor_msgs/msg/Imu`
 
-```
+```text
 Header header
 geometry_msgs/Quaternion orientation               # (x, y, z, w)
 float64[9] orientation_covariance
@@ -110,10 +113,12 @@ float64[9] linear_acceleration_covariance
 - **Covariance rule:** If a specific measurement (orientation, angular velocity,
   or linear acceleration) is **not available** from the sensor, you MUST set the
   first element of its covariance matrix to `-1.0`.
+
   ```python
   # IMU does not provide orientation data
   msg.orientation_covariance[0] = -1.0
   ```
+
 - **Units:** `linear_acceleration` **includes gravity** (e.g., ~9.81 m/s² on
   Z-axis when resting flat on a table).
 - **Gravity convention:** When the IMU is level and stationary,
@@ -121,7 +126,7 @@ float64[9] linear_acceleration_covariance
 
 ### `sensor_msgs/msg/LaserScan`
 
-```
+```text
 Header header
 float32 angle_min         # start angle (rad)
 float32 angle_max         # end angle (rad)
@@ -146,7 +151,7 @@ float32[] intensities     # intensity data (optional, device-specific)
 
 ### `sensor_msgs/msg/Image`
 
-```
+```text
 Header header
 uint32 height
 uint32 width
@@ -167,7 +172,7 @@ uint8[] data              # actual pixel data
 
 ### `sensor_msgs/msg/JointState`
 
-```
+```text
 Header header
 string[] name             # joint names
 float64[] position        # radians (revolute) or meters (prismatic)
@@ -200,7 +205,7 @@ double pos = msg->position[0];  // Which joint is this? Depends on publisher!
 
 ### `nav_msgs/msg/Odometry`
 
-```
+```text
 Header header
 string child_frame_id
 geometry_msgs/PoseWithCovariance pose
@@ -221,7 +226,7 @@ geometry_msgs/TwistWithCovariance twist
 
 ### `geometry_msgs/msg/Quaternion`
 
-```
+```text
 float64 x 0
 float64 y 0
 float64 z 0
@@ -260,7 +265,7 @@ quat = quaternion_from_euler(0, 0, yaw)  # returns (x, y, z, w)
 
 ### `nav_msgs/msg/Path`
 
-```
+```text
 Header header
 geometry_msgs/PoseStamped[] poses
 ```
@@ -271,7 +276,7 @@ geometry_msgs/PoseStamped[] poses
 
 ### `nav_msgs/msg/OccupancyGrid`
 
-```
+```text
 Header header
 MapMetaData info          # resolution, width, height, origin
 int8[] data               # occupancy values
@@ -286,14 +291,15 @@ int8[] data               # occupancy values
 
 ### `trajectory_msgs/msg/JointTrajectory`
 
-```
+```text
 Header header
 string[] joint_names
 JointTrajectoryPoint[] points
 ```
 
 Each `JointTrajectoryPoint` contains:
-```
+
+```text
 float64[] positions       # target positions
 float64[] velocities      # target velocities (optional)
 float64[] accelerations   # target accelerations (optional)
@@ -328,7 +334,7 @@ and MoveIt 2.
 
 ## 6. Point cloud structure (`PointCloud2`)
 
-```
+```text
 Header header
 uint32 height             # 1 for unorganized, rows for organized
 uint32 width              # points per row
@@ -364,12 +370,14 @@ The `fields` array describes what data each point contains:
     structure from the sensor.
 - **Packed RGB:** Color is stored as a single float32 that must be
   reinterpreted as uint32, then split into bytes:
+
   ```cpp
   uint32_t rgb_packed = *reinterpret_cast<const uint32_t*>(&point.rgb);
   uint8_t r = (rgb_packed >> 16) & 0xFF;
   uint8_t g = (rgb_packed >> 8) & 0xFF;
   uint8_t b = rgb_packed & 0xFF;
   ```
+
 - **Do NOT manually iterate `data[]` byte by byte.** Use PCL's
   `pcl::fromROSMsg()` or `sensor_msgs::PointCloud2Iterator` for safe access.
 
@@ -398,7 +406,7 @@ for (size_t i = 0; i < 100; ++i, ++iter_x, ++iter_y, ++iter_z) {
 
 ## 7. Camera intrinsics (`CameraInfo`)
 
-```
+```text
 Header header
 uint32 height
 uint32 width
@@ -412,29 +420,35 @@ float64[12] p              # 3x4 projection matrix
 ### Matrix meanings
 
 **K (Intrinsic matrix, 3×3):**
-```
+
+```text
 K = [fx  0  cx]
     [ 0 fy  cy]
     [ 0  0   1]
 ```
+
 - `fx`, `fy`: Focal length in pixels
 - `cx`, `cy`: Principal point (optical center) in pixels
 
 **D (Distortion coefficients):**
+
 - `plumb_bob` (radial-tangential): `[k1, k2, p1, p2, k3]` (5 values)
 - `equidistant` (fisheye): `[k1, k2, k3, k4]` (4 values)
 
 **P (Projection matrix, 3×4):**
-```
+
+```text
 P = [fx'  0  cx' Tx]
     [ 0  fy' cy' Ty]
     [ 0   0   1   0]
 ```
+
 - For monocular cameras: `Tx = 0`, `Ty = 0`, and `fx' = fx`, `fy' = fy`,
   `cx' = cx`, `cy' = cy` after rectification.
 - For stereo cameras: `Tx = -fx' * baseline` (left-right baseline in meters).
 
 **R (Rectification matrix, 3×3):**
+
 - Identity for monocular cameras.
 - Aligns epipolar lines for stereo pairs.
 
@@ -450,7 +464,7 @@ P = [fx'  0  cx' Tx]
 
 ### `tf2_msgs/msg/TFMessage`
 
-```
+```text
 geometry_msgs/TransformStamped[] transforms
 ```
 
@@ -553,7 +567,7 @@ matrices into 1D arrays in **row-major order**.
 
 Represented as `float64[36]`. Row/column order: **(x, y, z, roll, pitch, yaw)**.
 
-```
+```text
 Index layout:
      x    y    z    R    P    Y
 x [  0    1    2    3    4    5  ]
@@ -578,7 +592,7 @@ covariance[35] = 0.0025 # yaw variance (0.05² rad²)
 
 Represented as `float64[9]`. Row/column order: **(x, y, z)**.
 
-```
+```text
 Index layout:
      x   y   z
 x [  0   1   2 ]

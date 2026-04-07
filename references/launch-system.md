@@ -1,6 +1,7 @@
 # Launch System
 
 ## Table of contents
+
 1. Python launch API fundamentals
 2. Launch arguments and substitutions
 3. Conditional logic
@@ -280,7 +281,7 @@ def generate_launch_description():
 
 ### Recommended hierarchy
 
-```
+```text
 my_robot_bringup/
 ├── launch/
 │   ├── robot.launch.py          # Top-level: includes all subsystem launches
@@ -321,6 +322,7 @@ def generate_launch_description():
 ```
 
 This creates:
+
 - `/robot_1/driver`, `/robot_1/lidar` with topics under `/robot_1/...`
 - `/robot_2/driver`, `/robot_2/lidar` with topics under `/robot_2/...`
 
@@ -408,7 +410,7 @@ def generate_launch_description():
 
 **Solution:** Layered launch architecture:
 
-```
+```text
 Layer 1 (Subsystem launches):
   driver.launch.py       → hardware driver nodes
   perception.launch.py   → cameras, LiDAR, detection

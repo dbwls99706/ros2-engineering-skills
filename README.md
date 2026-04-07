@@ -58,7 +58,7 @@ Identifies the root cause, explains DDS Request-vs-Offered semantics, and applie
 <tr>
 <td>
 
-```
+```text
 my_lidar_driver/
 ├── src/main.cpp          # rclcpp::Node
 ├── CMakeLists.txt
@@ -70,7 +70,7 @@ Bare `Node`, no lifecycle, no tests, no launch file, `ament_target_dependencies`
 </td>
 <td>
 
-```
+```text
 my_lidar_driver/
 ├── include/my_lidar_driver/
 │   └── my_lidar_driver_node.hpp  # LifecycleNode
@@ -118,6 +118,7 @@ A `SKILL.md`-based knowledge module that gives AI coding agents deep ROS 2 engin
 ## Installation
 
 ### Claude Code
+
 ```bash
 # From plugin marketplace (terminal)
 claude plugin marketplace add dbwls99706/ros2-engineering-skills
@@ -132,24 +133,27 @@ git clone https://github.com/dbwls99706/ros2-engineering-skills.git ~/.claude/sk
 ```
 
 ### Codex / Gemini CLI / OpenCode
+
 ```bash
 git clone https://github.com/dbwls99706/ros2-engineering-skills.git ~/.agents/skills/ros2-engineering-skills
 ```
 
 ### Cursor
+
 ```bash
 git clone https://github.com/dbwls99706/ros2-engineering-skills.git
 # Add to .cursor/rules/ros2-engineering-skills
 ```
 
 ### Any project (symlink)
+
 ```bash
 ln -s /path/to/ros2-engineering-skills .claude/skills/ros2-engineering-skills
 ```
 
 ## Structure
 
-```
+```text
 ros2-engineering-skills/
 ├── SKILL.md                        # Entry point — decision router + core principles
 ├── references/                     # 20 reference files (13,000+ lines)

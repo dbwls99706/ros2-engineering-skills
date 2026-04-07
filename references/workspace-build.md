@@ -406,6 +406,7 @@ sudo apt install ros-jazzy-performance-test
 # Run a 10-minute test: 1 publisher, 1 subscriber, 1KB message at 1000Hz using CycloneDDS
 ros2 run performance_test perf_test -c CycloneDDS -m Array1k -r 1000 -p 1 -s 1 --max_runtime 600
 ```
+
 *Metrics to watch:* Look at the `T_lat` (latency) and `jitter` columns. If your $99.99^{th}$ percentile latency is high, your network stack or CPU governor needs tuning.
 
 **2. `ros2_tracing` (LTTng)**
@@ -419,6 +420,7 @@ ros2 trace start my_trace
 # Run your nodes...
 ros2 trace stop
 ```
+
 *Analysis:* Use the `tracetools_analysis` Jupyter notebooks to generate flame graphs and callback duration histograms.
 
 **3. `ros2 topic delay` and `ros2 topic hz`**

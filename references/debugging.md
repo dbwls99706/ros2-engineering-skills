@@ -1,6 +1,7 @@
 # Debugging and Diagnostics
 
 ## Table of contents
+
 1. ros2 doctor and system diagnostics
 2. rqt tools
 3. Tracing with ros2_tracing (LTTng)
@@ -31,6 +32,7 @@ ros2 doctor --report --include-network
 `ros2 wtf` is an alias for `ros2 doctor` -- both commands are equivalent.
 
 ### What ros2 doctor checks
+
 - ROS 2 distribution and middleware configuration
 - Network interfaces and multicast capability
 - DDS discovery health
@@ -40,12 +42,14 @@ ros2 doctor --report --include-network
 ### Expected output examples
 
 **`ros2 doctor` (healthy system):**
-```
+
+```text
 All 5 checks passed
 ```
 
 **`ros2 doctor` (problem detected):**
-```
+
+```text
 1/5 checks failed
 
 Failed modules:
@@ -53,7 +57,8 @@ Failed modules:
 ```
 
 **`ros2 doctor --report` (excerpt):**
-```
+
+```text
 NETWORK CONFIGURATION
   inet addr: 192.168.1.100
   multicast: enabled
@@ -69,7 +74,8 @@ TOPIC LIST
 ```
 
 **`ros2 topic info /cmd_vel -v` (QoS mismatch diagnosis):**
-```
+
+```text
 Type: geometry_msgs/msg/Twist
 
 Publisher count: 1
@@ -104,17 +110,21 @@ QoS profile:
   Liveliness: AUTOMATIC
   Liveliness lease duration: Infinite
 ```
+
 Use this output to diagnose QoS mismatches — if publisher is `BEST_EFFORT` and subscriber is `RELIABLE`, no messages will be delivered. Compare the `Reliability` and `Durability` fields between publisher and subscriber.
 
 **`ros2 topic hz /joint_states` (rate check):**
-```
+
+```text
 average rate: 50.012
         min: 0.019s max: 0.021s std dev: 0.00048s window: 50
 ```
+
 If the rate is significantly lower than expected (e.g., 30 Hz instead of 500 Hz), check the hardware interface update rate or serial bandwidth.
 
 **`ros2 node info /controller_manager` (connection check):**
-```
+
+```text
 /controller_manager
   Subscribers:
     /robot_description: [std_msgs/msg/String]
@@ -130,6 +140,7 @@ If the rate is significantly lower than expected (e.g., 30 Hz instead of 500 Hz)
 
   Action Clients:
 ```
+
 If a node shows no publishers/subscribers when it should have them, the node is not spinning or has a namespace mismatch.
 
 ### Topic introspection
@@ -232,6 +243,7 @@ private:
 ```
 
 View diagnostics:
+
 ```bash
 ros2 topic echo /diagnostics
 ros2 run rqt_robot_monitor rqt_robot_monitor
@@ -265,6 +277,7 @@ ros2 run rqt_plot rqt_plot /joint_states/position[0] /joint_states/position[1]
 ```
 
 ### rqt_graph tips
+
 - Use "Nodes/Topics (all)" to see the full picture
 - Hide `/rosout` and `/parameter_events` to reduce clutter
 - Refresh after launching new nodes
@@ -537,6 +550,7 @@ ros2 bag convert -i old_bag -o convert_config.yaml
 ```
 
 Compression comparison:
+
 | Format | Speed | Ratio | Best for |
 |---|---|---|---|
 | zstd | Fast write, fast read | ~3-5x | Production recording (default choice) |
@@ -546,6 +560,7 @@ Compression comparison:
 ### Foxglove Studio
 
 Foxglove Studio is a modern alternative to rqt for visualization and debugging. It can:
+
 - Open MCAP files directly for offline analysis
 - Connect to live ROS 2 systems via Foxglove WebSocket bridge
 - Render 3D scenes, plots, images, and diagnostics in a web-based UI
@@ -654,7 +669,7 @@ export ROS_DOMAIN_ID=42
 
 ### Segfault in callback (use-after-free)
 
-```
+```text
 Symptom: Segfault when subscription callback fires after node destruction
 Cause: Lambda captures `this` but node is destroyed
 Fix: Use weak_from_this() or ensure proper shutdown ordering
@@ -677,7 +692,7 @@ auto sub = create_subscription<Msg>("topic", 10,
 
 ### Deadlock from synchronous service call
 
-```
+```text
 Symptom: Node hangs, callbacks stop firing
 Cause: Synchronous service call in executor callback
 Fix: Use async_send_request with callback
@@ -685,7 +700,7 @@ Fix: Use async_send_request with callback
 
 ### Memory leak from uncleared subscriptions
 
-```
+```text
 Symptom: Memory grows steadily, node eventually OOM-killed
 Cause: Creating subscriptions in callbacks without destroying old ones
 Fix: Create all subscriptions in constructor/on_configure, never in callbacks

@@ -1,6 +1,7 @@
 # Hardware Interface (ros2_control)
 
 ## Table of contents
+
 1. ros2_control architecture
 2. Writing a hardware interface plugin
 3. Controller types and selection
@@ -17,7 +18,7 @@
 
 ## 1. ros2_control architecture
 
-```
+```text
                   ┌──────────────────────┐
                   │   Controller Manager  │
                   │  (reads/writes at     │
@@ -60,6 +61,7 @@ When creating a `<ros2_control>` tag, you must specify the `type`:
 | **Sensor** | Read-only hardware (IMUs, force-torque sensors) | Only exports StateInterfaces. Cannot accept commands. |
 
 **When to use which?**
+
 - Use **System** for 95% of real-world robots. Even if you have 6 independent serial motors, mapping them as a single System plugin often reduces thread contention and simplifies port management compared to 6 Actuator plugins fighting for USB access.
 - Use **Actuator** only if each motor is truly independent (e.g., driven by separate GPIO pins) and you want maximum modularity.
 - Use **Sensor** for dedicated measurement devices that don't belong to a specific actuator.
@@ -81,6 +83,7 @@ When creating a `<ros2_control>` tag, you must specify the `type`:
 | Async hardware scheduling | Not available | Not available | `synchronized` and `detached` policies |
 
 **Migration path:**
+
 - **Humble → Jazzy**: Remove `export_*_interfaces()` overrides, delete manual `std::vector<double>` members, switch to `set_state()`/`get_command()` helpers, rename `get_state()`→`get_lifecycle_state()` for lifecycle methods
 - **Jazzy → Kilted**: Update `on_init()` to accept `HardwareComponentInterfaceParams`, replace `thread_priority` with `async_params`
 
@@ -93,10 +96,12 @@ framework based on the `<ros2_control>` URDF tag. You no longer need to override
 `export_state_interfaces()` / `export_command_interfaces()` or manage memory manually.
 
 The framework provides maps to access interfaces:
+
 - `joint_state_interfaces_` / `joint_command_interfaces_` — keyed by fully qualified name
 - `sensor_state_interfaces_` / `gpio_command_interfaces_` — for sensors and GPIO
 
 > **Kilted (5.x) changes to hardware/controller interfaces:**
+>
 > - **Struct-based controller constructors:** Controllers now receive a `ControllerInterfaceParams` struct instead of individual arguments. Custom controllers must update their constructors accordingly.
 > - **Handle copy/move deleted:** `CommandInterface` and `StateInterface` handles can no longer be copied or moved. Store them by reference or pointer; passing by value will not compile.
 > - **Multiple data type support:** Interfaces are no longer limited to `double`. The framework supports additional data types (e.g., `bool`, `int`), enabling richer GPIO and sensor modeling without encoding everything as a `double`.
@@ -298,6 +303,7 @@ pluginlib_export_plugin_description_file(
 ```
 
 **Hardware-layer joint limiters (Jazzy 4.28+ / Kilted 5.x):** ros2_control supports joint limits enforced directly at the hardware interface layer via `<limits>` tags in the URDF. These act as a safety net below the controller -- even if a controller sends an out-of-range command, the hardware interface clips it. In Kilted, joint limit enforcement is fully built into the framework and enabled by default; no additional controller-side configuration is needed. Configure in URDF:
+
 ```xml
 <joint name="joint_1">
   <command_interface name="position">
@@ -360,9 +366,10 @@ arm_controller:
       goal_time: 0.0
 ```
 
-**Migration: gripper_action_controller -> parallel_gripper_action_controller (Jazzy)**
+#### Migration: gripper_action_controller to parallel_gripper_action_controller (Jazzy)
 
 The `gripper_action_controller` is deprecated in Jazzy. Replace with `parallel_gripper_action_controller`:
+
 - Action interface changes from `control_msgs/GripperCommand` to the same interface but with updated parameter naming
 - YAML change: `type: gripper_action_controller/GripperActionController` -> `type: parallel_gripper_action_controller/GripperActionController`
 - The `parallel_gripper` supports both position and effort control modes
@@ -433,6 +440,7 @@ private:
 ```
 
 YAML configuration for chaining:
+
 ```yaml
 controller_manager:
   ros__parameters:
@@ -510,6 +518,7 @@ hardware_interface::CallbackReturn on_init(
 ```
 
 URDF GPIO definition:
+
 ```xml
 <ros2_control name="GPIOSystem" type="system">
   <hardware>
@@ -525,6 +534,7 @@ URDF GPIO definition:
 ```
 
 Access in read()/write():
+
 ```cpp
 // In read():
 set_state("digital_io/estop_active", read_gpio_pin(ESTOP_PIN) ? 1.0 : 0.0);
@@ -611,6 +621,7 @@ private:
 ```
 
 **Timing discipline:**
+
 - The ros2_control `read()` and `write()` are called by the controller manager
   at a fixed rate. Your serial communication must complete within one cycle.
 - If serial read takes longer than the cycle period, you get jitter. Solutions:
@@ -780,10 +791,12 @@ def generate_launch_description():
 ## 9. Real hardware bring-up workflow
 
 1. **Start with mock hardware** — ros2_control has a built-in mock system:
+
    ```xml
    <plugin>mock_components/GenericSystem</plugin>
    <param name="mock_sensor_commands">true</param>
    ```
+
    Verify controllers and TF work before touching real hardware.
 
 2. **Implement `on_init`** — validate URDF parsing and joint configuration.

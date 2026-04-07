@@ -1,6 +1,7 @@
 # Deployment
 
 ## Table of contents
+
 1. Docker multi-stage builds for ROS 2
 2. Cross-compilation (aarch64, armhf)
 3. Deployment on embedded platforms
@@ -151,6 +152,7 @@ services:
 ```
 
 For multi-container on the same host without host networking:
+
 ```yaml
 services:
   robot_a:
@@ -187,6 +189,7 @@ networks:
 ```
 
 For shared memory transport inside Docker:
+
 ```bash
 # Required for iceoryx/CycloneDDS shared memory
 docker run --ipc=host ...
@@ -277,7 +280,7 @@ export CYCLONEDDS_URI='<CycloneDDS><Domain><Internal><MinimumSocketReceiveBuffer
 
 ### Fleet architecture
 
-```
+```text
                  ┌──────────────────┐
                  │   Fleet Server    │
                  │ (cloud/on-prem)   │
@@ -494,6 +497,7 @@ SROS2 workflow including keystore setup, governance/permissions authoring, certi
 supply chain hardening, and performance impact analysis.
 
 Quick start for testing:
+
 ```bash
 ros2 security create_keystore ~/sros2_keystore
 ros2 security create_enclave ~/sros2_keystore /my_robot/driver
@@ -592,6 +596,7 @@ def generate_launch_description():
 ### Hardware safety on shutdown
 
 For lifecycle nodes that control hardware, the `on_deactivate` callback must:
+
 1. Send a safe command (zero velocity, disable torque, close gripper to safe position)
 2. Wait for acknowledgement from hardware (with timeout)
 3. Close communication channels

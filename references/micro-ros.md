@@ -1,6 +1,7 @@
 # Micro-ROS
 
 ## Table of contents
+
 1. Architecture overview
 2. Supported platforms and RTOSes
 3. micro_ros_agent setup
@@ -15,7 +16,7 @@
 
 ## 1. Architecture overview
 
-```
+```text
 +----------------------------+     +----------------------------+
 |   ROS 2 Host (Linux)       |     |   Microcontroller (MCU)    |
 |  +----------------------+  |     |  +----------------------+  |
@@ -35,6 +36,7 @@
 ```
 
 Key concepts:
+
 - micro-ROS runs on the MCU using the `rclc` C API (not rclcpp/rclpy).
 - The `micro_ros_agent` on the host bridges XRCE-DDS to full DDS (or Zenoh from Jazzy).
 - Communication goes through a transport layer (serial UART, UDP over WiFi, USB CDC).
@@ -224,6 +226,7 @@ RCCHECK(rclc_executor_add_subscription(
 ```
 
 Key differences from rclcpp/rclpy:
+
 - No dynamic allocation after initialization.
 - Must specify exact number of handles in executor.
 - Use `rclc_executor_spin_some()` (not `spin()`) to cooperate with the RTOS scheduler.
@@ -292,11 +295,12 @@ Each additional publisher/subscriber costs approximately 1-3 KB RAM. Task stack 
 ## 6. Custom messages and type support
 
 Constraints on MCU message types:
+
 - No unbounded sequences (arrays must have fixed or bounded size).
 - No unbounded strings (all string fields consume `max_string_capacity` bytes).
 - Nested messages multiply memory requirements at every level.
 
-```
+```text
 # extra_packages/my_robot_msgs/msg/SensorReading.msg
 std_msgs/Header header
 uint32 sensor_id
@@ -342,6 +346,7 @@ sensor_msg.frame_name.size = strlen(frame);
 ## 7. Transport layers
 
 ### Serial (UART)
+
 Most reliable. Direct wired connection, no packet loss, deterministic latency.
 
 | Use case                       | Recommended baud |
@@ -351,9 +356,11 @@ Most reliable. Direct wired connection, no packet loss, deterministic latency.
 | IMU + encoders + commands      | 921600           |
 
 ### UDP (WiFi)
+
 ESP32 native WiFi. Higher latency, potential packet loss. Use `BEST_EFFORT` QoS only. Keep messages under 1400 bytes (MTU). Not suitable for safety-critical control loops.
 
 ### USB CDC
+
 Lower latency than UART, higher throughput. Devices appear as `/dev/ttyACM*`. Works with Teensy, STM32 OTG, RP2040 native USB.
 
 ### Custom transport
