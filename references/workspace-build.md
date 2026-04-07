@@ -481,3 +481,7 @@ vcs pull src
 | Circular dependency error | Package A depends on B and B depends on A | Extract shared interfaces into a third package |
 | "Multiple packages with name X" | Duplicate package in overlay and underlay | Remove the underlay version or use `--packages-select` |
 | Link error: undefined reference | Library not listed in `target_link_libraries` | Add library to CMake target linking |
+
+---
+
+**See also:** `references/testing.md` for colcon test integration and CI/CD patterns, `references/deployment.md` for Docker multi-stage builds and cross-compilation, `references/launch-system.md` for package discovery and launch file installation.

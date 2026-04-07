@@ -509,3 +509,7 @@ launch_test test/test_driver.launch.py
 | Event handler never fires | Target action reference mismatch | Ensure the `target_action` variable is the same object, not a copy |
 | Controller spawner exits with error | Controller manager not ready yet | Use `OnProcessExit` to sequence spawner after control_node startup |
 | Launch file not found during `ros2 launch` | Missing `data_files` entry in setup.py (Python pkg) or `install(DIRECTORY launch ...)` in CMake | Add install directive in build config |
+
+---
+
+**See also:** `references/lifecycle-components.md` for lifecycle node orchestration from launch files, `references/tf2-urdf.md` for xacro processing and robot_state_publisher launch patterns, `references/workspace-build.md` for package discovery and sourcing.

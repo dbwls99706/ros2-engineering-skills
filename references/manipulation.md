@@ -574,3 +574,7 @@ robot_description_planning:
 | Cartesian path returns low fraction | Obstacles in the way, or step too large | Reduce `eef_step`, add intermediate waypoints, check for collisions |
 | MoveIt Servo stops unexpectedly | Near joint limit or collision | Increase `joint_limit_margin`, check collision scene |
 | Planning takes too long | Complex environment, too many collision objects | Simplify collision geometry, use convex decomposition, increase planning time |
+
+---
+
+**See also:** `references/tf2-urdf.md` for URDF/xacro and collision geometry definitions, `references/simulation.md` for testing manipulation in Gazebo, `references/realtime.md` for servo control timing requirements.

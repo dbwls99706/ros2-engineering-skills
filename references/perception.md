@@ -568,3 +568,7 @@ These use NITROS for zero-copy GPU memory transfer between nodes. Install via Is
 | Camera image is dark/overexposed | Auto-exposure not configured | Set camera exposure params via ROS parameters or vendor tools |
 | PCL processing is too slow | Too many points, no downsampling | Apply `VoxelGrid` filter first, reduce point cloud resolution |
 | TF error when transforming detections | Camera optical frame not in TF tree | Add optical frame joint to URDF (rotation from camera_link) |
+
+---
+
+**See also:** `references/communication.md` for image_transport and QoS profiles for sensor data, `references/simulation.md` for simulated sensors and camera testing, `references/tf2-urdf.md` for camera optical frame conventions in URDF.

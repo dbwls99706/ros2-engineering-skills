@@ -717,3 +717,7 @@ ros2 run tf2_tools view_frames          # Generate TF tree
 </physics>
 <!-- Anti-pattern: real_time_factor=100 + step_size=0.01 causes instability -->
 ```
+
+---
+
+**See also:** `references/hardware-interface.md` for gz_ros2_control integration with simulated hardware, `references/testing.md` for simulation-in-the-loop CI testing, `references/manipulation.md` for testing MoveIt 2 pipelines in simulation.

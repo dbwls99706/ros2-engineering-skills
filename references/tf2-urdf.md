@@ -583,3 +583,7 @@ map
 | Camera data appears rotated | Optical frame convention not followed | Add optical frame child with `rpy="-π/2 0 -π/2"` rotation |
 | Transform delay causes stale data | High-latency TF publisher | Increase TF buffer duration, check publisher rate |
 | `frame_prefix` not applied | Using wrong RSP version or missing parameter | Verify `frame_prefix` parameter is set in robot_state_publisher |
+
+---
+
+**See also:** `references/launch-system.md` for robot_state_publisher launch patterns and xacro processing, `references/multi-robot.md` for frame prefix isolation in multi-robot systems, `references/perception.md` for camera optical frame conventions.

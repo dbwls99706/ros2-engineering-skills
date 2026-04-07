@@ -473,3 +473,7 @@ ros2 node list                                   # all discovered nodes
 ros2 daemon stop && ros2 daemon start            # reset discovery cache
 ros2 topic echo /fleet_states                    # monitor fleet state
 ```
+
+---
+
+**See also:** `references/tf2-urdf.md` for frame prefix isolation and multi-robot TF trees, `references/communication.md` for DDS discovery scaling and partitioning, `references/security.md` for securing multi-robot fleet communication.

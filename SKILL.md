@@ -94,6 +94,33 @@ evals:
       - "Must include XRCE-DDS agent setup and connection parameters"
       - "Must handle agent disconnection with reconnection strategy"
     timeout: 60000
+  - name: python-package-scaffolding
+    prompt: evals/prompts/python-package.md
+    expected: evals/expected/python-package.md
+    criteria:
+      - "Must generate valid ament_python package with setup.py and resource marker"
+      - "Must use qos_profile_sensor_data for sensor subscriptions"
+      - "Must declare parameters with typed defaults"
+      - "Must include Python launch file with parameter loading"
+    timeout: 60000
+  - name: nav2-stack-configuration
+    prompt: evals/prompts/nav2-configuration.md
+    expected: evals/expected/nav2-configuration.md
+    criteria:
+      - "Must configure AMCL with correct robot model and laser model"
+      - "Must configure costmaps with correct layers and robot footprint"
+      - "Must set DWB controller velocity limits matching robot specs"
+      - "Must configure recovery behaviors (spin, backup, wait)"
+    timeout: 70000
+  - name: ros2-control-hardware-interface
+    prompt: evals/prompts/ros2-control-hardware.md
+    expected: evals/expected/ros2-control-hardware.md
+    criteria:
+      - "Must implement SystemInterface with read/write/export methods"
+      - "Must implement lifecycle callbacks (on_configure, on_activate, on_deactivate)"
+      - "Must handle serial failures with return_type::ERROR"
+      - "Must include correct URDF ros2_control tag and controller config"
+    timeout: 70000
 ---
 
 # ROS 2 Engineering Skills

@@ -1180,3 +1180,7 @@ class ImageProcessor : public rclcpp::Node
 | Timer drifts under load | Wall timer + heavy callbacks | Use a dedicated callback group or reduce callback work |
 | Intra-process not working | Missing `use_intra_process_comms(true)` or nodes not in same process | Enable in NodeOptions for all participating nodes; ensure they run in the same process (composition, same main(), etc.) |
 | Service call deadlocks executor | Service client in same callback group as caller | Put service client in a separate MutuallyExclusiveCallbackGroup; use async_send_request with callback |
+
+---
+
+**See also:** `references/realtime.md` for callback group strategies under real-time constraints, `references/lifecycle-components.md` for lifecycle executors and component composition, `references/communication.md` for QoS and intra-process communication patterns.

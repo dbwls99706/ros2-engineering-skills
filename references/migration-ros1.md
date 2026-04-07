@@ -526,3 +526,7 @@ self.add_on_set_parameters_callback(parameter_callback)
 | `catkin_make` doesn't build ROS 2 | Wrong build system | Use `colcon build` for ROS 2 packages |
 | Subscriber callback signature error | ROS 2 uses ConstSharedPtr, not raw pointer | Change `const Msg::ConstPtr&` to `const Msg::ConstSharedPtr` |
 | Service call blocks forever | Synchronous service call in callback | Use `async_send_request` with callback instead |
+
+---
+
+**See also:** `references/communication.md` for ROS 2 topic/service/action API details, `references/launch-system.md` for XML-to-Python launch file conversion, `references/workspace-build.md` for catkin-to-ament build system migration.

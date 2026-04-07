@@ -80,7 +80,22 @@ jobs:
             .
 
   # -------------------------------------------------------
-  # Job 4: Validate scripts and generated code
+  # Job 4: Markdown lint for reference files
+  # -------------------------------------------------------
+  markdown-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          globs: |
+            references/*.md
+            SKILL.md
+            README.md
+
+  # -------------------------------------------------------
+  # Job 5: Validate scripts and generated code
   # -------------------------------------------------------
   lint-scripts:
     runs-on: ubuntu-latest

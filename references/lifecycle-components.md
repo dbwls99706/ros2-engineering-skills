@@ -685,3 +685,7 @@ ros2 lifecycle set /lidar_processor shutdown
 | Intra-process not working | Missing `use_intra_process_comms` in extra_arguments | Add to launch description; verify both sides are in the same container |
 | Node restarts but won't reconfigure | Previous cleanup didn't release resources | Ensure `on_cleanup` and `on_shutdown` release all resources (reset shared_ptrs) |
 | State transition rejected | Invalid transition from current state | Check state machine diagram; you cannot go from Unconfigured directly to Active |
+
+---
+
+**See also:** `references/launch-system.md` for lifecycle orchestration from launch files, `references/nodes-executors.md` for executor and callback group patterns with lifecycle nodes, `references/hardware-interface.md` for lifecycle-managed hardware drivers.

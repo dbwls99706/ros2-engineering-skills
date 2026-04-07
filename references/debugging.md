@@ -703,3 +703,7 @@ Fix: Create all subscriptions in constructor/on_configure, never in callbacks
 | Bag playback too fast | Missing `--clock` flag | Add `--clock` and set `use_sim_time: true` on nodes |
 | rqt_graph shows disconnected nodes | Nodes on different DDS domains | Verify `ROS_DOMAIN_ID` is the same on all machines |
 | valgrind reports leaks in rclcpp | Known ROS 2 library allocations (not true leaks) | Suppress ROS 2 internal allocations, focus on your code |
+
+---
+
+**See also:** `references/tf2-urdf.md` for TF tree debugging and frame diagnostics, `references/communication.md` for QoS mismatch diagnosis and topic introspection.

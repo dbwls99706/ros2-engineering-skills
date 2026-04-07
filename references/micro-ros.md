@@ -504,3 +504,7 @@ ros2 node list
 ros2 topic hz /imu/data_raw
 ros2 topic info /imu/data_raw --verbose
 ```
+
+---
+
+**See also:** `references/communication.md` for QoS profiles and message type conventions, `references/nodes-executors.md` for executor patterns in constrained environments, `references/workspace-build.md` for firmware build system integration with colcon.

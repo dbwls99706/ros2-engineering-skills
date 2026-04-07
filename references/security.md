@@ -663,3 +663,7 @@ export CYCLONEDDS_URI=file:///opt/robot/config/cyclonedds_security_debug.xml
 ros2 run my_robot_driver driver_node
 cat /tmp/cyclonedds_security.log | grep -i "error\|fail\|denied"
 ```
+
+---
+
+**See also:** `references/communication.md` for DDS configuration and multicast settings, `references/multi-robot.md` for securing fleet communication, `references/deployment.md` for container and supply chain hardening.

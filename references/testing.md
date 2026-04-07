@@ -678,3 +678,7 @@ class TestPerceptionRegression(unittest.TestCase):
 | Python test can't import package | Package not installed / not on PYTHONPATH | `source install/setup.bash` before running tests |
 | Mock hardware behaves differently than real | GenericSystem has perfect response | Test with realistic delays and noise in mock hardware |
 | CI build takes too long | No caching, full rebuild every time | Cache `build/`, `install/`, `.ccache/`, rosdep install |
+
+---
+
+**See also:** `references/simulation.md` for headless simulation testing in CI, `references/launch-system.md` for launch_testing framework patterns, `references/workspace-build.md` for colcon test configuration and CI/CD setup.

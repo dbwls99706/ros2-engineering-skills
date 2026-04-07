@@ -690,3 +690,7 @@ watch -n 1 cat /proc/interrupts
 | Good cyclictest but bad ROS jitter | Slow clock source (HPET/ACPI_PM) | Switch to TSC: `clocksource=tsc tsc=reliable` in kernel cmdline |
 | Latency worse on multi-socket server | NUMA cross-node memory access | Pin RT thread + data to same NUMA node with `numactl` |
 | Sporadic spikes from network IRQs | IRQs firing on isolated RT cores | Move IRQ affinity off RT cores (see section 10) |
+
+---
+
+**See also:** `references/nodes-executors.md` for callback group and two-executor patterns, `references/communication.md` for DDS tuning and shared memory transport, `references/hardware-interface.md` for ros2_control real-time considerations.

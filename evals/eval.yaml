@@ -184,6 +184,81 @@ evals:
     timeout: 60000
     tags: [micro-ros, firmware, rclc, xrce-dds, embedded]
 
+  - name: python-package-scaffolding
+    description: >
+      Validates that the skill generates correct ROS 2 Python package structures
+      with ament_python build type, proper entry points, and QoS-aware subscriptions.
+    prompt: prompts/python-package.md
+    expected: expected/python-package.md
+    criteria:
+      - id: correct-structure
+        description: "Must generate valid ament_python package with setup.py, setup.cfg, and resource marker"
+        weight: 1.0
+      - id: qos-sensor-profile
+        description: "Must use qos_profile_sensor_data for sensor subscriptions, not integer depth"
+        weight: 1.0
+      - id: parameter-declaration
+        description: "Must declare parameters with typed defaults using declare_parameter"
+        weight: 0.8
+      - id: launch-file
+        description: "Must include Python launch file with parameter loading"
+        weight: 0.8
+      - id: pytest-tests
+        description: "Must include pytest-based test file"
+        weight: 0.6
+    timeout: 60000
+    tags: [package, python, ament_python, qos]
+
+  - name: nav2-stack-configuration
+    description: >
+      Validates that the skill correctly configures the Nav2 navigation stack
+      with AMCL, costmaps, DWB controller, and behavior tree recovery.
+    prompt: prompts/nav2-configuration.md
+    expected: expected/nav2-configuration.md
+    criteria:
+      - id: amcl-config
+        description: "Must configure AMCL with correct robot model type and laser model"
+        weight: 1.0
+      - id: costmap-layers
+        description: "Must configure global and local costmaps with correct layers and robot footprint"
+        weight: 1.0
+      - id: controller-params
+        description: "Must set DWB controller velocity limits matching robot specs"
+        weight: 0.8
+      - id: recovery-behaviors
+        description: "Must configure recovery behaviors (spin, backup, wait)"
+        weight: 0.8
+      - id: launch-file
+        description: "Must provide a launch file with map argument and use_sim_time"
+        weight: 0.6
+    timeout: 70000
+    tags: [nav2, navigation, costmap, amcl, behavior-tree]
+
+  - name: ros2-control-hardware-interface
+    description: >
+      Validates that the skill correctly implements a ros2_control SystemInterface
+      plugin with serial communication, lifecycle callbacks, and controller configuration.
+    prompt: prompts/ros2-control-hardware.md
+    expected: expected/ros2-control-hardware.md
+    criteria:
+      - id: system-interface
+        description: "Must implement SystemInterface with read/write/export methods"
+        weight: 1.0
+      - id: lifecycle-callbacks
+        description: "Must implement on_configure, on_activate, on_deactivate, on_cleanup"
+        weight: 1.0
+      - id: error-handling
+        description: "Must handle serial failures with return_type::ERROR, not crash"
+        weight: 0.8
+      - id: urdf-ros2-control-tag
+        description: "Must include correct URDF <ros2_control> tag with joints and interfaces"
+        weight: 0.8
+      - id: controller-config
+        description: "Must configure joint_trajectory_controller and joint_state_broadcaster"
+        weight: 0.8
+    timeout: 70000
+    tags: [ros2_control, hardware_interface, serial, lifecycle]
+
 # Parity test configuration for deprecation assessment
 parity_test:
   enabled: true

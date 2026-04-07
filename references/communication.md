@@ -895,3 +895,7 @@ For high-bandwidth data (images, point clouds):
 | QoS deadline missed events not firing | Deadline policy not supported by DDS vendor for this topic type | Use CycloneDDS or FastDDS; verify with `ros2 topic info -v` |
 | Content filter has no effect | DDS vendor does not support content filtering | Check vendor docs; CycloneDDS has limited support, FastDDS has full support |
 | Shared memory transport not working | iceoryx RouDi daemon not running or CYCLONEDDS_URI not set | Start `iox-roudi` first, export CYCLONEDDS_URI, ensure same user/permissions |
+
+---
+
+**See also:** `references/nodes-executors.md` for executor and callback group patterns affecting communication, `references/realtime.md` for DDS tuning under real-time constraints, `references/security.md` for encrypting DDS traffic with SROS2.

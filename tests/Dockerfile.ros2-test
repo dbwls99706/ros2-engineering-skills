@@ -77,4 +77,8 @@ RUN python3 scripts/qos_checker.py --preset sensor \
     && python3 scripts/qos_checker.py --preset action_feedback \
     && python3 scripts/qos_checker.py --preset safety_heartbeat
 
+# Stage 7: Smoke-test — verify generated nodes actually start in ROS 2
+RUN chmod +x tests/smoke_test_nodes.sh \
+    && timeout 30 bash tests/smoke_test_nodes.sh
+
 CMD echo "All tests passed for ROS 2 ${ROS_DISTRO}!"
