@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Skills 2.0 Eval Runner — Automated quality verification for skills.
+"""Skills 2.0 Eval Runner — Structural smoke check for skill evals.
 
-Loads eval definitions from eval.yaml, runs each eval case, and produces
-a structured report with pass rates, execution times, and comparison data.
+Loads eval definitions from eval.yaml, validates that prompt/expected files
+exist, and reports whether each expected file's text addresses the keywords
+declared in its criteria. This is a *structural* check: it does not invoke
+Claude, does not execute the skill, and does not measure model accuracy.
+
+A criterion "passes" when at least 30% of its non-stop-word tokens appear
+(case-insensitively) in the expected file. The threshold and matching are
+deliberately permissive — the goal is to catch missing or empty fixtures,
+not to score model output. Treat the pass rate as a fixture-quality
+indicator, not a benchmark.
 
 Usage:
     python eval_runner.py [--eval-dir DIR] [--eval-name NAME] [--json] [--verbose]
@@ -18,6 +26,7 @@ __version__ = '1.0.0'
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -60,6 +69,23 @@ def load_eval_config(eval_dir):
     return config
 
 
+def _resolve_within(base_dir, rel_path):
+    """Resolve ``rel_path`` against ``base_dir`` and reject paths that escape it.
+
+    Returns the resolved absolute path on success, or ``None`` if the path
+    escapes ``base_dir`` (e.g. ``../../etc/passwd``).
+    """
+    base = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base, rel_path))
+    try:
+        if os.path.commonpath([base, candidate]) != base:
+            return None
+    except ValueError:
+        # Different drives on Windows, or other commonpath edge cases.
+        return None
+    return candidate
+
+
 def validate_eval_entry(entry, eval_dir):
     """Validate a single eval entry has all required fields and files exist.
 
@@ -72,15 +98,27 @@ def validate_eval_entry(entry, eval_dir):
         if field not in entry:
             errors.append(f'Missing required field: {field}')
 
+    # Resolve and cache paths on the entry so run_eval can reuse them
+    # without re-resolving (avoids a TOCTOU window between validation and
+    # use, and removes a duplicate commonpath call).
     if 'prompt' in entry:
-        prompt_path = os.path.join(eval_dir, entry['prompt'])
-        if not os.path.isfile(prompt_path):
+        prompt_path = _resolve_within(eval_dir, entry['prompt'])
+        if prompt_path is None:
+            errors.append(f'Prompt path escapes eval dir: {entry["prompt"]}')
+        elif not os.path.isfile(prompt_path):
             errors.append(f'Prompt file not found: {prompt_path}')
+        else:
+            entry['_resolved_prompt'] = prompt_path
 
     if 'expected' in entry:
-        expected_path = os.path.join(eval_dir, entry['expected'])
-        if not os.path.isfile(expected_path):
+        expected_path = _resolve_within(eval_dir, entry['expected'])
+        if expected_path is None:
+            errors.append(
+                f'Expected path escapes eval dir: {entry["expected"]}')
+        elif not os.path.isfile(expected_path):
             errors.append(f'Expected file not found: {expected_path}')
+        else:
+            entry['_resolved_expected'] = expected_path
 
     if 'criteria' in entry:
         if not isinstance(entry['criteria'], list):
@@ -149,14 +187,24 @@ def evaluate_criteria(expected_content, criteria_texts):
             if cleaned and cleaned not in stop_words and len(cleaned) > 2:
                 key_terms.append(cleaned)
 
-        # Check if expected content addresses the criterion
+        # Check if expected content addresses the criterion. A criterion
+        # passes only if (a) it has at least 3 meaningful terms — short
+        # criteria with one or two tokens trivially pass at 30% coverage —
+        # and (b) at least 30% of those terms appear in the expected text.
+        # Word-boundary matching avoids false positives like "cat" matching
+        # "concatenate".
         expected_lower = expected_content.lower()
-        matched_terms = [t for t in key_terms if t in expected_lower]
+        matched_terms = [
+            t for t in key_terms
+            if re.search(r'\b' + re.escape(t) + r'\b', expected_lower)
+        ]
         coverage = len(matched_terms) / max(len(key_terms), 1)
+        min_terms = 3
+        passed = len(key_terms) >= min_terms and coverage >= 0.3
 
         results.append({
             'criterion': criterion_text,
-            'passed': coverage >= 0.3,
+            'passed': passed,
             'coverage': round(coverage, 2),
             'matched_terms': matched_terms,
             'total_terms': len(key_terms),
@@ -186,9 +234,10 @@ def run_eval(entry, eval_dir, verbose=False):
             'pass_rate': 0.0,
         }
 
-    # Load prompt and expected content
-    prompt_path = os.path.join(eval_dir, entry['prompt'])
-    expected_path = os.path.join(eval_dir, entry['expected'])
+    # Reuse the paths resolved during validation (no re-resolution, which
+    # avoids any TOCTOU window between validate_eval_entry and here).
+    prompt_path = entry['_resolved_prompt']
+    expected_path = entry['_resolved_expected']
 
     prompt_content = load_file_content(prompt_path)
     expected_content = load_file_content(expected_path)

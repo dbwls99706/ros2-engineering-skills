@@ -21,11 +21,18 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install linters
-        run: pip install flake8 mypy
+        run: pip install flake8 mypy pip-audit
       - name: flake8
         run: flake8 scripts/ tests/
       - name: mypy
         run: mypy scripts/ --ignore-missing-imports
+      - name: Install runtime deps for audit
+        run: pip install pyyaml hypothesis pytest pytest-cov
+      - name: pip-audit (current environment)
+        # Best-effort dependency vulnerability scan over the installed env.
+        # Non-blocking: advisories are surfaced for awareness, not enforcement.
+        continue-on-error: true
+        run: pip-audit --desc
 
   # -------------------------------------------------------
   # Job 2: Unit tests with coverage (fast, no Docker needed)

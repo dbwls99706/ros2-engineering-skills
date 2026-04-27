@@ -13,6 +13,8 @@ Usage:
 
 import argparse
 import json
+import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -23,15 +25,20 @@ try:
 except ImportError:
     HAS_YAML = False
 
-__version__ = "0.1.0"
-
-# Import QoS types from the main checker
-import os
+# Import QoS types from the main checker (sibling module in scripts/).
+# Note: scripts/ is intentionally not packaged — these tools are designed to
+# be invoked directly as scripts (`python scripts/rosbag2_qos_checker.py`)
+# from CI and from the README. Converting to a proper package would require
+# changing every documented invocation, so we use the sys.path trick here.
 sys.path.insert(0, os.path.dirname(__file__))
 from qos_checker import (  # noqa: E402
     QoSProfile, Reliability, Durability, History, Liveliness,
     check_compatibility,
 )
+
+__version__ = "0.1.0"
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_yaml_qos(qos_dict: dict, label: str = "") -> Optional[QoSProfile]:
@@ -101,7 +108,8 @@ def _parse_yaml_qos(qos_dict: dict, label: str = "") -> Optional[QoSProfile]:
             liveliness=liveliness,
             liveliness_lease_ms=lease_ms,
         )
-    except (KeyError, ValueError, TypeError):
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.debug("Failed to parse QoS dict (%s): %s", label or "unlabeled", exc)
         return None
 
 

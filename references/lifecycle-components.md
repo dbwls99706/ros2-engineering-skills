@@ -1,5 +1,9 @@
 # Lifecycle Nodes and Component Composition
 
+> **Distro stability:** APIs in this guide are stable across Humble, Jazzy,
+> Kilted, and Rolling. Distro-specific notes are called out inline where
+> behavior differs.
+
 ## Table of contents
 
 1. Lifecycle node state machine

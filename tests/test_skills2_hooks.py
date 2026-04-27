@@ -300,6 +300,20 @@ class TestValidateHookAntiPatterns:
         issues = check_content(clean_code, 'test.py')
         assert len(issues) == 0
 
+    def test_docstring_with_antipattern_is_flagged(self):
+        # Documented limitation: the comment-skipping heuristic only handles
+        # `#` and `//` single-line comments, not Python triple-quoted strings.
+        # A docstring that mentions `time.sleep()` is expected to trigger a
+        # warning. This test pins that behavior so the docstring in
+        # skill_validate_hook.py stays accurate.
+        code = (
+            'def f():\n'
+            '    """Avoid time.sleep(5) in ROS 2 nodes."""\n'
+            '    return 1\n'
+        )
+        issues = check_content(code, 'test.py')
+        assert any('time.sleep' in i['message'] for i in issues)
+
     def test_check_file_returns_empty_for_non_checkable(self, tmp_path):
         f = tmp_path / 'test.yaml'
         f.write_text('key: value')
