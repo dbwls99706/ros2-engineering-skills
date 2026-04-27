@@ -26,6 +26,7 @@ __version__ = '1.0.0'
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -97,12 +98,17 @@ def validate_eval_entry(entry, eval_dir):
         if field not in entry:
             errors.append(f'Missing required field: {field}')
 
+    # Resolve and cache paths on the entry so run_eval can reuse them
+    # without re-resolving (avoids a TOCTOU window between validation and
+    # use, and removes a duplicate commonpath call).
     if 'prompt' in entry:
         prompt_path = _resolve_within(eval_dir, entry['prompt'])
         if prompt_path is None:
             errors.append(f'Prompt path escapes eval dir: {entry["prompt"]}')
         elif not os.path.isfile(prompt_path):
             errors.append(f'Prompt file not found: {prompt_path}')
+        else:
+            entry['_resolved_prompt'] = prompt_path
 
     if 'expected' in entry:
         expected_path = _resolve_within(eval_dir, entry['expected'])
@@ -111,6 +117,8 @@ def validate_eval_entry(entry, eval_dir):
                 f'Expected path escapes eval dir: {entry["expected"]}')
         elif not os.path.isfile(expected_path):
             errors.append(f'Expected file not found: {expected_path}')
+        else:
+            entry['_resolved_expected'] = expected_path
 
     if 'criteria' in entry:
         if not isinstance(entry['criteria'], list):
@@ -183,8 +191,13 @@ def evaluate_criteria(expected_content, criteria_texts):
         # passes only if (a) it has at least 3 meaningful terms — short
         # criteria with one or two tokens trivially pass at 30% coverage —
         # and (b) at least 30% of those terms appear in the expected text.
+        # Word-boundary matching avoids false positives like "cat" matching
+        # "concatenate".
         expected_lower = expected_content.lower()
-        matched_terms = [t for t in key_terms if t in expected_lower]
+        matched_terms = [
+            t for t in key_terms
+            if re.search(r'\b' + re.escape(t) + r'\b', expected_lower)
+        ]
         coverage = len(matched_terms) / max(len(key_terms), 1)
         min_terms = 3
         passed = len(key_terms) >= min_terms and coverage >= 0.3
@@ -221,10 +234,10 @@ def run_eval(entry, eval_dir, verbose=False):
             'pass_rate': 0.0,
         }
 
-    # Load prompt and expected content. Paths were already bounded to
-    # eval_dir by validate_eval_entry, so _resolve_within will not return None.
-    prompt_path = _resolve_within(eval_dir, entry['prompt'])
-    expected_path = _resolve_within(eval_dir, entry['expected'])
+    # Reuse the paths resolved during validation (no re-resolution, which
+    # avoids any TOCTOU window between validate_eval_entry and here).
+    prompt_path = entry['_resolved_prompt']
+    expected_path = entry['_resolved_expected']
 
     prompt_content = load_file_content(prompt_path)
     expected_content = load_file_content(expected_path)
