@@ -297,8 +297,12 @@ class LaunchFileVisitor(ast.NodeVisitor):
             resolved = os.path.normpath(os.path.join(base_dir, launch_path))
             base_real = os.path.realpath(base_dir)
             resolved_real = os.path.realpath(resolved)
-            if resolved_real != base_real and not resolved_real.startswith(
-                    base_real + os.sep):
+            try:
+                escapes = os.path.commonpath(
+                    [base_real, resolved_real]) != base_real
+            except ValueError:
+                escapes = True
+            if escapes:
                 self._add(node, "warning",
                           f"IncludeLaunchDescription references '{launch_path}' "
                           f"which resolves outside the launch directory "

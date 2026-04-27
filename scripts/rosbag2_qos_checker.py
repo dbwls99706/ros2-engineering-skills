@@ -26,6 +26,10 @@ except ImportError:
     HAS_YAML = False
 
 # Import QoS types from the main checker (sibling module in scripts/).
+# Note: scripts/ is intentionally not packaged — these tools are designed to
+# be invoked directly as scripts (`python scripts/rosbag2_qos_checker.py`)
+# from CI and from the README. Converting to a proper package would require
+# changing every documented invocation, so we use the sys.path trick here.
 sys.path.insert(0, os.path.dirname(__file__))
 from qos_checker import (  # noqa: E402
     QoSProfile, Reliability, Durability, History, Liveliness,

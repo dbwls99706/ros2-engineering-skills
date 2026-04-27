@@ -1317,11 +1317,13 @@ def main():
               "must start with a letter).", file=sys.stderr)
         sys.exit(1)
 
-    # Lightweight email check: reject characters that would break package.xml
-    # even after escaping (newlines/control chars) and obviously malformed
-    # addresses. Full RFC 5322 validation is out of scope.
-    if not re.match(r'^[^\s<>"\']+@[^\s<>"\']+\.[^\s<>"\']+$', args.maintainer_email):
-        print(f"Error: Maintainer email '{args.maintainer_email}' is invalid.",
+    # Lightweight email check: just reject whitespace and characters that
+    # would still be problematic inside an XML attribute. We intentionally
+    # allow internal addresses without a TLD (e.g. `dev@localhost`) and
+    # leave full RFC 5322 validation out of scope.
+    if not re.match(r'^[^\s<>"\']+@[^\s<>"\']+$', args.maintainer_email):
+        print(f"Error: Maintainer email '{args.maintainer_email}' appears "
+              f"invalid (must contain '@' and no whitespace or quote chars).",
               file=sys.stderr)
         sys.exit(1)
 

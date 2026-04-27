@@ -76,7 +76,11 @@ def _resolve_within(base_dir, rel_path):
     """
     base = os.path.realpath(base_dir)
     candidate = os.path.realpath(os.path.join(base, rel_path))
-    if candidate != base and not candidate.startswith(base + os.sep):
+    try:
+        if os.path.commonpath([base, candidate]) != base:
+            return None
+    except ValueError:
+        # Different drives on Windows, or other commonpath edge cases.
         return None
     return candidate
 
@@ -175,14 +179,19 @@ def evaluate_criteria(expected_content, criteria_texts):
             if cleaned and cleaned not in stop_words and len(cleaned) > 2:
                 key_terms.append(cleaned)
 
-        # Check if expected content addresses the criterion
+        # Check if expected content addresses the criterion. A criterion
+        # passes only if (a) it has at least 3 meaningful terms — short
+        # criteria with one or two tokens trivially pass at 30% coverage —
+        # and (b) at least 30% of those terms appear in the expected text.
         expected_lower = expected_content.lower()
         matched_terms = [t for t in key_terms if t in expected_lower]
         coverage = len(matched_terms) / max(len(key_terms), 1)
+        min_terms = 3
+        passed = len(key_terms) >= min_terms and coverage >= 0.3
 
         results.append({
             'criterion': criterion_text,
-            'passed': coverage >= 0.3,
+            'passed': passed,
             'coverage': round(coverage, 2),
             'matched_terms': matched_terms,
             'total_terms': len(key_terms),
