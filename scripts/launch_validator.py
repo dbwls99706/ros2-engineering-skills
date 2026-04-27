@@ -295,7 +295,16 @@ class LaunchFileVisitor(ast.NodeVisitor):
         if launch_path is not None and not os.path.isabs(launch_path):
             base_dir = os.path.dirname(self.filepath)
             resolved = os.path.normpath(os.path.join(base_dir, launch_path))
-            if not os.path.exists(resolved):
+            base_real = os.path.realpath(base_dir)
+            resolved_real = os.path.realpath(resolved)
+            if resolved_real != base_real and not resolved_real.startswith(
+                    base_real + os.sep):
+                self._add(node, "warning",
+                          f"IncludeLaunchDescription references '{launch_path}' "
+                          f"which resolves outside the launch directory "
+                          f"('{resolved}'). Prefer a package share path "
+                          f"(get_package_share_directory) for portability.")
+            elif not os.path.exists(resolved):
                 self._add(node, "warning",
                           f"IncludeLaunchDescription references '{launch_path}' "
                           f"but the file was not found at '{resolved}'.")

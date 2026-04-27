@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Skills 2.0 Eval Runner — Automated quality verification for skills.
+"""Skills 2.0 Eval Runner — Structural smoke check for skill evals.
 
-Loads eval definitions from eval.yaml, runs each eval case, and produces
-a structured report with pass rates, execution times, and comparison data.
+Loads eval definitions from eval.yaml, validates that prompt/expected files
+exist, and reports whether each expected file's text addresses the keywords
+declared in its criteria. This is a *structural* check: it does not invoke
+Claude, does not execute the skill, and does not measure model accuracy.
+
+A criterion "passes" when at least 30% of its non-stop-word tokens appear
+(case-insensitively) in the expected file. The threshold and matching are
+deliberately permissive — the goal is to catch missing or empty fixtures,
+not to score model output. Treat the pass rate as a fixture-quality
+indicator, not a benchmark.
 
 Usage:
     python eval_runner.py [--eval-dir DIR] [--eval-name NAME] [--json] [--verbose]
@@ -60,6 +68,19 @@ def load_eval_config(eval_dir):
     return config
 
 
+def _resolve_within(base_dir, rel_path):
+    """Resolve ``rel_path`` against ``base_dir`` and reject paths that escape it.
+
+    Returns the resolved absolute path on success, or ``None`` if the path
+    escapes ``base_dir`` (e.g. ``../../etc/passwd``).
+    """
+    base = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base, rel_path))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        return None
+    return candidate
+
+
 def validate_eval_entry(entry, eval_dir):
     """Validate a single eval entry has all required fields and files exist.
 
@@ -73,13 +94,18 @@ def validate_eval_entry(entry, eval_dir):
             errors.append(f'Missing required field: {field}')
 
     if 'prompt' in entry:
-        prompt_path = os.path.join(eval_dir, entry['prompt'])
-        if not os.path.isfile(prompt_path):
+        prompt_path = _resolve_within(eval_dir, entry['prompt'])
+        if prompt_path is None:
+            errors.append(f'Prompt path escapes eval dir: {entry["prompt"]}')
+        elif not os.path.isfile(prompt_path):
             errors.append(f'Prompt file not found: {prompt_path}')
 
     if 'expected' in entry:
-        expected_path = os.path.join(eval_dir, entry['expected'])
-        if not os.path.isfile(expected_path):
+        expected_path = _resolve_within(eval_dir, entry['expected'])
+        if expected_path is None:
+            errors.append(
+                f'Expected path escapes eval dir: {entry["expected"]}')
+        elif not os.path.isfile(expected_path):
             errors.append(f'Expected file not found: {expected_path}')
 
     if 'criteria' in entry:
@@ -186,9 +212,10 @@ def run_eval(entry, eval_dir, verbose=False):
             'pass_rate': 0.0,
         }
 
-    # Load prompt and expected content
-    prompt_path = os.path.join(eval_dir, entry['prompt'])
-    expected_path = os.path.join(eval_dir, entry['expected'])
+    # Load prompt and expected content. Paths were already bounded to
+    # eval_dir by validate_eval_entry, so _resolve_within will not return None.
+    prompt_path = _resolve_within(eval_dir, entry['prompt'])
+    expected_path = _resolve_within(eval_dir, entry['expected'])
 
     prompt_content = load_file_content(prompt_path)
     expected_content = load_file_content(expected_path)

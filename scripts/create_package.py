@@ -16,6 +16,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Optional
+from xml.sax.saxutils import escape as _xml_escape, quoteattr as _xml_quoteattr
 
 
 def _write(path: Path, text: str) -> None:
@@ -1269,7 +1270,7 @@ def _write_package_xml(pkg: Path, name: str, build_type: str,
   <name>{name}</name>
   <version>0.1.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="{maintainer_email}">{maintainer_name}</maintainer>
+  <maintainer email={_xml_quoteattr(maintainer_email)}>{_xml_escape(maintainer_name)}</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>{build_type}</buildtool_depend>{buildtool_lines}
@@ -1314,6 +1315,14 @@ def main():
         print(f"Error: Package name '{args.name}' is invalid. "
               "Use snake_case (lowercase letters, digits, underscores; "
               "must start with a letter).", file=sys.stderr)
+        sys.exit(1)
+
+    # Lightweight email check: reject characters that would break package.xml
+    # even after escaping (newlines/control chars) and obviously malformed
+    # addresses. Full RFC 5322 validation is out of scope.
+    if not re.match(r'^[^\s<>"\']+@[^\s<>"\']+\.[^\s<>"\']+$', args.maintainer_email):
+        print(f"Error: Maintainer email '{args.maintainer_email}' is invalid.",
+              file=sys.stderr)
         sys.exit(1)
 
     dest = Path(args.dest)
