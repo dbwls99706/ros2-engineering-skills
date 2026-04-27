@@ -5,6 +5,20 @@ This hook runs before tool invocations during skill execution. It provides
 context-aware warnings when the user's actions may conflict with ROS 2
 engineering best practices defined in the skill.
 
+Scope and limits — read before relying on this:
+
+* The Bash dangerous-command checks below are best-effort sanity guards
+  intended to catch obvious accidents like a literal ``rm -rf /``. They are
+  *not* a security boundary. Variable expansion (``rm -rf $X``), command
+  substitution (``rm -rf $(echo /)``), aliasing, here-docs, and minor
+  whitespace variations all defeat plain regex matching. Treat any code
+  path that depends on these checks for safety as broken.
+* The anti-pattern checks scan source for common ROS 2 mistakes. They skip
+  ``#`` and ``//`` single-line comments but do *not* skip Python triple-quoted
+  strings, so a docstring mentioning ``time.sleep()`` will produce a warning.
+  This is intentional: the hook errs on the side of false positives over
+  false negatives.
+
 Exit codes:
     0 — No blocking issues found
     1 — Blocking issue detected (should halt tool execution)
@@ -132,7 +146,10 @@ def check_file(filepath):
         return []
 
 
-# Dangerous command patterns for Bash tool validation
+# Best-effort regex guards against common destructive commands.
+# NOT a security boundary — see module docstring. These exist to catch
+# accidental literal commands like `rm -rf /`, not to defend against an
+# adversary or an LLM that knows about $IFS, $(...), or `eval`.
 DANGEROUS_COMMAND_PATTERNS = [
     {
         'pattern': r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/\s*$',

@@ -1,5 +1,9 @@
 # TF2 and URDF/Xacro
 
+> **Distro stability:** APIs in this guide are stable across Humble, Jazzy,
+> Kilted, and Rolling. Code samples use the modern `.hpp` header layout
+> (Jazzy+); the `.h` shims still work on Humble for backwards compatibility.
+
 ## Table of contents
 
 1. TF2 concepts
@@ -62,7 +66,7 @@ Use for transforms that never change (sensor mounts, fixed links).
 
 ```cpp
 #include <rclcpp/rclcpp.hpp>
-#include <tf2_ros/static_transform_broadcaster.h>
+#include <tf2_ros/static_transform_broadcaster.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
 class SensorMountBroadcaster : public rclcpp::Node
@@ -99,8 +103,8 @@ Use for transforms that change over time (odometry, joint states).
 
 ```cpp
 #include <rclcpp/rclcpp.hpp>
-#include <tf2_ros/transform_broadcaster.h>
-#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_ros/transform_broadcaster.hpp>
+#include <tf2/LinearMath/Quaternion.h>  // Bullet/LinearMath upstream uses .h
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
@@ -149,8 +153,8 @@ ros2 run tf2_ros static_transform_publisher \
 ### Looking up transforms (C++)
 
 ```cpp
-#include <tf2_ros/buffer.h>
-#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.hpp>
+#include <tf2_ros/transform_listener.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 class TargetTracker : public rclcpp::Node

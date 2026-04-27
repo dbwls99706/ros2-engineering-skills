@@ -201,7 +201,7 @@ ros2-engineering-skills/
 |---|---|
 | **398 tests** | Unit + property-based (Hypothesis) + CLI + integration |
 | **94% coverage** | All scripts verified with flake8 + mypy clean |
-| **Real-world Evals** | **Validated on WSL (Ubuntu 24.04 + ROS 2 Jazzy)** for SROS2, micro-ROS `rclc`, and Multi-robot fleet scenarios |
+| **Real-world Evals** | **Validated on WSL (Ubuntu 24.04 + ROS 2 Jazzy)** for SROS2, micro-ROS `rclc`, and Multi-robot fleet scenarios. The `eval_runner.py` performs *structural* checks on prompt/expected fixtures (keyword coverage of declared criteria); model-output accuracy is measured by the live-environment validation, not by the runner. |
 | **4 CI jobs** | Lint, unit-tests, ros2-integration, lint-scripts |
 
 ## Supported ROS 2 distributions
