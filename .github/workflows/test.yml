@@ -2,7 +2,17 @@ name: Test
 
 on:
   push:
-    branches: [main, master, 'claude/**', 'docs/**']
+    branches:
+      - main
+      - master
+      # Conventional-Commit branch prefixes (see CLAUDE.md "Branch names").
+      - 'feat/**'
+      - 'fix/**'
+      - 'docs/**'
+      - 'test/**'
+      - 'ci/**'
+      - 'chore/**'
+      - 'refactor/**'
   pull_request:
     branches: [main, master]
 
