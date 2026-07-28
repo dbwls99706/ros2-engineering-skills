@@ -115,29 +115,85 @@ def find_generated_launch_files(workspace):
     return launch_files
 
 
-def _defines_name(tree, wanted):
-    """Return True if *wanted* is bound anywhere in the module.
+# Statements whose bodies still execute in module scope, so a binding
+# inside them is a module attribute. FunctionDef/AsyncFunctionDef/ClassDef
+# are deliberately absent: they open a new scope, and a name bound there
+# is invisible to the loader.
+_MODULE_SCOPE_BLOCKS = (ast.If, ast.Try, ast.With)
 
-    A launch entry point does not have to be a `def` — it is equally valid
-    to import it from a shared module, alias it (`generate_launch_description
-    = _build`), or define it with `async def`. Matching only `ast.FunctionDef`
-    flags all three as "missing", which is a false error on a working launch
-    file, so every binding form is accepted.
+
+def _sub_bodies(node):
+    """Statement lists of *node* that still run in the enclosing scope."""
+    bodies = [getattr(node, 'body', []), getattr(node, 'orelse', []),
+              getattr(node, 'finalbody', [])]
+    for handler in getattr(node, 'handlers', []):
+        bodies.append(handler.body)
+    return bodies
+
+
+def _is_callable_reference(value):
+    """True if *value* could plausibly evaluate to a callable.
+
+    `generate_launch_description = _build` is a legitimate alias, but
+    `= None` (or any other literal) is not — the loader calls whatever it
+    finds, so binding a non-callable is exactly as broken as binding
+    nothing.
     """
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    return isinstance(value, (ast.Name, ast.Attribute, ast.Lambda,
+                              ast.Call, ast.Subscript))
+
+
+def _binds_callable(body, wanted):
+    """Return True if *wanted* is bound to a plausible callable in *body*.
+
+    ROS 2 loads a launch file as a module and then calls the module-level
+    attribute, so only module-scope bindings count and the bound object
+    has to be callable and synchronous. Accepting more than that (any
+    nested `def`, a bare annotation, `= None`, `import pkg as ...`) turns
+    a broken launch file into a silent pass, which is worse than the
+    false positive this check originally had.
+    """
+    for node in body:
+        if isinstance(node, ast.FunctionDef):
             if node.name == wanted:
                 return True
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+        elif isinstance(node, ast.ImportFrom):
+            # `from shared import generate_launch_description` re-exports a
+            # function. Plain `import pkg as name` binds a module, which is
+            # not callable, so ast.Import is not accepted.
             for alias in node.names:
-                if (alias.asname or alias.name.split('.')[0]) == wanted:
+                if (alias.asname or alias.name) == wanted:
                     return True
         elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == wanted:
-                    return True
+            if _is_callable_reference(node.value) and any(
+                    isinstance(t, ast.Name) and t.id == wanted
+                    for t in node.targets):
+                return True
         elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.target.id == wanted:
+            # A bare annotation (`generate_launch_description: object`)
+            # binds nothing at all — node.value is None there.
+            if (node.value is not None
+                    and _is_callable_reference(node.value)
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == wanted):
+                return True
+        elif isinstance(node, _MODULE_SCOPE_BLOCKS):
+            if any(_binds_callable(b, wanted) for b in _sub_bodies(node)):
+                return True
+    return False
+
+
+def _binds_async(body, wanted):
+    """Return True if *wanted* is a module-scope `async def`.
+
+    Worth its own message: the loader gets a coroutine object back instead
+    of a LaunchDescription, which fails far from the actual mistake.
+    """
+    for node in body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == wanted:
+            return True
+        if isinstance(node, _MODULE_SCOPE_BLOCKS):
+            if any(_binds_async(b, wanted) for b in _sub_bodies(node)):
                 return True
     return False
 
@@ -145,16 +201,26 @@ def _defines_name(tree, wanted):
 def validate_launch_file_syntax(filepath):
     """Check that a launch file is valid Python and has generate_launch_description."""
     issues = []
+    entry = 'generate_launch_description'
     try:
         with open(filepath, 'r', encoding='utf-8') as fh:
             source = fh.read()
         tree = ast.parse(source, filename=filepath)
-        if not _defines_name(tree, 'generate_launch_description'):
-            issues.append({
-                'file': filepath,
-                'severity': 'error',
-                'message': 'Missing generate_launch_description function',
-            })
+        if not _binds_callable(tree.body, entry):
+            if _binds_async(tree.body, entry):
+                issues.append({
+                    'file': filepath,
+                    'severity': 'error',
+                    'message': (f'{entry} is declared `async def` — the '
+                                f'launch loader calls it directly and would '
+                                f'get a coroutine, not a LaunchDescription'),
+                })
+            else:
+                issues.append({
+                    'file': filepath,
+                    'severity': 'error',
+                    'message': 'Missing generate_launch_description function',
+                })
     except SyntaxError as e:
         issues.append({
             'file': filepath,
@@ -521,7 +587,18 @@ def main():
             pass  # logging is best-effort; never fail the hook over it
 
     print(json.dumps(result, indent=2))
-    sys.exit(1 if result['status'] == 'fail' else 0)
+
+    if result['status'] != 'fail':
+        sys.exit(0)
+
+    # Exit 1 is non-blocking, and for a non-blocking failure Claude Code
+    # surfaces stderr — not the stdout JSON above. Without this the user
+    # sees a bare "hook error" with no indication of which file is broken,
+    # so the errors are repeated on the channel that is actually shown.
+    for issue in all_issues:
+        if issue['severity'] == 'error':
+            print(f"{issue['file']}: {issue['message']}", file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == '__main__':
