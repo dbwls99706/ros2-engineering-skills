@@ -70,7 +70,12 @@ jobs:
             range="${HEAD_SHA}~1..${HEAD_SHA}"
           fi
           echo "Inspecting ${range}"
-          commits="$(git rev-list "${range}" 2>/dev/null || true)"
+          # No `|| true` here on purpose. A range this job cannot resolve
+          # means the gate did not run; swallowing that would report
+          # "no new commits" and pass, which is the one outcome a policy
+          # check must never produce by accident. An empty but valid range
+          # still succeeds and yields an empty list.
+          commits="$(git rev-list "${range}")"
           if [ -z "${commits}" ]; then
             echo "No new commits to inspect."
           fi
