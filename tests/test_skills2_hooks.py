@@ -146,7 +146,7 @@ class TestStopHookLaunchEntryPointRejections:
                               'async def generate_launch_description():\n'
                               '    return None\n')
         assert len(issues) == 1
-        assert 'async def' in issues[0]['message']
+        assert 'coroutine' in issues[0]['message']
 
     def test_bare_annotation_binds_nothing(self, tmp_path):
         issues = self._issues(tmp_path, 'annotation.launch.py',
@@ -167,6 +167,70 @@ class TestStopHookLaunchEntryPointRejections:
         issues = self._issues(tmp_path, 'modalias.launch.py',
                               'import my_pkg as generate_launch_description\n')
         assert len(issues) == 1
+
+    # The loader reads the attribute after the module has finished running,
+    # so what matters is the final binding. A check that returned as soon as
+    # it saw one valid definition accepted every case below.
+
+    def test_valid_function_rebound_to_none_is_rejected(self, tmp_path):
+        issues = self._issues(tmp_path, 'rebound.launch.py',
+                              'from launch import LaunchDescription\n'
+                              'def generate_launch_description():\n'
+                              '    return LaunchDescription([])\n'
+                              '\n'
+                              'generate_launch_description = None\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+        assert 'callable' in issues[0]['message']
+
+    def test_valid_function_rebound_to_literal_is_rejected(self, tmp_path):
+        issues = self._issues(tmp_path, 'reboundstr.launch.py',
+                              'def generate_launch_description():\n'
+                              '    return None\n'
+                              'generate_launch_description = "later"\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+
+    def test_alias_to_local_async_function_is_rejected(self, tmp_path):
+        # The alias is only as good as its target.
+        issues = self._issues(tmp_path, 'asyncalias.launch.py',
+                              'async def _build():\n'
+                              '    return None\n'
+                              'generate_launch_description = _build\n')
+        assert len(issues) == 1
+        assert 'coroutine' in issues[0]['message']
+
+    def test_definition_inside_false_branch_is_rejected(self, tmp_path):
+        issues = self._issues(tmp_path, 'deadbranch.launch.py',
+                              'if False:\n'
+                              '    def generate_launch_description():\n'
+                              '        return None\n')
+        assert len(issues) == 1
+        assert 'Missing' in issues[0]['message']
+
+    def test_deleted_entry_point_is_rejected(self, tmp_path):
+        issues = self._issues(tmp_path, 'deleted.launch.py',
+                              'def generate_launch_description():\n'
+                              '    return None\n'
+                              'del generate_launch_description\n')
+        assert len(issues) == 1
+        assert 'Missing' in issues[0]['message']
+
+    def test_conditionally_bound_entry_point_is_a_warning(self, tmp_path):
+        """Bound on one path only — not provably broken, not provably fine.
+
+        Erroring here would fail a launch file whose guard is always true
+        in practice; staying silent would hide a real half-defined entry
+        point. A warning says what is known without failing the hook.
+        """
+        issues = self._issues(tmp_path, 'maybe.launch.py',
+                              'import os\n'
+                              'if os.environ.get("SIM"):\n'
+                              '    def generate_launch_description():\n'
+                              '        return None\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'warning'
+        assert 'some execution paths' in issues[0]['message']
 
     def test_syntax_error(self, tmp_path):
         launch = tmp_path / 'syntax.launch.py'

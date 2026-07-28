@@ -131,71 +131,135 @@ def _sub_bodies(node):
     return bodies
 
 
-def _is_callable_reference(value):
-    """True if *value* could plausibly evaluate to a callable.
+# What the module-level name ends up bound to once the module has finished
+# executing. The loader reads the attribute *after* that, so what matters is
+# the final state, not whether some valid definition appeared at any point.
+_MISSING = 'missing'
+_SYNC = 'sync'              # callable and not a coroutine function — good
+_ASYNC = 'async'            # returns a coroutine, not a LaunchDescription
+_NON_CALLABLE = 'non_callable'   # bound, but to None/a literal/a module
+_UNKNOWN = 'unknown'        # depends on a branch we cannot evaluate
 
-    `generate_launch_description = _build` is a legitimate alias, but
-    `= None` (or any other literal) is not — the loader calls whatever it
-    finds, so binding a non-callable is exactly as broken as binding
-    nothing.
+
+def _classify_value(value, async_names):
+    """State that assigning *value* leaves the target in."""
+    if isinstance(value, ast.Lambda):
+        return _SYNC
+    if isinstance(value, ast.Constant):
+        # None, strings, numbers — bound but uncallable.
+        return _NON_CALLABLE
+    if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set,
+                          ast.JoinedStr)):
+        return _NON_CALLABLE
+    if isinstance(value, ast.Name):
+        # Alias: `generate_launch_description = _build`. The alias is only
+        # as good as its target, so aliasing a local `async def` is just as
+        # broken as declaring the entry point async directly.
+        if value.id in async_names:
+            return _ASYNC
+        return _SYNC
+    if isinstance(value, (ast.Attribute, ast.Call, ast.Subscript)):
+        return _SYNC  # cannot resolve; assume the author meant a callable
+    return _UNKNOWN
+
+
+def _is_falsy_literal(test):
+    """True for `if False:` / `if 0:` — a branch that never runs."""
+    return isinstance(test, ast.Constant) and not test.value
+
+
+def _is_truthy_literal(test):
+    return isinstance(test, ast.Constant) and bool(test.value)
+
+
+def _entry_point_state(body, wanted, state=_MISSING, async_names=None):
+    """Track what *wanted* is bound to at the end of *body*.
+
+    Statements are processed in order and later bindings overwrite earlier
+    ones, because that is what the interpreter does: a file that defines
+    the entry point and then rebinds it to None exports None. Returning on
+    the first valid definition — as this used to — accepts exactly that
+    file.
+
+    Only module-scope statements bind module attributes, so `if`/`try`/
+    `with` are descended into but functions and classes are not.
     """
-    return isinstance(value, (ast.Name, ast.Attribute, ast.Lambda,
-                              ast.Call, ast.Subscript))
+    if async_names is None:
+        async_names = set()
 
-
-def _binds_callable(body, wanted):
-    """Return True if *wanted* is bound to a plausible callable in *body*.
-
-    ROS 2 loads a launch file as a module and then calls the module-level
-    attribute, so only module-scope bindings count and the bound object
-    has to be callable and synchronous. Accepting more than that (any
-    nested `def`, a bare annotation, `= None`, `import pkg as ...`) turns
-    a broken launch file into a silent pass, which is worse than the
-    false positive this check originally had.
-    """
     for node in body:
         if isinstance(node, ast.FunctionDef):
+            async_names.discard(node.name)
             if node.name == wanted:
-                return True
+                state = _SYNC
+        elif isinstance(node, ast.AsyncFunctionDef):
+            async_names.add(node.name)
+            if node.name == wanted:
+                state = _ASYNC
         elif isinstance(node, ast.ImportFrom):
-            # `from shared import generate_launch_description` re-exports a
-            # function. Plain `import pkg as name` binds a module, which is
-            # not callable, so ast.Import is not accepted.
             for alias in node.names:
-                if (alias.asname or alias.name) == wanted:
-                    return True
+                bound = alias.asname or alias.name
+                async_names.discard(bound)
+                if bound == wanted:
+                    # Cannot see the other module; assume a real function.
+                    state = _SYNC
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split('.')[0]
+                if bound == wanted:
+                    state = _NON_CALLABLE  # a module is not callable
         elif isinstance(node, ast.Assign):
-            if _is_callable_reference(node.value) and any(
-                    isinstance(t, ast.Name) and t.id == wanted
-                    for t in node.targets):
-                return True
+            value_state = _classify_value(node.value, async_names)
+            for target in node.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if value_state == _ASYNC:
+                    async_names.add(target.id)
+                else:
+                    async_names.discard(target.id)
+                if target.id == wanted:
+                    state = value_state
         elif isinstance(node, ast.AnnAssign):
             # A bare annotation (`generate_launch_description: object`)
-            # binds nothing at all — node.value is None there.
-            if (node.value is not None
-                    and _is_callable_reference(node.value)
-                    and isinstance(node.target, ast.Name)
-                    and node.target.id == wanted):
-                return True
-        elif isinstance(node, _MODULE_SCOPE_BLOCKS):
-            if any(_binds_callable(b, wanted) for b in _sub_bodies(node)):
-                return True
-    return False
+            # binds nothing — it neither creates nor destroys a binding.
+            if node.value is not None and isinstance(node.target, ast.Name):
+                value_state = _classify_value(node.value, async_names)
+                if node.target.id == wanted:
+                    state = value_state
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == wanted:
+                    state = _MISSING
+        elif isinstance(node, ast.If):
+            # A literal test means one branch is dead code; otherwise both
+            # are reachable and the result is only definite when they agree.
+            if _is_falsy_literal(node.test):
+                state = _entry_point_state(node.orelse, wanted, state,
+                                           async_names)
+            elif _is_truthy_literal(node.test):
+                state = _entry_point_state(node.body, wanted, state,
+                                           async_names)
+            else:
+                taken = _entry_point_state(node.body, wanted, state,
+                                           set(async_names))
+                skipped = _entry_point_state(node.orelse, wanted, state,
+                                             set(async_names))
+                state = taken if taken == skipped else _UNKNOWN
+        elif isinstance(node, ast.Try):
+            # The body may abort part-way, so a binding made there is not
+            # guaranteed. Definite only when every path agrees.
+            outcomes = {_entry_point_state(node.body + node.orelse, wanted,
+                                           state, set(async_names))}
+            for handler in node.handlers:
+                outcomes.add(_entry_point_state(handler.body, wanted, state,
+                                                set(async_names)))
+            state = outcomes.pop() if len(outcomes) == 1 else _UNKNOWN
+            state = _entry_point_state(node.finalbody, wanted, state,
+                                       async_names)
+        elif isinstance(node, ast.With):
+            state = _entry_point_state(node.body, wanted, state, async_names)
 
-
-def _binds_async(body, wanted):
-    """Return True if *wanted* is a module-scope `async def`.
-
-    Worth its own message: the loader gets a coroutine object back instead
-    of a LaunchDescription, which fails far from the actual mistake.
-    """
-    for node in body:
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == wanted:
-            return True
-        if isinstance(node, _MODULE_SCOPE_BLOCKS):
-            if any(_binds_async(b, wanted) for b in _sub_bodies(node)):
-                return True
-    return False
+    return state
 
 
 def validate_launch_file_syntax(filepath):
@@ -206,21 +270,40 @@ def validate_launch_file_syntax(filepath):
         with open(filepath, 'r', encoding='utf-8') as fh:
             source = fh.read()
         tree = ast.parse(source, filename=filepath)
-        if not _binds_callable(tree.body, entry):
-            if _binds_async(tree.body, entry):
-                issues.append({
-                    'file': filepath,
-                    'severity': 'error',
-                    'message': (f'{entry} is declared `async def` — the '
-                                f'launch loader calls it directly and would '
-                                f'get a coroutine, not a LaunchDescription'),
-                })
-            else:
-                issues.append({
-                    'file': filepath,
-                    'severity': 'error',
-                    'message': 'Missing generate_launch_description function',
-                })
+        state = _entry_point_state(tree.body, entry)
+        if state == _ASYNC:
+            issues.append({
+                'file': filepath,
+                'severity': 'error',
+                'message': (f'{entry} resolves to a coroutine function — the '
+                            f'launch loader calls it directly and would get a '
+                            f'coroutine, not a LaunchDescription'),
+            })
+        elif state == _NON_CALLABLE:
+            issues.append({
+                'file': filepath,
+                'severity': 'error',
+                'message': (f'{entry} ends up bound to something that is not '
+                            f'callable — the launch loader calls whatever the '
+                            f'module exports under that name'),
+            })
+        elif state == _UNKNOWN:
+            # Only some execution paths bind it. Not provably broken, so a
+            # warning rather than an error: the hook must not fail a launch
+            # file whose guard is always true in practice.
+            issues.append({
+                'file': filepath,
+                'severity': 'warning',
+                'message': (f'{entry} is only bound on some execution paths '
+                            f'— the launch loader fails on any path that '
+                            f'leaves it unset'),
+            })
+        elif state != _SYNC:
+            issues.append({
+                'file': filepath,
+                'severity': 'error',
+                'message': 'Missing generate_launch_description function',
+            })
     except SyntaxError as e:
         issues.append({
             'file': filepath,
