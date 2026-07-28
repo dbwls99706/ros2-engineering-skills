@@ -38,7 +38,12 @@ jobs:
         run: mypy scripts/ --ignore-missing-imports
       - name: pip-audit (current environment)
         # Best-effort dependency vulnerability scan over the installed env.
-        # Non-blocking: advisories are surfaced for awareness, not enforcement.
+        # Deliberately non-blocking, and it is NOT a gate: the audit covers
+        # whatever the runner image ships (setuptools, wheel, urllib3, ...),
+        # so unrelated advisories would otherwise redden every PR. What this
+        # project actually enforces is the version floors in
+        # requirements-dev.txt — when an advisory here names one of our own
+        # dependencies, raise its floor there.
         continue-on-error: true
         run: pip-audit --desc
 
@@ -72,9 +77,11 @@ jobs:
   # -------------------------------------------------------
   # Job 3: ROS 2 distro integration tests (Docker-based)
   #
-  # `rolling` is built against a date-pinned snapshot of packages.ros.org
-  # (see tests/Dockerfile.ros2-test) so transient upstream package-set
-  # inconsistencies don't leak into the CI signal.
+  # `rolling` cannot be date-pinned — snapshots.ros.org does not publish the
+  # URL pattern apt expects for it. Instead, tests/Dockerfile.ros2-test
+  # source-overlays the upstream repos whose binaries are currently
+  # inconsistent (rosidl*, control_msgs, ros2_control) onto /opt/ros/rolling,
+  # so transient upstream package-set breakage doesn't leak into the signal.
   # -------------------------------------------------------
   ros2-integration:
     runs-on: ubuntu-latest
