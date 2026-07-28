@@ -109,8 +109,18 @@ def test_documented_blind_spots_are_not_caught(command, label):
 
 
 def test_ci_enforces_what_the_hook_cannot():
-    """The authoritative check must exist, since the hook is partial."""
-    path = os.path.join(REPO_ROOT, '.github', 'workflows', 'test.yml')
+    """The authoritative check must exist, since the hook is partial.
+
+    Skips only when `.github/` is absent altogether, which means this is
+    not a full checkout — tests/Dockerfile.ros2-test builds from a tree
+    with `.github` in .dockerignore, so the workflow genuinely is not
+    there. If the directory exists, a missing job is a real deletion of
+    the gate and must fail.
+    """
+    workflows_dir = os.path.join(REPO_ROOT, '.github', 'workflows')
+    if not os.path.isdir(workflows_dir):
+        pytest.skip('not a full checkout (.github/ absent)')
+    path = os.path.join(workflows_dir, 'test.yml')
     with open(path, 'r', encoding='utf-8') as fh:
         workflow = fh.read()
     assert 'commit-messages:' in workflow
