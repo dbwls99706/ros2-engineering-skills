@@ -30,6 +30,12 @@ Do **not** add:
 - Tool, assistant, or session links and identifiers
 - Emoji or badges that identify the authoring tool
 
+This is enforced, not just documented: `.claude/hooks/no_ai_attribution.py`
+runs as a `PreToolUse` hook (wired in `.claude/settings.json`) and refuses
+any `git commit` whose message carries one of those trailers. It only
+inspects `git commit` invocations and fails open on any internal error, so
+it cannot block unrelated work.
+
 Format: Conventional Commits, matching the existing history.
 
 ```
