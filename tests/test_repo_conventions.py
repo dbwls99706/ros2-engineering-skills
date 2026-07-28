@@ -117,9 +117,13 @@ def test_ci_enforces_what_the_hook_cannot():
     there. If the directory exists, a missing job is a real deletion of
     the gate and must fail.
     """
-    workflows_dir = os.path.join(REPO_ROOT, '.github', 'workflows')
-    if not os.path.isdir(workflows_dir):
+    github_dir = os.path.join(REPO_ROOT, '.github')
+    if not os.path.isdir(github_dir):
         pytest.skip('not a full checkout (.github/ absent)')
+    # Past this point we are in a real checkout, so a missing workflows
+    # directory is a deletion rather than a trimmed tree.
+    workflows_dir = os.path.join(github_dir, 'workflows')
+    assert os.path.isdir(workflows_dir), '.github/workflows/ is missing'
     path = os.path.join(workflows_dir, 'test.yml')
     with open(path, 'r', encoding='utf-8') as fh:
         workflow = fh.read()
