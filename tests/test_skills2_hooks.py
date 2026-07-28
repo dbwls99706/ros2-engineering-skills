@@ -216,6 +216,56 @@ class TestStopHookLaunchEntryPointRejections:
         assert len(issues) == 1
         assert 'Missing' in issues[0]['message']
 
+    def test_alias_through_a_variable_resolves(self, tmp_path):
+        # Tracking only the entry point's own name missed this: `value` had
+        # no recorded state, so the alias was assumed callable.
+        issues = self._issues(tmp_path, 'indirect.launch.py',
+                              'value = None\n'
+                              'generate_launch_description = value\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+        assert 'callable' in issues[0]['message']
+
+    def test_chained_async_alias_resolves(self, tmp_path):
+        issues = self._issues(tmp_path, 'chained.launch.py',
+                              'async def _build():\n'
+                              '    return None\n'
+                              'mid = _build\n'
+                              'generate_launch_description = mid\n')
+        assert len(issues) == 1
+        assert 'coroutine' in issues[0]['message']
+
+    def test_helper_differing_across_branches_is_not_definite(self, tmp_path):
+        # The helper is async on one path and sync on the other, so the
+        # alias cannot be called definitely correct.
+        issues = self._issues(tmp_path, 'helperbranch.launch.py',
+                              'import os\n'
+                              'if os.environ.get("SIM"):\n'
+                              '    async def _build():\n'
+                              '        return None\n'
+                              'else:\n'
+                              '    def _build():\n'
+                              '        return None\n'
+                              'generate_launch_description = _build\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'warning'
+
+    def test_chained_sync_alias_still_passes(self, tmp_path):
+        assert self._issues(tmp_path, 'chainok.launch.py',
+                            'def _build():\n'
+                            '    return None\n'
+                            'mid = _build\n'
+                            'generate_launch_description = mid\n') == []
+
+    def test_try_except_import_fallback_passes(self, tmp_path):
+        # Both paths bind it, so the outcome is definite.
+        assert self._issues(tmp_path, 'fallback.launch.py',
+                            'try:\n'
+                            '    from a import generate_launch_description\n'
+                            'except ImportError:\n'
+                            '    from b import generate_launch_description\n'
+                            ) == []
+
     def test_conditionally_bound_entry_point_is_a_warning(self, tmp_path):
         """Bound on one path only — not provably broken, not provably fine.
 

@@ -115,22 +115,6 @@ def find_generated_launch_files(workspace):
     return launch_files
 
 
-# Statements whose bodies still execute in module scope, so a binding
-# inside them is a module attribute. FunctionDef/AsyncFunctionDef/ClassDef
-# are deliberately absent: they open a new scope, and a name bound there
-# is invisible to the loader.
-_MODULE_SCOPE_BLOCKS = (ast.If, ast.Try, ast.With)
-
-
-def _sub_bodies(node):
-    """Statement lists of *node* that still run in the enclosing scope."""
-    bodies = [getattr(node, 'body', []), getattr(node, 'orelse', []),
-              getattr(node, 'finalbody', [])]
-    for handler in getattr(node, 'handlers', []):
-        bodies.append(handler.body)
-    return bodies
-
-
 # What the module-level name ends up bound to once the module has finished
 # executing. The loader reads the attribute *after* that, so what matters is
 # the final state, not whether some valid definition appeared at any point.
@@ -141,23 +125,22 @@ _NON_CALLABLE = 'non_callable'   # bound, but to None/a literal/a module
 _UNKNOWN = 'unknown'        # depends on a branch we cannot evaluate
 
 
-def _classify_value(value, async_names):
+def _classify_value(value, symbols):
     """State that assigning *value* leaves the target in."""
     if isinstance(value, ast.Lambda):
         return _SYNC
-    if isinstance(value, ast.Constant):
-        # None, strings, numbers — bound but uncallable.
-        return _NON_CALLABLE
-    if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set,
-                          ast.JoinedStr)):
+    if isinstance(value, (ast.Constant, ast.Dict, ast.List, ast.Tuple,
+                          ast.Set, ast.JoinedStr)):
+        # None, strings, numbers, containers — bound but uncallable.
         return _NON_CALLABLE
     if isinstance(value, ast.Name):
-        # Alias: `generate_launch_description = _build`. The alias is only
-        # as good as its target, so aliasing a local `async def` is just as
-        # broken as declaring the entry point async directly.
-        if value.id in async_names:
-            return _ASYNC
-        return _SYNC
+        # An alias is only as good as its target, so `x = None` followed by
+        # `generate_launch_description = x` is just as broken as assigning
+        # None directly, and aliasing a local `async def` is as broken as
+        # declaring the entry point async. A name this module never bound
+        # (a star-import, say) is unresolvable, so assume the author meant
+        # a callable rather than inventing a failure.
+        return symbols.get(value.id, _SYNC)
     if isinstance(value, (ast.Attribute, ast.Call, ast.Subscript)):
         return _SYNC  # cannot resolve; assume the author meant a callable
     return _UNKNOWN
@@ -172,94 +155,91 @@ def _is_truthy_literal(test):
     return isinstance(test, ast.Constant) and bool(test.value)
 
 
-def _entry_point_state(body, wanted, state=_MISSING, async_names=None):
-    """Track what *wanted* is bound to at the end of *body*.
+def _merge_symbols(variants):
+    """Combine per-branch symbol tables; disagreement means unknown."""
+    merged = {}
+    for name in set().union(*(set(v) for v in variants)):
+        states = {v.get(name, _MISSING) for v in variants}
+        merged[name] = states.pop() if len(states) == 1 else _UNKNOWN
+    return merged
+
+
+def _module_symbols(body, symbols=None):
+    """Map every module-scope name to what it is bound to after *body*.
 
     Statements are processed in order and later bindings overwrite earlier
     ones, because that is what the interpreter does: a file that defines
-    the entry point and then rebinds it to None exports None. Returning on
-    the first valid definition — as this used to — accepts exactly that
-    file.
+    the entry point and then rebinds it to None exports None. Stopping at
+    the first valid definition — as this check used to — accepts exactly
+    that file.
 
     Only module-scope statements bind module attributes, so `if`/`try`/
-    `with` are descended into but functions and classes are not.
+    `with` are descended into but functions and classes are not. Tracking
+    every name rather than just the entry point is what lets an alias be
+    resolved through however many hops it takes.
     """
-    if async_names is None:
-        async_names = set()
+    if symbols is None:
+        symbols = {}
 
     for node in body:
         if isinstance(node, ast.FunctionDef):
-            async_names.discard(node.name)
-            if node.name == wanted:
-                state = _SYNC
+            symbols[node.name] = _SYNC
         elif isinstance(node, ast.AsyncFunctionDef):
-            async_names.add(node.name)
-            if node.name == wanted:
-                state = _ASYNC
+            symbols[node.name] = _ASYNC
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                bound = alias.asname or alias.name
-                async_names.discard(bound)
-                if bound == wanted:
-                    # Cannot see the other module; assume a real function.
-                    state = _SYNC
+                # Cannot see the other module; assume a real function.
+                symbols[alias.asname or alias.name] = _SYNC
         elif isinstance(node, ast.Import):
             for alias in node.names:
+                # `import pkg as name` binds a module, which is not callable.
                 bound = alias.asname or alias.name.split('.')[0]
-                if bound == wanted:
-                    state = _NON_CALLABLE  # a module is not callable
+                symbols[bound] = _NON_CALLABLE
         elif isinstance(node, ast.Assign):
-            value_state = _classify_value(node.value, async_names)
+            value_state = _classify_value(node.value, symbols)
             for target in node.targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                if value_state == _ASYNC:
-                    async_names.add(target.id)
-                else:
-                    async_names.discard(target.id)
-                if target.id == wanted:
-                    state = value_state
+                if isinstance(target, ast.Name):
+                    symbols[target.id] = value_state
         elif isinstance(node, ast.AnnAssign):
             # A bare annotation (`generate_launch_description: object`)
             # binds nothing — it neither creates nor destroys a binding.
             if node.value is not None and isinstance(node.target, ast.Name):
-                value_state = _classify_value(node.value, async_names)
-                if node.target.id == wanted:
-                    state = value_state
+                symbols[node.target.id] = _classify_value(node.value, symbols)
         elif isinstance(node, ast.Delete):
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == wanted:
-                    state = _MISSING
+                if isinstance(target, ast.Name):
+                    symbols.pop(target.id, None)
         elif isinstance(node, ast.If):
             # A literal test means one branch is dead code; otherwise both
-            # are reachable and the result is only definite when they agree.
+            # are reachable and a name is definite only where they agree.
             if _is_falsy_literal(node.test):
-                state = _entry_point_state(node.orelse, wanted, state,
-                                           async_names)
+                _module_symbols(node.orelse, symbols)
             elif _is_truthy_literal(node.test):
-                state = _entry_point_state(node.body, wanted, state,
-                                           async_names)
+                _module_symbols(node.body, symbols)
             else:
-                taken = _entry_point_state(node.body, wanted, state,
-                                           set(async_names))
-                skipped = _entry_point_state(node.orelse, wanted, state,
-                                             set(async_names))
-                state = taken if taken == skipped else _UNKNOWN
+                taken = _module_symbols(node.body, dict(symbols))
+                skipped = _module_symbols(node.orelse, dict(symbols))
+                symbols.clear()
+                symbols.update(_merge_symbols([taken, skipped]))
         elif isinstance(node, ast.Try):
             # The body may abort part-way, so a binding made there is not
-            # guaranteed. Definite only when every path agrees.
-            outcomes = {_entry_point_state(node.body + node.orelse, wanted,
-                                           state, set(async_names))}
+            # guaranteed. Definite only where every path agrees.
+            variants = [_module_symbols(node.body + node.orelse,
+                                        dict(symbols))]
             for handler in node.handlers:
-                outcomes.add(_entry_point_state(handler.body, wanted, state,
-                                                set(async_names)))
-            state = outcomes.pop() if len(outcomes) == 1 else _UNKNOWN
-            state = _entry_point_state(node.finalbody, wanted, state,
-                                       async_names)
+                variants.append(_module_symbols(handler.body, dict(symbols)))
+            symbols.clear()
+            symbols.update(_merge_symbols(variants))
+            _module_symbols(node.finalbody, symbols)
         elif isinstance(node, ast.With):
-            state = _entry_point_state(node.body, wanted, state, async_names)
+            _module_symbols(node.body, symbols)
 
-    return state
+    return symbols
+
+
+def _entry_point_state(body, wanted):
+    """What *wanted* is bound to once the module has finished executing."""
+    return _module_symbols(body).get(wanted, _MISSING)
 
 
 def validate_launch_file_syntax(filepath):
