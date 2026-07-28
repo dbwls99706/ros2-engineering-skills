@@ -32,9 +32,24 @@ Scope and limits — read before relying on this:
   This is intentional: the hook errs on the side of false positives over
   false negatives.
 
-Exit codes:
+Exit codes differ by mode, because the two modes answer to different
+contracts:
+
+* **Event mode** speaks Claude Code's hook protocol. Only exit code **2**
+  blocks a tool call — the docs are explicit that "Claude Code treats exit
+  code 1 as a non-blocking error and proceeds with the action". On exit 2
+  Claude Code ignores stdout entirely and feeds **stderr** back as the
+  error message, so the reason is written to stderr; the JSON report still
+  goes to stdout for anyone capturing it.
+
     0 — No blocking issues found
-    1 — Blocking issue detected (should halt tool execution)
+    2 — Blocking issue detected; the tool call is refused
+
+* **Manual mode** is an ordinary CLI, where a non-zero exit means "issues
+  found" in the usual Unix sense.
+
+    0 — No blocking issues found
+    1 — Blocking issue detected
 """
 
 import argparse
@@ -556,7 +571,20 @@ def main(argv=None):
     print(json.dumps(result, indent=2))
 
     has_errors = any(i['severity'] == 'error' for i in issues)
-    sys.exit(1 if has_errors else 0)
+    if not has_errors:
+        sys.exit(0)
+
+    if manual_mode:
+        # Plain CLI: non-zero means "issues found".
+        sys.exit(1)
+
+    # Event mode: exit 2 is the only code Claude Code treats as blocking,
+    # and it reads the reason from stderr (stdout is discarded for exit 2).
+    # Anything else here would print a refusal and then let the tool run.
+    for issue in issues:
+        if issue['severity'] == 'error':
+            print(f"{issue['file']}: {issue['message']}", file=sys.stderr)
+    sys.exit(2)
 
 
 if __name__ == '__main__':

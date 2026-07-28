@@ -25,13 +25,16 @@ hooks:
     - matcher: "Edit|Write|MultiEdit|Bash"
       hooks:
         - type: command
+          # timeout is in SECONDS (not milliseconds). The command-hook
+          # default is 600 s; these validators are local file scans that
+          # finish in well under a second.
           command: "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/skill_validate_hook.py"
-          timeout: 10000
+          timeout: 10
   Stop:
     - hooks:
         - type: command
           command: "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/skill_stop_hook.py"
-          timeout: 15000
+          timeout: 15
 # Eval definitions live in evals/eval.yaml (single source of truth).
 ---
 

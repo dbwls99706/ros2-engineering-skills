@@ -36,6 +36,16 @@ from skill_validate_hook import (
 )
 
 
+# Exit code the PreToolUse hook must use to actually refuse a tool call.
+# Claude Code only treats 2 as blocking — it explicitly documents that
+# exit 1 is a non-blocking error and that the action proceeds anyway. A
+# guard returning 1 prints its refusal and then lets `rm -rf /` run, so
+# this constant is the difference between a real gate and a log line.
+# Manual CLI mode (--file/--command) keeps the conventional 1; see
+# TestValidateHookManualCLI.
+BLOCKING_EXIT = 2
+
+
 class TestStopHookLaunchValidation:
     """Test the stop hook's launch file validation."""
 
@@ -60,6 +70,32 @@ class TestStopHookLaunchValidation:
         assert len(issues) == 1
         assert issues[0]['severity'] == 'error'
         assert 'generate_launch_description' in issues[0]['message']
+
+    def test_entry_point_may_be_imported(self, tmp_path):
+        # A launch file that re-exports a shared entry point is valid; only
+        # matching `def` would call this working file broken.
+        launch = tmp_path / 'reexport.launch.py'
+        launch.write_text(
+            'from my_pkg.common import generate_launch_description\n'
+        )
+        assert validate_launch_file_syntax(str(launch)) == []
+
+    def test_entry_point_may_be_an_alias(self, tmp_path):
+        launch = tmp_path / 'alias.launch.py'
+        launch.write_text(
+            'from launch import LaunchDescription\n'
+            'def _build():\n'
+            '    return LaunchDescription([])\n'
+            'generate_launch_description = _build\n'
+        )
+        assert validate_launch_file_syntax(str(launch)) == []
+
+    def test_entry_point_may_be_an_import_alias(self, tmp_path):
+        launch = tmp_path / 'importalias.launch.py'
+        launch.write_text(
+            'from my_pkg.common import build as generate_launch_description\n'
+        )
+        assert validate_launch_file_syntax(str(launch)) == []
 
     def test_syntax_error(self, tmp_path):
         launch = tmp_path / 'syntax.launch.py'
@@ -281,6 +317,25 @@ class TestStopHookCLI:
         assert touched is not None
         assert os.path.realpath(str(tmp_path / 'tracked.txt')) in touched
         assert os.path.realpath(str(tmp_path / 'new file.txt')) in touched
+
+    def test_git_touched_paths_handles_escaped_non_ascii(self, tmp_path):
+        """Non-ASCII paths must survive the porcelain round-trip.
+
+        With core.quotePath at its default, `git status --porcelain`
+        renders `café.txt` as `"caf\\303\\251.txt"`. Stripping the quotes
+        without undoing the octal escapes yields a path that exists
+        nowhere, so the file drops out of the touched set and is never
+        validated — a silent gap, since the hook then just reports fewer
+        files. Passing `-z` sidesteps the quoting entirely.
+        """
+        self._git(tmp_path, 'init', '-q')
+        (tmp_path / 'café.txt').write_text('n', encoding='utf-8')
+        (tmp_path / 'naïve node.launch.py').write_text('x', encoding='utf-8')
+        touched = _git_touched_paths(str(tmp_path))
+        assert touched is not None
+        assert os.path.realpath(str(tmp_path / 'café.txt')) in touched
+        assert os.path.realpath(
+            str(tmp_path / 'naïve node.launch.py')) in touched
 
     def test_untracked_broken_file_still_fails(self, tmp_path):
         # In a git workspace, a broken file the session just created
@@ -658,20 +713,20 @@ class TestPowerShellToolName:
 
     def test_powershell_destructive_blocked(self):
         result = self._run('PowerShell', 'Remove-Item -Recurse -Force C:/')
-        assert result.returncode == 1, \
+        assert result.returncode == BLOCKING_EXIT, \
             'PowerShell tool name must route to dangerous-command check'
         data = json.loads(result.stdout)
         assert data['status'] == 'fail'
 
     def test_pwsh_destructive_blocked(self):
         result = self._run('pwsh', 'Format-Volume -DriveLetter C')
-        assert result.returncode == 1
+        assert result.returncode == BLOCKING_EXIT
         data = json.loads(result.stdout)
         assert data['status'] == 'fail'
 
     def test_cmd_destructive_blocked(self):
         result = self._run('cmd', 'rmdir /s /q C:\\')
-        assert result.returncode == 1
+        assert result.returncode == BLOCKING_EXIT
         data = json.loads(result.stdout)
         assert data['status'] == 'fail'
 
@@ -679,7 +734,7 @@ class TestPowerShellToolName:
         # Regression guard: PowerShell additions must not have weakened the
         # existing bash branch.
         result = self._run('Bash', 'rm -rf /')
-        assert result.returncode == 1
+        assert result.returncode == BLOCKING_EXIT
         data = json.loads(result.stdout)
         assert data['status'] == 'fail'
 
@@ -693,9 +748,12 @@ class TestPowerShellToolName:
             env={**os.environ,
                  'TOOL_NAME': 'Bash', 'TOOL_INPUT': tool_input},
         )
-        assert result.returncode == 1
+        assert result.returncode == BLOCKING_EXIT
         data = json.loads(result.stdout)
         assert data['status'] == 'fail'
+        # Claude Code discards stdout on exit 2 and reports stderr, so the
+        # reason has to be there or the refusal is silent.
+        assert 'root filesystem' in result.stderr
 
 
 class TestValidateHookCLI:
@@ -756,7 +814,7 @@ class TestValidateHookCLI:
             env={**os.environ,
                  'TOOL_NAME': 'Bash', 'TOOL_INPUT': tool_input},
         )
-        assert result.returncode == 1
+        assert result.returncode == BLOCKING_EXIT
         data = json.loads(result.stdout)
         assert data['status'] == 'fail'
 
@@ -926,7 +984,7 @@ class TestValidateHookMainDirect:
         }))
         with _pytest.raises(SystemExit) as exc_info:
             main(argv=[])
-        assert exc_info.value.code == 1
+        assert exc_info.value.code == BLOCKING_EXIT
 
     def test_main_bash_safe(self, monkeypatch):
         import pytest as _pytest
@@ -997,10 +1055,11 @@ class TestClaudeCodeStdinPayload:
             'tool_name': 'Bash',
             'tool_input': {'command': 'rm -rf /'},
         })
-        assert r.returncode == 1
+        assert r.returncode == BLOCKING_EXIT
         data = json.loads(r.stdout)
         assert data['status'] == 'fail'
         assert data['issues_count'] >= 1
+        assert 'root filesystem' in r.stderr
 
     def test_stdin_powershell_destructive_blocks(self):
         r = self._run_stdin({
@@ -1009,7 +1068,7 @@ class TestClaudeCodeStdinPayload:
             'tool_name': 'Bash',  # Claude Code surfaces shell calls as Bash
             'tool_input': {'command': 'Remove-Item -Recurse -Force C:/'},
         })
-        assert r.returncode == 1
+        assert r.returncode == BLOCKING_EXIT
 
     def test_stdin_edit_antipattern_warns_passes(self):
         r = self._run_stdin({
@@ -1100,7 +1159,7 @@ class TestClaudeCodeStdinPayload:
                  'TOOL_INPUT': '{"file_path":"/tmp/x.py","content":"clean"}'},
         )
         # Stdin has destructive Bash -> must block, even though env says Write.
-        assert r.returncode == 1
+        assert r.returncode == BLOCKING_EXIT
 
     def test_debug_mode_emits_debug_info(self):
         r = subprocess.run(
@@ -1629,6 +1688,38 @@ class TestValidateHookManualCLI:
         assert data['mode'] == 'event'
         assert data['status'] == 'pass'
         assert data['checks_skipped'] == []
+
+    def test_manual_and_event_modes_use_different_blocking_exit_codes(self):
+        """The two modes answer to different contracts, deliberately.
+
+        Manual mode is a plain CLI: non-zero means "issues found", and
+        README documents `--command 'rm -rf /'` as exit 1. Event mode
+        speaks Claude Code's hook protocol, where only exit 2 refuses the
+        tool call and exit 1 is explicitly non-blocking. Collapsing the two
+        back into one code silently breaks whichever contract loses.
+        """
+        same_command = 'rm -rf /'
+
+        manual = self._run('--command', same_command)
+        assert manual.returncode == 1
+        assert json.loads(manual.stdout)['mode'] == 'manual'
+
+        event = subprocess.run(
+            [sys.executable, self.HOOK],
+            input=json.dumps({
+                'hook_event_name': 'PreToolUse',
+                'tool_name': 'Bash',
+                'tool_input': {'command': same_command},
+            }),
+            capture_output=True, text=True, timeout=10,
+            env={k: v for k, v in os.environ.items()
+                 if k not in ('TOOL_NAME', 'TOOL_INPUT')},
+        )
+        assert event.returncode == BLOCKING_EXIT
+        assert json.loads(event.stdout)['mode'] == 'event'
+        # Exit 2 makes Claude Code discard stdout, so the reason must also
+        # be on stderr — otherwise the block has no explanation attached.
+        assert 'Refusing' in event.stderr
 
 
 class TestDistroOrderingLyrical:

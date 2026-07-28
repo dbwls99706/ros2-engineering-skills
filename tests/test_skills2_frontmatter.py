@@ -117,7 +117,7 @@ class TestSkills2FrontmatterHooks:
                   hooks:
                     - type: command
                       command: "..."
-                      timeout: <ms>
+                      timeout: <seconds>
 
         Flat list of {type, command} directly under the event (which earlier
         revisions of this skill used) is NOT a valid schema and silently
@@ -197,6 +197,16 @@ class TestSkills2FrontmatterHooks:
                         )
 
     def test_hooks_have_timeout(self):
+        """Hook timeouts are expressed in SECONDS.
+
+        Claude Code documents `timeout` as "Seconds before canceling", with
+        a 600 s default for command hooks. Writing a millisecond value here
+        (10000 for "10 s") does not fail loudly - it silently installs a
+        ~2.8 hour timeout, so a wedged validator hangs the session instead
+        of being killed. The upper bound below is what makes that mistake
+        fail in CI; keep it at or under the documented default.
+        """
+        max_seconds = 600
         hooks = self.fm['hooks']
         for event, groups in hooks.items():
             for i, group in enumerate(groups):
@@ -206,6 +216,12 @@ class TestSkills2FrontmatterHooks:
                     )
                     assert isinstance(entry['timeout'], (int, float))
                     assert entry['timeout'] > 0
+                    assert entry['timeout'] <= max_seconds, (
+                        f'{event}[{i}].hooks[{j}] timeout '
+                        f'{entry["timeout"]} exceeds the {max_seconds}s '
+                        f'command-hook default - timeout is in SECONDS, '
+                        f'not milliseconds'
+                    )
 
     def test_pretooluse_has_matcher(self):
         """PreToolUse without a matcher fires on EVERY tool call, which is

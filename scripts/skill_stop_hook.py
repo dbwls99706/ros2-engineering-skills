@@ -23,9 +23,16 @@ only when the SKILL_RUNS_LOG environment variable is set (see
 _resolve_log_path). Without the opt-in the hook never writes to the
 workspace, so a read-only session leaves the working tree untouched.
 
+This hook is advisory by design and never prevents the session from
+stopping. On a Stop hook, exit code 2 is the blocking code — it tells
+Claude Code to keep going instead of stopping — so a validator that
+exited 2 on findings would refuse to let the session end until the
+workspace happened to lint clean. Exit code 1 reports the failure without
+that risk, at the cost of being non-blocking (Claude Code proceeds).
+
 Exit codes:
     0 — All checks passed (warnings/advisories do not fail the hook)
-    1 — Validation errors found (reported to stdout as JSON)
+    1 — Validation errors found (reported to stdout as JSON); non-blocking
 """
 
 import json
@@ -108,6 +115,33 @@ def find_generated_launch_files(workspace):
     return launch_files
 
 
+def _defines_name(tree, wanted):
+    """Return True if *wanted* is bound anywhere in the module.
+
+    A launch entry point does not have to be a `def` — it is equally valid
+    to import it from a shared module, alias it (`generate_launch_description
+    = _build`), or define it with `async def`. Matching only `ast.FunctionDef`
+    flags all three as "missing", which is a false error on a working launch
+    file, so every binding form is accepted.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name == wanted:
+                return True
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if (alias.asname or alias.name.split('.')[0]) == wanted:
+                    return True
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == wanted:
+                    return True
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == wanted:
+                return True
+    return False
+
+
 def validate_launch_file_syntax(filepath):
     """Check that a launch file is valid Python and has generate_launch_description."""
     issues = []
@@ -115,11 +149,7 @@ def validate_launch_file_syntax(filepath):
         with open(filepath, 'r', encoding='utf-8') as fh:
             source = fh.read()
         tree = ast.parse(source, filename=filepath)
-        func_names = [
-            node.name for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef)
-        ]
-        if 'generate_launch_description' not in func_names:
+        if not _defines_name(tree, 'generate_launch_description'):
             issues.append({
                 'file': filepath,
                 'severity': 'error',
@@ -361,7 +391,11 @@ def _resolve_workspace():
                     cwd = payload.get('cwd')
                     if cwd and os.path.isdir(cwd):
                         return cwd
-        except (json.JSONDecodeError, OSError, Exception):  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - workspace detection is best-effort
+            # Deliberately broad: a malformed or unreadable payload must
+            # fall through to the env/cwd resolution below, never crash the
+            # hook. (Listing JSONDecodeError/OSError alongside Exception, as
+            # this used to, was redundant - Exception already covers them.)
             pass
 
     project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
@@ -380,7 +414,7 @@ def _git_touched_paths(workspace):
     """
     try:
         proc = subprocess.run(
-            ['git', '-C', workspace, 'status', '--porcelain',
+            ['git', '-C', workspace, 'status', '--porcelain', '-z',
              '--untracked-files=all', '--no-renames'],
             capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
@@ -388,12 +422,16 @@ def _git_touched_paths(workspace):
     if proc.returncode != 0:
         return None
     paths = set()
-    for line in proc.stdout.splitlines():
-        # Porcelain v1: two status chars, a space, then the path
-        # (quoted if it contains special characters).
-        p = line[3:].strip()
-        if p.startswith('"') and p.endswith('"'):
-            p = p[1:-1]
+    # `-z` gives NUL-terminated records and, crucially, leaves paths
+    # verbatim: the default output quotes and C-escapes any path with a
+    # space, a newline, or a non-ASCII byte. Unquoting that by stripping
+    # the surrounding quotes leaves `\n` and `\303\251` escapes intact, so
+    # the reconstructed path matches nothing on disk and the file silently
+    # drops out of validation. `--no-renames` keeps every record to a
+    # single path field.
+    for record in proc.stdout.split('\0'):
+        # Porcelain v1: two status chars, a space, then the path.
+        p = record[3:]
         if p:
             paths.add(os.path.realpath(os.path.join(workspace, p)))
     return paths
