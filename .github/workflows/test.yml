@@ -21,6 +21,56 @@ env:
 
 jobs:
   # -------------------------------------------------------
+  # Job 0: Commit message policy (CLAUDE.md "Commit messages")
+  #
+  # This is the authoritative check. The PreToolUse hook in .claude/ only
+  # sees Bash command strings, so it misses `git commit -F`, editor-typed
+  # messages, and anything committed outside Claude Code. This job reads
+  # the real commit objects on the branch instead.
+  # -------------------------------------------------------
+  commit-messages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Reject tool-attribution trailers
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # Only ever inspect the commits this branch adds. Scanning all of
+          # history would fail the build on messages that predate the rule
+          # and can no longer be changed without a rewrite.
+          if [ -n "${BASE_SHA}" ]; then
+            commits="$(git rev-list "${BASE_SHA}..${HEAD_SHA}")"
+          elif git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+            commits="$(git rev-list "origin/main..${HEAD_SHA}")"
+          else
+            commits="$(git rev-list --max-count=20 "${HEAD_SHA}")"
+          fi
+          failed=0
+          for sha in ${commits}; do
+            msg="$(git log -1 --format=%B "${sha}")"
+            # Anchored to line starts: a trailer is a line, and matching
+            # anywhere would reject a commit whose body names the rule.
+            if printf '%s' "${msg}" | grep -qiE \
+              '^[ >*+-]*(co-authored-by:|claude-session:|(🤖 *)?generated with|(🤖 *)?created with)|https?://claude\.ai/|🤖'
+            then
+              echo "::error::${sha} carries a tool-attribution trailer"
+              printf '%s\n' "${msg}" | head -20
+              failed=1
+            fi
+          done
+          if [ "${failed}" -ne 0 ]; then
+            echo "See CLAUDE.md 'Commit messages'." >&2
+            exit 1
+          fi
+          echo "No tool-attribution trailers found."
+
+  # -------------------------------------------------------
   # Job 1: Static analysis (flake8 + mypy)
   # -------------------------------------------------------
   lint:
@@ -33,7 +83,7 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
       - name: flake8
-        run: flake8 scripts/ tests/
+        run: flake8 scripts/ tests/ .claude/hooks/
       - name: mypy
         run: mypy scripts/ --ignore-missing-imports
       - name: pip-audit (current environment)

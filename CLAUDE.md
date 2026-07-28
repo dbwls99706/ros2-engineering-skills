@@ -2,22 +2,24 @@
 
 ## Git identity
 
-All commits in this repository are authored and committed as:
+**External contributors: use your own name and address.** Authorship should
+reflect who actually wrote the change, and a pull request committed under
+someone else's identity misattributes it on GitHub. Nothing below applies
+to you.
 
-```
-user.name  = dbwls99706
-user.email = yujinhong3@gmail.com
-```
-
-Configure it locally before committing:
+The rest of this section is for the repository owner and for agent sessions
+acting on the owner's behalf. Those must commit as the owner's own identity
+rather than whatever a tool has configured globally — an assistant default
+like `Claude <noreply@anthropic.com>` is not a person who can be asked about
+the change later:
 
 ```bash
 git config --local user.name  "dbwls99706"
 git config --local user.email "yujinhong3@gmail.com"
 ```
 
-Never commit under any other name or address, and never rely on a globally
-configured identity — set it per-repository.
+Set it per-repository. A global identity is what leaks the wrong author
+into a repo you did not intend it for.
 
 ## Commit messages
 
@@ -30,11 +32,21 @@ Do **not** add:
 - Tool, assistant, or session links and identifiers
 - Emoji or badges that identify the authoring tool
 
-This is enforced, not just documented: `.claude/hooks/no_ai_attribution.py`
-runs as a `PreToolUse` hook (wired in `.claude/settings.json`) and refuses
-any `git commit` whose message carries one of those trailers. It only
-inspects `git commit` invocations and fails open on any internal error, so
-it cannot block unrelated work.
+Two checks back this up, and it is worth being precise about what each one
+actually covers:
+
+- **CI (authoritative).** The `commit-messages` job reads the real commit
+  objects on the branch and fails if any message carries one of those
+  trailers. It does not care how the commit was made, so this is the check
+  that actually gates a merge.
+- **`.claude/hooks/no_ai_attribution.py` (best-effort, early warning).**
+  A `PreToolUse` hook wired in `.claude/settings.json`. It inspects the
+  *Bash command string* Claude Code is about to run, so it catches
+  `git commit -m "..."` and nothing else — a message supplied via `-F`,
+  typed in the editor, expanded from a shell variable, or written from an
+  IDE or plain terminal never passes through it. Treat it as a fast
+  reminder, not a gate. It fails open on any internal error and ignores
+  non-commit commands, so it cannot block unrelated work.
 
 Format: Conventional Commits, matching the existing history.
 
@@ -48,9 +60,14 @@ Types in use: `feat`, `fix`, `docs`, `test`, `ci`, `chore`, `refactor`.
 
 ## Commit signing
 
-Signing is disabled for this repository (`commit.gpgsign=false`). Do not
-re-enable it with a key that is not the repository owner's — a signature
-attributes the commit to its key holder.
+Sign with your own key or do not sign — a signature attributes the commit
+to whoever holds the key, so signing someone else's work with a borrowed or
+tool-provided key is a false claim about who stands behind it. This is the
+one rule here; signing is otherwise optional and no workflow depends on it.
+
+Agent sessions in particular should set `commit.gpgsign=false` locally,
+since the ambient signing key belongs to the tooling rather than to the
+repository owner.
 
 ## Branch names
 

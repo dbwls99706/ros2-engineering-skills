@@ -85,6 +85,38 @@ def test_legitimate_commands_pass(command, label):
     )
 
 
+# Message forms the hook cannot see, because it only ever receives the
+# Bash command string. These are not bugs to fix at this layer — the
+# message simply is not in the string — but they are the reason CLAUDE.md
+# calls the hook best-effort and points at the CI job as the real gate.
+# Pinned so nobody later reads a passing suite as proof of coverage.
+KNOWN_BLIND_SPOTS = [
+    ('git commit -F message.txt', 'message read from a file'),
+    ('git commit', 'message typed in the editor'),
+    ('git commit -m "$MESSAGE"', 'message in a shell variable'),
+    ('git commit --amend --no-edit', 'message inherited by an amend'),
+]
+
+
+@pytest.mark.parametrize('command,label',
+                         [(c, l) for c, l in KNOWN_BLIND_SPOTS],
+                         ids=[label for _, label in KNOWN_BLIND_SPOTS])
+def test_documented_blind_spots_are_not_caught(command, label):
+    assert hook.find_violations(command) == [], (
+        f'{label}: if this now reports a violation the hook has started '
+        f'guessing at message content it cannot actually see'
+    )
+
+
+def test_ci_enforces_what_the_hook_cannot():
+    """The authoritative check must exist, since the hook is partial."""
+    path = os.path.join(REPO_ROOT, '.github', 'workflows', 'test.yml')
+    with open(path, 'r', encoding='utf-8') as fh:
+        workflow = fh.read()
+    assert 'commit-messages:' in workflow
+    assert 'co-authored-by' in workflow.lower()
+
+
 def test_settings_wires_the_hook():
     """The script only runs if .claude/settings.json points at it."""
     import json
