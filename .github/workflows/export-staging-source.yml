@@ -1,0 +1,38 @@
+name: Export staging source
+
+on:
+  push:
+    branches:
+      - chore/repository-readiness-staging
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Package repository
+        run: tar --exclude=.git -czf /tmp/repository-source.tar.gz .
+      - name: Upload repository source
+        uses: actions/upload-artifact@v6
+        with:
+          name: repository-source
+          path: /tmp/repository-source.tar.gz
+          retention-days: 1
+      - name: Record workflow run id
+        run: |
+          set -euo pipefail
+          git fetch origin "${GITHUB_REF_NAME}"
+          git checkout -B "${GITHUB_REF_NAME}" "origin/${GITHUB_REF_NAME}"
+          printf 'run_id=%s\nsha=%s\n' "${GITHUB_RUN_ID}" "${GITHUB_SHA}" \
+            > .github/export-run-id.txt
+          git config user.name dbwls99706
+          git config user.email yujinhong3@gmail.com
+          git add .github/export-run-id.txt
+          git commit -m 'ci: record source export run [skip ci]'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
