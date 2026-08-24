@@ -23,13 +23,32 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  ci-start:
+    if: ${{ github.event_name == 'push' && github.ref_name == 'chore/repository-readiness-staging' && !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Record workflow run id
+        run: |
+          set -euo pipefail
+          git fetch origin "${GITHUB_REF_NAME}"
+          git checkout -B "${GITHUB_REF_NAME}" "origin/${GITHUB_REF_NAME}"
+          printf 'run_id=%s\nsha=%s\n' "${GITHUB_RUN_ID}" "${GITHUB_SHA}" \
+            > .github/ci-start.txt
+          git config user.name dbwls99706
+          git config user.email yujinhong3@gmail.com
+          git add .github/ci-start.txt
+          git commit -m 'ci: record validation run [skip ci]'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
   commit-messages:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
       - name: Reject tool-attribution trailers
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -126,10 +145,8 @@ jobs:
         ros_distro: [humble, jazzy, kilted, lyrical, rolling]
     steps:
       - uses: actions/checkout@v6
-
       - name: Verify Docker image exists
         run: docker pull osrf/ros:${{ matrix.ros_distro }}-desktop
-
       - name: Build and test in ROS 2 ${{ matrix.ros_distro }}
         run: |
           docker build \
@@ -180,8 +197,9 @@ jobs:
         run: python scripts/eval_runner.py
 
   ci-report:
-    if: ${{ always() && github.event_name == 'push' && github.ref_name == 'chore/repository-readiness-staging' }}
+    if: ${{ always() && github.event_name == 'push' && github.ref_name == 'chore/repository-readiness-staging' && !contains(github.event.head_commit.message, '[skip ci]') }}
     needs:
+      - ci-start
       - commit-messages
       - lint
       - unit-tests
@@ -206,7 +224,6 @@ jobs:
           set -euo pipefail
           git fetch origin "${GITHUB_REF_NAME}"
           git checkout -B "${GITHUB_REF_NAME}" "origin/${GITHUB_REF_NAME}"
-          mkdir -p .github
           {
             echo "run_id=${GITHUB_RUN_ID}"
             echo "sha=${GITHUB_SHA}"
