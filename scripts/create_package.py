@@ -410,6 +410,7 @@ def _generate_python_lifecycle_node(name: str, class_name: str,
     py_header = _copyright_py(maintainer_name)
     return py_header + f"""
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
 
@@ -450,14 +451,19 @@ class {class_name}Node(LifecycleNode):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = {class_name}Node()
+    node = None
     try:
+        node = {class_name}Node()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            if node is not None:
+                node.destroy_node()
+        finally:
+            # A signal handler may already have shut down the context.
+            rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
@@ -494,6 +500,7 @@ def create_python_package(name: str, dest: Path,
     else:
         _write(pkg / name / f"{name}_node.py", py_header + f"""
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 
@@ -518,14 +525,19 @@ class {class_name}Node(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = {class_name}Node()
+    node = None
     try:
+        node = {class_name}Node()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            if node is not None:
+                node.destroy_node()
+        finally:
+            # A signal handler may already have shut down the context.
+            rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
@@ -883,6 +895,8 @@ private:
     _write(pkg / "src" / f"{name}_hardware.cpp", cpp_header + f"""
 #include "{name}/{name}_hardware.hpp"
 
+#include <algorithm>
+
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
 #include <pluginlib/class_list_macros.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -931,9 +945,10 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {{
   RCLCPP_INFO(rclcpp::get_logger("{name}"), "Deactivating...");
-  // SAFETY: Zero all commands to prevent the robot from holding
-  // the last commanded velocity/position on shutdown.
-  std::fill(hw_commands_.begin(), hw_commands_.end(), 0.0);
+  // These are position targets: zero would command a new position, not a stop.
+  // Retain measured positions for this simulated interface. Real hardware needs
+  // an explicit driver stop/disable and independent watchdog; this is not one.
+  std::copy(hw_positions_.begin(), hw_positions_.end(), hw_commands_.begin());
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
 
@@ -1221,7 +1236,7 @@ ros2 security create_keystore ~/sros2_keystore
 ros2 security create_enclave ~/sros2_keystore /{name}
 
 # Generate permissions from policies
-ros2 security create_permission ~/sros2_keystore /{name} \\
+ros2 security create_permission ~/sros2_keystore /{name} \
   security/policies.xml
 
 # Run with security enabled

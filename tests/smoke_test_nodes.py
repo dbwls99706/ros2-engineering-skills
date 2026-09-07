@@ -42,7 +42,8 @@ def terminate_group(process, grace=2.0):
     # boundary. A zombie process group may briefly exist after SIGKILL.
 
 
-def probe(command, expected_name, discover, startup_timeout=15.0, stop_grace=2.0):
+def probe(command, expected_name, discover, startup_timeout=15.0, stop_grace=2.0,
+          require_clean_exit=False):
     """Require both exact unique graph identity and a still-live owned process."""
     if startup_timeout <= 0 or stop_grace <= 0:
         raise ValueError('Timeouts must be positive')
@@ -51,6 +52,7 @@ def probe(command, expected_name, discover, startup_timeout=15.0, stop_grace=2.0
     with tempfile.TemporaryFile(mode='w+b') as output:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
                                    stderr=subprocess.STDOUT, start_new_session=True)
+        discovered = False
         try:
             deadline = time.monotonic() + startup_timeout
             while time.monotonic() < deadline:
@@ -61,9 +63,11 @@ def probe(command, expected_name, discover, startup_timeout=15.0, stop_grace=2.0
                     raise RuntimeError(f'{expected_name} exited during discovery: {process.returncode}')
                 if expected_name in names:
                     print(f'{expected_name}: live process and graph discovery verified', flush=True)
-                    return
+                    discovered = True
+                    break
                 time.sleep(0.05)
-            raise RuntimeError(f'{expected_name} was not discovered before the deadline')
+            if not discovered:
+                raise RuntimeError(f'{expected_name} was not discovered before the deadline')
         finally:
             try:
                 terminate_group(process, stop_grace)
@@ -73,6 +77,11 @@ def probe(command, expected_name, discover, startup_timeout=15.0, stop_grace=2.0
                 tail = output.read().decode('utf-8', errors='replace')
                 if tail:
                     print(tail, end='' if tail.endswith('\n') else '\n', flush=True)
+
+        # Discovery is not enough: generated programs must also handle SIGINT
+        # without a traceback, forced kill, or other unsuccessful termination.
+        if require_clean_exit and process.poll() != 0:
+            raise RuntimeError(f'{expected_name} did not shut down cleanly: {process.returncode}')
 
 
 def main(argv=None):
@@ -111,7 +120,8 @@ def main(argv=None):
             if not executable.is_file() or not os.access(executable, os.X_OK):
                 raise RuntimeError('Missing generated executable: ' + str(executable))
             name = 'skill_smoke_' + uuid.uuid4().hex
-            probe([str(executable), '--ros-args', '-r', '__node:=' + name], name, discover)
+            probe([str(executable), '--ros-args', '-r', '__node:=' + name], name, discover,
+                  require_clean_exit=True)
         print('All smoke tests passed; owned node processes have been cleaned up.', flush=True)
         return 0
     except SmokeInterrupted as exc:

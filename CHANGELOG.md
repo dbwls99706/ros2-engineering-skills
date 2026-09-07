@@ -4,6 +4,14 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Preserve measured position targets on hardware-template deactivation instead
+  of confusing a zero position command with stopping an actuator.
+
+- Handle already-shut-down contexts and external shutdown in generated Python
+  entry points; clean up after constructor or node-destruction failures too.
+- Require generated smoke-test processes to exit cleanly after discovery instead
+  of accepting an exception or forced termination during shutdown.
+
 - Keep the ROS smoke observer and its executor on the same initialized context;
   verify cleanup after initialization, discovery, and shutdown failures.
 

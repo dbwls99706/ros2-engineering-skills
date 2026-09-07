@@ -85,7 +85,8 @@ def isolated_ros(monkeypatch, tmp_path):
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
-    def probe(command, name, discover):
+    def probe(command, name, discover, *, require_clean_exit):
+        assert require_clean_exit is True
         assert Path(command[0]).is_file()
         assert command[-1] == '__node:=' + name
         assert discover() == {'observed'}
@@ -118,7 +119,7 @@ def test_observer_and_executor_share_the_initialized_context(isolated_ros):
 def test_probe_failure_and_interruption_release_ros_resources(isolated_ros, monkeypatch, failure, expected):
     install, events, _ = isolated_ros
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise failure
 
     monkeypatch.setattr(smoke, 'probe', fail)
