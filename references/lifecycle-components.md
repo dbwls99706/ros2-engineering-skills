@@ -44,7 +44,7 @@ be a lifecycle node.
                      │   Finalized    │
                      └───────────────┘
 
-              on_error is triggered on any transition failure:
+              on_error is triggered by a transition callback returning ERROR:
                      ┌───────────────┐
               ────►  │  ErrorProcessing│ ──► Unconfigured (if recovery succeeds)
                      └───────────────┘  ──► Finalized (if recovery fails)
@@ -55,9 +55,18 @@ be a lifecycle node.
 | State | What the node does | Resources |
 |---|---|---|
 | Unconfigured | Nothing — waiting for configuration | None allocated |
-| Inactive | Configured but not processing | Allocated but not active |
+| Inactive | Configured; application must gate ordinary callbacks | Allocated but not active |
 | Active | Fully operational, processing data | Allocated and active |
-| Finalized | Terminated, cannot be restarted | Released |
+| Finalized | Lifecycle ended; not proof the process exited | Cleanup callback must release resources |
+
+A callback returning `FAILURE` and one returning `ERROR` take different state
+machine paths. For example, rejected configuration returns to Unconfigured;
+it need not invoke error processing. Ordinary timers and subscriptions are not
+automatically stopped by the lifecycle label. Explicitly cancel or destroy owned
+timers in deactivation, cleanup, shutdown, and error handling. Declare parameters
+once (usually in the constructor), then read and validate them on every configure
+so cleanup followed by reconfiguration does not redeclare them. Check both normal
+cycles and rejected configurations with actual executor activity.
 
 **Why lifecycle matters:**
 

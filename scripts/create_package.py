@@ -183,6 +183,8 @@ def create_cpp_package(name: str, dest: Path, component: bool = False,
     if component:
         component_cmake = f"""
 find_package(rclcpp_components REQUIRED)
+target_link_libraries(${{PROJECT_NAME}}_lib PUBLIC rclcpp_components::component)
+ament_export_dependencies(rclcpp_components)
 rclcpp_components_register_node(${{PROJECT_NAME}}_lib
   PLUGIN "{name}::{_class_name(name)}Node"
   EXECUTABLE ${{PROJECT_NAME}}_component_node
@@ -409,6 +411,8 @@ def _generate_python_lifecycle_node(name: str, class_name: str,
     """Generate a Python LifecycleNode with proper callback hooks."""
     py_header = _copyright_py(maintainer_name)
     return py_header + f"""
+import math
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
@@ -418,32 +422,60 @@ class {class_name}Node(LifecycleNode):
 
     def __init__(self, **kwargs):
         super().__init__('{name}', **kwargs)
+        # Declare once: cleanup/reconfigure must not redeclare the parameter.
+        self.declare_parameter('publish_rate', 50.0)
+        self.timer = None
+        self._timer_period = None
         self.get_logger().info('Node created (inactive)')
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        self.declare_parameter('publish_rate', 50.0)
         rate = self.get_parameter('publish_rate').value
+        if type(rate) not in (int, float) or not math.isfinite(rate) or rate <= 0:
+            self.get_logger().error('publish_rate must be finite and positive')
+            return TransitionCallbackReturn.FAILURE
+        period = 1.0 / rate
+        # rcl timers use a signed 64-bit nanosecond duration; zero would busy-loop.
+        if not math.isfinite(period) or not 1.0 <= period * 1e9 < 2.0 ** 63:
+            self.get_logger().error('publish_rate is outside the timer duration range')
+            return TransitionCallbackReturn.FAILURE
         self.get_logger().info(f'Configuring with rate={{rate}} Hz')
-        self._timer_period = 1.0 / rate
+        self._timer_period = period
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        if self._timer_period is None:
+            return TransitionCallbackReturn.FAILURE
         self.timer = self.create_timer(self._timer_period, self.timer_callback)
         self.get_logger().info('Activated')
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        self.destroy_timer(self.timer)
+        self._release_timer()
         self.get_logger().info('Deactivated')
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._release_timer()
+        self._timer_period = None
         self.get_logger().info('Cleaning up')
         return TransitionCallbackReturn.SUCCESS
 
     def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._release_timer()
+        self._timer_period = None
         self.get_logger().info('Shutting down')
         return TransitionCallbackReturn.SUCCESS
+
+    def on_error(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._release_timer()
+        self._timer_period = None
+        return TransitionCallbackReturn.SUCCESS
+
+    def _release_timer(self):
+        # Ordinary timers are not disabled by lifecycle state changes themselves.
+        if self.timer is not None:
+            self.destroy_timer(self.timer)
+            self.timer = None
 
     def timer_callback(self):
         pass  # Implement your logic here

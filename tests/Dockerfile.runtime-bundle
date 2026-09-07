@@ -6,12 +6,13 @@ COPY requirements-dev.txt /tmp/requirements-dev.txt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        build-essential cmake git curl ca-certificates libxml2-utils \
-       python3-pip python3-colcon-common-extensions python3-yaml \
+       python3-pip python3-venv python3-colcon-common-extensions python3-yaml \
        ros-humble-ament-lint-auto ros-humble-ament-lint-common \
        ros-humble-ament-cmake-gtest ros-humble-example-interfaces \
        ros-humble-hardware-interface ros-humble-ros2-control \
        ros-humble-rmw-cyclonedds-cpp ros-humble-tf2-ros \
-    && python3 -m pip install --no-cache-dir -r /tmp/requirements-dev.txt \
+    && python3 -m venv /opt/validation-venv \
+    && /opt/validation-venv/bin/python -m pip install --no-cache-dir -r /tmp/requirements-dev.txt \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 COPY tests/schema/catalog.xml /opt/ros2-test-schemas/catalog.xml
 ENV XML_CATALOG_FILES=/opt/ros2-test-schemas/catalog.xml
@@ -29,5 +30,5 @@ RUN set -e; \
       > SHA256SUMS; sha256sum --check SHA256SUMS
 RUN mkdir -p /work /opt/runtime-provenance \
     && dpkg-query -W > /opt/runtime-provenance/debian-packages.tsv \
-    && python3 -m pip freeze > /opt/runtime-provenance/python-packages.txt
+    && /opt/validation-venv/bin/python -m pip freeze > /opt/runtime-provenance/python-packages.txt
 WORKDIR /work

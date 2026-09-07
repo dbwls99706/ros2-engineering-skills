@@ -4,6 +4,15 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Fix generated C++ component target linkage and exercise component builds in
+  the ROS distribution matrix, alongside Python lifecycle variants.
+- Make generated lifecycle configuration repeatable, reject invalid timer rates,
+  and release ordinary timers on deactivation, cleanup, shutdown, and errors.
+- Add real generated-node lifecycle acceptance checks, including positive timer
+  controls, repeated transitions, rejected rates, and recovery after rejection.
+- Provide a transferable Humble runtime for local tests; isolate modern developer
+  pytest dependencies from the distribution's ROS testing plugins.
+
 - Preserve measured position targets on hardware-template deactivation instead
   of confusing a zero position command with stopping an actuator.
 

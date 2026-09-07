@@ -15,6 +15,10 @@ Prioritize measured usefulness and correctness over additional prose.
 - Validator-specific coverage gates and controlled ROS QoS failure/repair example.
 - Contribution, security, conduct, issue templates, and release-gate documentation.
 
+Local Humble acceptance now also covers component/lifecycle generator variants,
+repeated lifecycle transitions, dynamic component loading, parameter provenance,
+and controlled QoS/callback behavior. See [the record](docs/LOCAL_RUNTIME.md).
+
 ## Next evidence to collect
 
 - Authenticated loading and invocation traces for exact Claude, Codex, Cursor,

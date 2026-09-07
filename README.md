@@ -248,6 +248,13 @@ without external networking or hardware in the built container. See
 [QoS case study](docs/QOS_CASE_STUDY.md) and [quality gates](docs/QUALITY_GATES.md).
 None of these jobs proves actuator safety, timing guarantees, or field behavior.
 
+### Independent local ROS acceptance
+
+See [local runtime validation](docs/LOCAL_RUNTIME.md) for the transferable Humble
+environment and the independently executed package, lifecycle, component, QoS,
+callback-group, and parameter-provenance tasks. These are real software-runtime
+checks, not a claim of measured cross-model improvement or hardware safety.
+
 ## Evaluation scope
 
 Capture schema 2 retains timeouts, failed runs, empty answers, and missed skill

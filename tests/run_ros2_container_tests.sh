@@ -25,10 +25,12 @@ python3 tests/check_offline_xml.py
 echo '=== Repository unit tests ==='
 python3 -m pytest tests/ -ra --tb=short --durations=15 -o faulthandler_timeout=45
 
-echo '=== Generate and compile all four package types ==='
+echo '=== Generate four package types plus component and lifecycle variants ==='
 mkdir -p "$WS/src"
 python3 scripts/create_package.py test_cpp_pkg --type cpp --dest "$WS/src"
 python3 scripts/create_package.py test_py_pkg --type python --dest "$WS/src"
+python3 scripts/create_package.py test_component_pkg --type cpp --component --dest "$WS/src"
+python3 scripts/create_package.py test_lifecycle_pkg --type python --lifecycle --dest "$WS/src"
 python3 scripts/create_package.py test_iface_pkg --type interfaces --dest "$WS/src"
 python3 scripts/create_package.py test_hw_pkg --type hardware_interface --dest "$WS/src"
 cd "$WS"
@@ -37,7 +39,7 @@ colcon build --executor sequential --event-handlers console_direct+ \
 
 # Preserve the existing Rolling exclusion, without calling it a runtime pass.
 # Hardware plugin loading and interface tests still execute on every distro.
-test_pkgs=(test_cpp_pkg test_iface_pkg test_hw_pkg)
+test_pkgs=(test_cpp_pkg test_component_pkg test_iface_pkg test_hw_pkg)
 pytest_extra=()
 if [[ "$ROS_DISTRO" == rolling ]]; then
     test_pkgs=(test_iface_pkg test_hw_pkg)
@@ -52,10 +54,17 @@ colcon test-result --verbose
 source "$WS/install/setup.bash"
 echo '=== Generated Python package tests ==='
 (cd "$WS/src/test_py_pkg" && python3 -m pytest test/ -v "${pytest_extra[@]}")
+if [[ "$ROS_DISTRO" != rolling ]]; then
+    (cd "$WS/src/test_lifecycle_pkg" && python3 -m pytest test/ -v)
+    timeout --signal=TERM --kill-after=5s 30s \
+        python3 "$ROOT/tests/check_generated_lifecycle.py" test_lifecycle_pkg
+fi
 cd "$ROOT"
 echo '=== Generated launch files and all QoS presets ==='
 python3 scripts/launch_validator.py "$WS/src/test_cpp_pkg/launch/"
 python3 scripts/launch_validator.py "$WS/src/test_py_pkg/launch/"
+python3 scripts/launch_validator.py "$WS/src/test_component_pkg/launch/"
+python3 scripts/launch_validator.py "$WS/src/test_lifecycle_pkg/launch/"
 for preset in sensor command map diagnostics parameter_events action_feedback safety_heartbeat; do
     python3 scripts/qos_checker.py --preset "$preset"
 done
