@@ -65,8 +65,10 @@ def test_success_requires_build_load_inspect_and_runtime(docker_runner):
     assert any(call[:2] == ['buildx', 'rm'] for call in calls)
 
 
-@pytest.mark.parametrize('phase,code', [('create', 21), ('build', 22), ('build', 124),
-                                       ('inspect', 23), ('run', 24), ('run', 124)])
+@pytest.mark.parametrize('phase,code', [
+    ('create', 21), ('build', 22), ('build', 124),
+    ('inspect', 23), ('run', 24), ('run', 124),
+])
 def test_failures_and_timeouts_are_never_passes(docker_runner, phase, code):
     result, calls, logs = docker_runner('jazzy', failure=phase, code=code)
     assert result.returncode != 0
