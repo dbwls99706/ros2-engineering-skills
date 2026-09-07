@@ -22,6 +22,8 @@ All notable changes are documented here.
 - Add regression tests, individual validator coverage gates, Python 3.13/3.14
   matrix targets, portable Windows smoke checks, and a controlled QoS experiment.
 - Preserve existing ROS distro builds and explicitly retain Rolling runtime limits.
+- Add isolated live Codex/Gemini discovery probes with pinned versions, negative
+  controls, resolved installation paths, and retained CI evidence.
 
 ## 1.3.0
 

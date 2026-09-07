@@ -97,6 +97,27 @@ model runs for all clients are a separate evidence requirement; see
 [EVIDENCE_CAPTURE.md](EVIDENCE_CAPTURE.md). No cross-client model benchmark is
 claimed merely because these package and protocol tests pass.
 
+## Automated discovery probes
+
+`client-discovery.yml` installs pinned Codex 0.153.4 and Gemini CLI 0.58.0 in
+CI. Each uses an isolated home and workspace, checks absence before installation,
+then requires the enabled skill at the exact installed location. Codex is queried
+through the documented app-server `initialize` / `initialized` / `skills/list`
+protocol; Gemini uses `gemini skills list`. The job records client versions and
+before/after output as a workflow artifact. It starts no model turn, supplies no
+API credentials, and makes no answer-quality or implicit-trigger claim. A parser
+unit test is separate from these live client checks. Read the job's result before
+calling a particular revision's discovery verified.
+
+The app-server reference describes optional `SKILL.json` metadata while the
+skill-authoring guide documents `agents/openai.yaml`. This repository follows the
+authoring guide; the discovery gate checks the portable name, description, enabled
+state, and resolved path, without assuming every UI field has identical handling
+across clients. Review the exact client version before asserting UI behavior.
+
+Sources: [Codex app-server protocol](https://learn.chatgpt.com/docs/app-server)
+and [Gemini CLI skill listing implementation](https://github.com/google-gemini/gemini-cli/blob/v0.58.0/packages/cli/src/commands/skills/list.ts).
+
 ## Primary sources
 
 - [Agent Skills specification](https://agentskills.io/specification)

@@ -10,6 +10,8 @@
     {"id":"codex-skills","url":"https://learn.chatgpt.com/docs/build-skills","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md","agents/openai.yaml"]},
     {"id":"cursor-skills","url":"https://cursor.com/docs/skills","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
     {"id":"gemini-skills","url":"https://geminicli.com/docs/cli/skills/","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
-    {"id":"ros-qos","url":"https://docs.ros.org/en/humble/Concepts/Intermediate/About-Quality-of-Service-Settings.html","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/QOS_CASE_STUDY.md"]}
+    {"id":"ros-qos","url":"https://docs.ros.org/en/humble/Concepts/Intermediate/About-Quality-of-Service-Settings.html","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/QOS_CASE_STUDY.md"]},
+    {"id":"codex-app-server","url":"https://learn.chatgpt.com/docs/app-server","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
+    {"id":"gemini-list-source","url":"https://github.com/google-gemini/gemini-cli/blob/v0.58.0/packages/cli/src/commands/skills/list.ts","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]}
   ]
 }
