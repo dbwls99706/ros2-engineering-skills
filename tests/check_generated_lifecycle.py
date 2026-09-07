@@ -87,6 +87,49 @@ def exercise(node_class, scenario, rate=50.0):
             require_ticks()
             change('shutdown')
             require_stopped()
+        elif scenario == 'managed-publisher':
+            from std_msgs.msg import String
+            publisher = node.create_lifecycle_publisher(String, 'managed_probe', 10)
+            received = []
+            observer = rclpy.create_node('managed_observer_' + uuid.uuid4().hex, context=context)
+            executor.add_node(observer)
+            observer.create_subscription(String, node.get_namespace() + '/managed_probe',
+                                         lambda msg: received.append(msg.data), 10)
+            try:
+                change('configure')
+                if publisher.is_activated:
+                    raise RuntimeError('Publisher was active before activation')
+                change('activate')
+                if not publisher.is_activated:
+                    raise RuntimeError('Active node did not activate its managed publisher')
+                deadline = time.monotonic() + 5.0
+                while not received and time.monotonic() < deadline:
+                    publisher.publish(String(data='positive-control'))
+                    executor.spin_once(timeout_sec=0.02)
+                if not received:
+                    raise RuntimeError('Active lifecycle publisher did not deliver data')
+                change('deactivate')
+                if publisher.is_activated:
+                    raise RuntimeError('Publisher survived deactivation')
+                require_stopped()
+                change('cleanup')
+            finally:
+                executor.remove_node(observer)
+                observer.destroy_node()
+        elif scenario == 'managed-activation-failure':
+            from rclpy.lifecycle import ManagedEntity
+
+            class RefusesActivation(ManagedEntity):
+                def on_activate(self, state):
+                    return Return.FAILURE
+
+            node.add_managed_entity(RefusesActivation())
+            change('configure')
+            change('activate', Return.FAILURE)
+            if node._state_machine.current_state[1] != 'inactive':
+                raise RuntimeError('Failed managed activation did not stay inactive')
+            require_stopped()
+            change('cleanup')
         elif scenario == 'invalid-rate':
             change('configure', Return.FAILURE)
             if node._state_machine.current_state[1] != 'unconfigured' or list(node.timers):
@@ -117,19 +160,62 @@ def exercise(node_class, scenario, rate=50.0):
                 context.try_shutdown()
 
 
+def check_plain_rates(package):
+    import rclpy
+    from rclpy.context import Context
+    from rclpy.parameter import Parameter
+
+    module = importlib.import_module(f'{package}.{package}_node')
+    name = ''.join(part.capitalize() for part in package.split('_')) + 'Node'
+    node_class = getattr(module, name)
+    records = []
+    for rate in (0.0, -1.0, float('nan'), float('inf'), 1e-300, 1e300, 17.0):
+        context = Context()
+        rclpy.init(context=context)
+        node = None
+        try:
+            rejected = False
+            try:
+                node = node_class(context=context,
+                                  parameter_overrides=[Parameter('publish_rate', value=rate)])
+            except ValueError:
+                rejected = True
+            if rate == 17.0:
+                if rejected or node.timer.timer_period_ns != int(1e9 / rate):
+                    raise RuntimeError('Valid plain-node timer was not created correctly')
+            elif not rejected:
+                raise RuntimeError('Invalid plain-node rate reached timer construction')
+            records.append({'case': 'plain-rate', 'rate': repr(rate), 'status': 'pass'})
+        except Exception as exc:
+            records.append({'case': 'plain-rate', 'rate': repr(rate), 'status': 'fail',
+                            'error': str(exc)})
+        finally:
+            try:
+                if node is not None:
+                    node.destroy_node()
+            finally:
+                context.try_shutdown()
+    return records
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('package', help='Installed generated Python lifecycle package')
+    parser.add_argument('--plain-package', help='Also check the generated plain Python node')
     args = parser.parse_args(argv)
-    if not re.fullmatch(r'[a-z][a-z0-9_]*', args.package):
+    if any(not re.fullmatch(r'[a-z][a-z0-9_]*', name)
+           for name in (args.package, args.plain_package) if name is not None):
         parser.error('Expected a ROS package name')
     module = importlib.import_module(f'{args.package}.{args.package}_node')
     class_name = ''.join(part.capitalize() for part in args.package.split('_')) + 'Node'
     node_class = getattr(module, class_name)
     results = [exercise(node_class, name) for name in
-               ('reconfigure', 'reactivate', 'active-shutdown')]
+               ('reconfigure', 'reactivate', 'active-shutdown',
+                'managed-publisher', 'managed-activation-failure')]
     results.extend(exercise(node_class, 'invalid-rate', value) for value in
                    (0.0, -1.0, float('nan'), float('inf'), 1e-300, 1e300))
+    if args.plain_package:
+        results.extend(check_plain_rates(args.plain_package))
     import rclpy
     print(json.dumps({'rmw': rclpy.get_rmw_implementation_identifier(),
                       'scope': 'Real generated lifecycle and timer behavior',

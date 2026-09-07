@@ -99,3 +99,63 @@ transition, and output is classified by input phase rather than arrival time.
 Lifecycle gating in the example is checked when the callback executes; it does
 not promise that every sample sent before activation is discarded. Applications
 requiring fresh-only input need an explicit timestamp or generation policy.
+
+## Fleet and generated managed-entity regressions
+
+The 2026-09-08 follow-up started from
+`04a56425db46dda0c13ec18ed331dbbb007d02a6`, whose existing CI gates passed.
+Additional checks exposed paths outside that matrix: Python fleet launch files
+were not installed, lifecycle fleet actions omitted the required namespace and
+startup transitions, and fleet node remapping prevented the parameter YAML key
+from matching. The C++ template also supplied a `publish_rate` YAML entry without
+declaring that parameter. Generated lifecycle overrides returned success without
+activating their managed publishers; ordinary Python nodes accepted an infinite
+rate as a zero-nanosecond timer.
+
+The generated fleet now registers each lifecycle handler against its own action,
+configures and activates each node, and leaves an intentionally deactivated
+sibling inactive. Fleet generation uses a wildcard key only in the private
+parameter file explicitly passed to these nodes. It is not a global parameter
+injection into unrelated processes. Python packaging includes both generated
+launch files. C++ and Python lifecycle overrides delegate managed-entity calls
+and preserve failure returns; an Active state label alone is not the test.
+
+From a sourced, isolated ROS checkout, run:
+
+```bash
+python3 tests/check_generated_fleet.py
+source /path/to/generated_ws/install/setup.bash
+python3 tests/check_generated_lifecycle.py YOUR_LIFECYCLE_PACKAGE \
+  --plain-package YOUR_PLAIN_PACKAGE
+```
+
+The fleet probe builds C++, Python, and Python-lifecycle packages, launches their
+installed files with two namespaces, and queries the real parameter/lifecycle
+services. It changes the configuration to a nondefault value (17.0) so a silent
+fallback to 50.0 cannot pass. It deactivates one lifecycle node while requiring
+the other to remain Active. Generated C++ tests also exercise parameter overrides
+and managed publisher activation; the Python probe requires actual DDS delivery
+and rejects a deliberately failed managed-entity activation.
+
+The first added fleet probe revealed a test-harness issue: signalling the entire
+process group and letting launch forward the signal interrupted Python cleanup
+twice. The supervisor could still exit zero while children exited with -2.
+The corrected probe signals only the supervisor for normal shutdown, retains
+bounded process-group cleanup for failures, and records `OnProcessStart` and
+`OnProcessExit` events around the unmodified installed launch. Every started
+child must have its own zero exit record. Missing, duplicated, nonzero, or
+unmatched child events fail independently of the supervisor's exit code.
+
+Filesystem and malformed-input tests are separate L1 regressions. They refuse
+pre-existing package symlinks and control characters in source-comment metadata;
+they do not claim protection against a hostile process racing filesystem changes.
+The fleet/managed-publisher probes establish isolated software behavior, not
+physical robot safety or performance on an external network. Rolling's existing
+runtime exclusions remain explicit in the ROS runner.
+
+A Cyclone DDS follow-up also exercised managed publishers and the reference/QoS
+probes. One immediate-shutdown fleet attempt timed out while waiting for its
+launch supervisor. Five complete diagnostic fleet repetitions and twenty
+C++-fleet repetitions did not reproduce it. Preserve the timed-out attempt:
+these later passes do not establish its root cause or justify an unconditional
+claim that shutdown cannot stall in this environment.

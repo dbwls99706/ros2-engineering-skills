@@ -57,7 +57,10 @@ echo '=== Generated Python package tests ==='
 if [[ "$ROS_DISTRO" != rolling ]]; then
     (cd "$WS/src/test_lifecycle_pkg" && python3 -m pytest test/ -v)
     timeout --signal=TERM --kill-after=5s 30s \
-        python3 "$ROOT/tests/check_generated_lifecycle.py" test_lifecycle_pkg
+        python3 "$ROOT/tests/check_generated_lifecycle.py" test_lifecycle_pkg --plain-package test_py_pkg
+    echo '=== Installed multi-robot fleet launch, parameters, and isolation ==='
+    timeout --signal=TERM --kill-after=10s 300s \
+        python3 "$ROOT/tests/check_generated_fleet.py"
     echo '=== Real documented lifecycle examples and publisher cleanup ==='
     timeout --signal=TERM --kill-after=5s 150s \
         python3 "$ROOT/tests/check_lifecycle_reference.py"

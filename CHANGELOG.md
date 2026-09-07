@@ -4,6 +4,17 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Repair Python fleet launch installation, required lifecycle namespaces, scoped
+  startup transitions, and parameter-file matching after fleet remapping.
+- Declare the generated C++ configuration parameter and delegate generated
+  C++/Python lifecycle transitions to managed entities, preserving their failures.
+- Reject nonfinite/out-of-range plain-node timer rates, unsafe package symlinks,
+  and metadata newlines before they can produce invalid code or overwrite files.
+- Detect a missing literal lifecycle namespace in the launch validator without
+  guessing the contents of dynamic keyword arguments.
+- Add live three-variant fleet checks, actual managed-publisher tests, and
+  structured child start/exit evidence; a zero launcher exit alone is not a pass.
+
 - Isolate the never-activated runtime control from later active inputs so queued
   pre-activation samples are not mistaken for inactive publication.
 
