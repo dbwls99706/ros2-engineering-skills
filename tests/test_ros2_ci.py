@@ -150,3 +150,29 @@ def test_workflow_summary_does_not_accept_non_success(outcome):
     assert 'run_ros2_tests.sh' in integration['steps'][1]['run']
     assert integration['steps'][2]['if'] == 'always()'
     assert all(not step.get('continue-on-error') for step in integration['steps'])
+
+
+def test_unit_job_is_bounded_without_removing_coverage_or_diagnostics():
+    workflow = yaml.safe_load((ROOT / '.github/workflows/test.yml').read_text())
+    job = workflow['jobs']['unit-tests']
+    assert job['timeout-minutes'] == 12
+    commands = '\n'.join(step.get('run', '') for step in job['steps'])
+    assert 'timeout --signal=TERM --kill-after=10s 8m' in commands
+    assert 'python -m pytest tests/' in commands
+    assert 'faulthandler_timeout=60' in commands
+    assert '--cov-fail-under=90' in commands
+    assert '--junitxml=pytest-results.xml' in commands
+    assert 'set -o pipefail' in commands
+    assert any(step.get('if') == 'always()' and 'pytest-output.log' in step.get('with', {}).get('path', '')
+               for step in job['steps'])
+
+
+def test_context_gate_requires_real_measurement_and_preserves_failure():
+    workflow = yaml.safe_load((ROOT / '.github/workflows/test.yml').read_text())
+    steps = workflow['jobs']['lint-scripts']['steps']
+    gate = next(step for step in steps if 'measure_context.py' in step.get('run', ''))
+    assert 'set -o pipefail' in gate['run']
+    assert 'timeout --signal=TERM --kill-after=5s 60s' in gate['run']
+    assert workflow['jobs']['lint-scripts']['timeout-minutes'] == 10
+    assert not gate.get('continue-on-error')
+    assert any('tiktoken' in step.get('run', '') for step in steps)

@@ -12,14 +12,18 @@ cd "$ROOT"
     printf 'ROS_DISTRO=%s\n' "$ROS_DISTRO"
     uname -a
     python3 --version
+    cat /opt/ros2-test-schemas/SHA256SUMS
     dpkg-query -W -f='${Package}=${Version}\n'
     if [[ -f "/opt/ros/${ROS_DISTRO}/ci-overlay.repos" ]]; then
         cat "/opt/ros/${ROS_DISTRO}/ci-overlay.repos"
     fi
 } > /ws/ros-environment.txt
 
+echo '=== Offline XML schema controls ==='
+python3 tests/check_offline_xml.py
+
 echo '=== Repository unit tests ==='
-python3 -m pytest tests/ -v --tb=short
+python3 -m pytest tests/ -ra --tb=short --durations=15 -o faulthandler_timeout=45
 
 echo '=== Generate and compile all four package types ==='
 mkdir -p "$WS/src"

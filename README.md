@@ -179,7 +179,14 @@ are separate. Build and runtime checks additionally require the target ROS stack
 
 ## What is included
 
-The decision router in [SKILL.md](SKILL.md) selects among 25 focused references.
+The selected `SKILL.md` contains a short operating contract and task router.
+Detailed tables and the 22 recurring pitfalls are retained in
+[`references/engineering-principles.md`](references/engineering-principles.md),
+loaded only when relevant. The [context budget](docs/CONTEXT_BUDGET.md) separates
+byte/line limits from measured, named-tokenizer counts.
+
+The decision router in [SKILL.md](SKILL.md) selects among 25 task-specific
+references plus cross-cutting engineering principles.
 Metadata is advertised before activation; the selected body and needed references
 supply the workflow. See [Skill contract](docs/SKILL_CONTRACT.md) for scope,
 permission boundaries, protocol behavior, and context-budget limitations.
@@ -197,6 +204,7 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `install_skill.py` | Stage and validate knowledge-only installations | No settings changes or hook registration |
 | `eval_runner.py` | Check fixtures or lexically score supplied text | Does not invoke a model or prove semantics |
 | `verify_eval_capture.py` | Require complete paired captures with hashes | Integrity, not authenticity or quality |
+| `measure_context.py` | Count the selected body with named tokenizers | Excludes client wrappers and on-demand references |
 
 ## Verification levels
 
@@ -241,6 +249,10 @@ without external networking or hardware in the built container. See
 None of these jobs proves actuator safety, timing guarantees, or field behavior.
 
 ## Evaluation scope
+
+Capture schema 2 retains timeouts, failed runs, empty answers, and missed skill
+activation instead of discarding unfavorable attempts. Capture integrity is not
+answer correctness; see [the capture contract](docs/EVIDENCE_CAPTURE.md).
 
 The default `eval_runner.py` checks whether expected-answer fixtures cover their
 declared criteria. It is not a model benchmark. Lexical coverage is not semantic

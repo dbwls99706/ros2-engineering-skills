@@ -32,6 +32,10 @@ def normalize_payload(payload, event):
         raise ValueError('hook input must be an object')
     if payload.get('hook_event_name') != event:
         raise ValueError('hook_event_name does not match the configured event')
+    if 'cwd' in payload and (not isinstance(payload['cwd'], str) or not payload['cwd'].strip()):
+        raise ValueError('cwd must be a nonempty string')
+    if event == 'Stop' and 'stop_hook_active' in payload and type(payload['stop_hook_active']) is not bool:
+        raise ValueError('stop_hook_active must be a Boolean')
     if event == 'PreToolUse':
         name, tool = payload.get('tool_name'), payload.get('tool_input')
         if not isinstance(name, str) or not isinstance(tool, dict):
@@ -129,16 +133,38 @@ def run_hook(event, payload):
     }}, '', 0
 
 
+def read_payload(stream):
+    """Bound real stdin in bytes; reject ambiguous or nonstandard JSON."""
+    binary = getattr(stream, 'buffer', None)
+    if binary is not None:
+        raw = binary.read(MAX_INPUT + 1)
+    else:
+        # String-only streams are useful to embedders; still enforce UTF-8 bytes.
+        raw = stream.read(MAX_INPUT + 1).encode('utf-8')
+    if len(raw) > MAX_INPUT:
+        raise ValueError('hook input exceeds 1 MiB')
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate JSON key: ' + key)
+            result[key] = value
+        return result
+
+    def constant(value):
+        raise ValueError('nonstandard JSON value: ' + value)
+
+    return json.loads(raw.decode('utf-8'), object_pairs_hook=unique, parse_constant=constant)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('event', choices=tuple(SCRIPTS))
     args = parser.parse_args(argv)
     try:
-        raw = sys.stdin.read(MAX_INPUT + 1)
-        if len(raw) > MAX_INPUT:
-            raise ValueError('hook input exceeds 1 MiB')
-        payload = json.loads(raw)
-    except (OSError, ValueError) as exc:
+        payload = read_payload(sys.stdin)
+    except (OSError, ValueError, RecursionError) as exc:
         print(json.dumps(notice('skipped: invalid input (' + str(exc) + ').')))
         return 0
     output, error, status = run_hook(args.event, payload)

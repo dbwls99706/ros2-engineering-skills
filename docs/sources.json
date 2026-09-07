@@ -3,7 +3,7 @@
   "scope": "Only the claims in the named files; not a full audit of all ROS references.",
   "sources": [
     {"id":"agent-skills","url":"https://agentskills.io/specification","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/SKILL_CONTRACT.md","scripts/validate_skill.py"]},
-    {"id":"skill-practices","url":"https://agentskills.io/skill-creation/best-practices","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/EVIDENCE_CAPTURE.md"]},
+    {"id":"skill-practices","url":"https://agentskills.io/skill-creation/best-practices","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/EVIDENCE_CAPTURE.md","SKILL.md","docs/CONTEXT_BUDGET.md"]},
     {"id":"trigger-evaluation","url":"https://agentskills.io/skill-creation/optimizing-descriptions","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/EVIDENCE_CAPTURE.md"]},
     {"id":"claude-skills","url":"https://code.claude.com/docs/en/skills","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
     {"id":"claude-hooks","url":"https://code.claude.com/docs/en/hooks","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/SKILL_CONTRACT.md","scripts/claude_hook.py"]},

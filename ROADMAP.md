@@ -5,6 +5,9 @@ Prioritize measured usefulness and correctness over additional prose.
 ## Implemented verification infrastructure
 
 - Portable metadata, link, packaging, and source-review-date checks.
+- Short selected body, preserved detailed references, direct-route regressions,
+  and a named-reference-tokenizer measurement gate.
+- Versioned capture records that retain unsuccessful and unactivated attempts.
 - Knowledge-only staged installation with client-specific discovery paths.
 - Claude protocol adapter, notebook normalization, bounded calls, and advisory Stop.
 - Positive/negative/explicit trigger cases and preregistered paired quality suite.
@@ -18,8 +21,8 @@ Prioritize measured usefulness and correctness over additional prose.
   and Gemini versions, including negative cases and remote execution environments.
 - Complete immutable skill-on/off captures, repeated trials, semantic grading,
   failures, latency, and cost rather than fixture-derived improvement claims.
-- Context-cost measurement with each target tokenizer and a smaller selected
-  body that retains factual coverage and demonstrably useful routing.
+- Actual-provider context-cost and task-trace measurements beyond the named
+  reference tokenizer gate; verify that the smaller body improves routing.
 - Distribution-sensitive audits backed by installed package versions and tests.
 - More controlled workspaces for callback groups, lifecycle, launch, and provenance.
 

@@ -22,11 +22,19 @@ python3 scripts/validate_skill.py --root /path/to/ros2-engineering-skills --inst
 ```
 
 Metadata is advertised before activation; the complete selected body is loaded
-on use. Referenced files are loaded when needed. The 500-line repository gate is
-not a token count. The official recommendation is fewer than 5000 body tokens.
-The validator reports bytes and warns on a large body rather than pretending a
-byte heuristic measures the target model's tokenizer. Further compression must
-preserve factual regression coverage and be judged against actual task traces.
+on use. The root now keeps the operating contract, task router, high-impact
+checks, and the unchanged verification ladder. Detailed principles, distribution
+tables, and all 22 pitfall entries live in `references/engineering-principles.md`.
+Every reference remains directly reachable from the root. Existing factuality
+regressions follow the detailed content; separate tests protect the short body.
+
+The generic 500-line format check is not a token count. This repository also
+enforces a 12,000-byte / fewer-than-220-line selected-body budget and measures
+`o200k_base` and `cl100k_base` with `scripts/measure_context.py`. Each reference
+encoding must stay at or below 5,000 body tokens. Missing tokenizer/data is a
+nonzero result, not a byte approximation. These named reference counts do not
+claim to represent every provider's tokenizer, host wrappers, or runtime-loaded
+references. See [context measurement](CONTEXT_BUDGET.md).
 
 ## Operating behavior
 
@@ -51,7 +59,9 @@ and an independent stop path. Requesting a zero command is not measured stopping
 ## Claude protocol adapter
 
 `hooks/hooks.json` invokes `scripts/claude_hook.py` with an explicit event name.
-The adapter validates the JSON envelope, bounds input and feedback, and invokes
+The adapter validates the JSON envelope, bounds UTF-8 input bytes and feedback,
+rejects duplicate keys, nonstandard JSON numbers, malformed working directories,
+and non-Boolean Stop flags, and invokes
 only fixed bundled validators with a timeout. It neither executes the inspected
 shell command nor grants permission with `permissionDecision: allow`.
 

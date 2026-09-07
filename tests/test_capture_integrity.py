@@ -56,7 +56,7 @@ def test_complete_pair_is_integrity_only(bundle):
 
 
 @pytest.mark.parametrize('field,value', [('runs', []), ('runs', None), ('schema_version', True),
-                                         ('schema_version', 2), ('skill_revision', 'main'),
+                                         ('schema_version', 3), ('skill_revision', 'main'),
                                          ('suite_sha256', '0' * 64), ('client', ''),
                                          ('model', None), ('environment', {}),
                                          ('generation_parameters', [])])
@@ -163,3 +163,117 @@ def test_missing_capture_is_nonzero(bundle, capsys):
 def test_cli_valid_capture(bundle, capsys):
     assert capture.main([str(bundle[0]), '--suite', str(bundle[1])]) == 0
     assert json.loads(capsys.readouterr().out)['pairs_checked'] == 1
+
+
+@pytest.fixture
+def v2_bundle(bundle):
+    bundle[2]['schema_version'] = 2
+    for run in bundle[2]['runs']:
+        run['execution_status'] = 'completed'
+        run['duration_seconds'] = 1.0
+    return bundle
+
+
+def test_v2_on_without_activation_is_an_outcome_not_discarded_data(v2_bundle):
+    v2_bundle[2]['runs'][0]['skill_loaded'] = False
+    report = check(v2_bundle)
+    assert report['status'] == 'integrity_valid'
+    assert report['pairs_checked'] == 1
+    assert report['execution_outcomes'] == {'completed': 2, 'failed': 0, 'timed_out': 0}
+    assert 'score' not in report
+
+
+@pytest.mark.parametrize('status', ['failed', 'timed_out'])
+@pytest.mark.parametrize('loaded', [False, True, None])
+def test_v2_unsuccessful_attempt_can_have_no_output(v2_bundle, status, loaded):
+    run = v2_bundle[2]['runs'][0]
+    run.update(execution_status=status, error='Synthetic failure record', output=None, skill_loaded=loaded)
+    report = check(v2_bundle)
+    assert report['status'] == 'integrity_valid'
+    assert report['pairs_checked'] == 1
+    assert report['execution_outcomes'][status] == 1
+    assert report['unknown_loading_observations'] == int(loaded is None)
+
+
+def test_v2_actual_empty_response_keeps_its_own_hashed_artifact(v2_bundle):
+    run = v2_bundle[2]['runs'][0]
+    output = v2_bundle[0].parent / run['output']['path']
+    output.write_bytes(b'')
+    run['output']['sha256'] = capture.digest(output)
+    assert check(v2_bundle)['status'] == 'integrity_valid'
+
+
+def test_v2_missing_completed_output_is_not_an_empty_response(v2_bundle):
+    v2_bundle[2]['runs'][0]['output'] = None
+    assert check(v2_bundle)['status'] == 'invalid'
+
+
+def test_v2_unknown_loading_is_not_inferred_from_condition(v2_bundle):
+    v2_bundle[2]['runs'][0]['skill_loaded'] = None
+    report = check(v2_bundle)
+    assert report['status'] == 'integrity_valid'
+    assert report['unknown_loading_observations'] == 1
+
+
+def test_v2_control_contamination_still_fails(v2_bundle):
+    v2_bundle[2]['runs'][1]['skill_loaded'] = True
+    assert 'Control run' in check(v2_bundle)['errors'][0]
+
+
+@pytest.mark.parametrize('status', [None, 'skipped', 'success', [], 1])
+def test_v2_unknown_execution_status_fails(v2_bundle, status):
+    v2_bundle[2]['runs'][0]['execution_status'] = status
+    assert check(v2_bundle)['status'] == 'invalid'
+
+
+@pytest.mark.parametrize('field', ['output', 'skill_loaded'])
+def test_v2_missing_observation_field_is_not_assumed_null(v2_bundle, field):
+    v2_bundle[2]['runs'][0].pop(field)
+    assert check(v2_bundle)['status'] == 'invalid'
+
+
+@pytest.mark.parametrize('bad', [True, -1, float('nan'), float('inf'), '1', None])
+def test_v2_invalid_duration_is_not_measurement(v2_bundle, bad):
+    v2_bundle[2]['runs'][0]['duration_seconds'] = bad
+    assert check(v2_bundle)['status'] == 'invalid'
+
+
+def test_v2_failure_needs_an_error_and_a_nonempty_trace(v2_bundle):
+    run = v2_bundle[2]['runs'][0]
+    run.update(execution_status='failed', output=None)
+    assert check(v2_bundle)['status'] == 'invalid'
+    run['error'] = 'Synthetic failure'
+    trace = v2_bundle[0].parent / run['trace']['path']
+    trace.write_bytes(b'')
+    run['trace']['sha256'] = capture.digest(trace)
+    assert check(v2_bundle)['status'] == 'invalid'
+
+
+def test_v2_partial_pair_still_fails_even_when_the_only_attempt_failed(v2_bundle):
+    run = v2_bundle[2]['runs'].pop()
+    assert run['condition'] == 'off'
+    v2_bundle[2]['runs'][0].update(execution_status='failed', error='Synthetic failure', output=None)
+    assert 'Missing paired runs' in check(v2_bundle)['errors'][0]
+
+
+def test_v2_failed_attempts_cannot_reuse_trace(v2_bundle):
+    first, second = v2_bundle[2]['runs']
+    for run in (first, second):
+        run.update(execution_status='failed', error='Synthetic failure', output=None)
+    second['trace'] = first['trace']
+    assert 'own output and trace' in check(v2_bundle)['errors'][0]
+
+
+def test_v1_cannot_hide_a_declared_execution_failure(bundle):
+    bundle[2]['runs'][0]['execution_status'] = 'failed'
+    assert 'use schema 2' in check(bundle)['errors'][0]
+
+
+def test_large_integer_duration_does_not_crash(v2_bundle):
+    v2_bundle[2]['runs'][0]['duration_seconds'] = 10 ** 400
+    assert check(v2_bundle)['status'] == 'integrity_valid'
+
+
+def test_deeply_nested_manifest_returns_invalid(bundle):
+    bundle[0].write_text('{"data":' + '[' * 2000 + '0' + ']' * 2000 + '}')
+    assert capture.validate(bundle[0], bundle[1], now=NOW)['status'] == 'invalid'

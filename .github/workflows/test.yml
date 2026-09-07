@@ -72,6 +72,7 @@ jobs:
 
   unit-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -85,12 +86,15 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --tb=short \
-            --cov=scripts --cov-report=term-missing --cov-report=xml \
-            --cov-fail-under=90
+          set -o pipefail
+          timeout --signal=TERM --kill-after=10s 8m \
+            python -m pytest tests/ -ra --tb=short --durations=15 \
+              -o faulthandler_timeout=60 --junitxml=pytest-results.xml \
+              --cov=scripts --cov-report=term-missing --cov-report=xml \
+              --cov-fail-under=90 2>&1 | tee pytest-output.log
       - name: Enforce individual validator coverage
         run: |
-          for module in skill_validate_hook skill_stop_hook claude_hook validate_skill install_skill verify_eval_capture; do
+          for module in skill_validate_hook skill_stop_hook claude_hook validate_skill install_skill verify_eval_capture measure_context; do
             python -m coverage report --include="*/${module}.py" --fail-under=90
           done
       - name: Upload coverage
@@ -99,6 +103,23 @@ jobs:
         with:
           name: coverage-report
           path: coverage.xml
+
+      - name: Record test environment
+        if: always()
+        run: |
+          { python --version; python -m pip freeze; git rev-parse HEAD; } > test-environment.txt
+      - name: Retain unit test and timeout diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: unit-evidence-${{ matrix.python-version }}
+          path: |
+            pytest-output.log
+            pytest-results.xml
+            test-environment.txt
+            coverage.xml
+          if-no-files-found: error
+          retention-days: 14
 
   windows-installer:
     runs-on: windows-latest
@@ -174,6 +195,7 @@ jobs:
 
   lint-scripts:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -215,6 +237,21 @@ jobs:
           python scripts/validate_skill.py --root "$target" --installed --portable
       - name: Run eval fixture smoke check
         run: python scripts/eval_runner.py
+      - name: Install reference tokenizers
+        run: python -m pip install 'tiktoken>=0.12,<1'
+      - name: Enforce measured selected-body token budgets
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=5s 60s \
+            python scripts/measure_context.py | tee context-budget.json
+      - name: Retain named tokenizer measurements
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: context-budget
+          path: context-budget.json
+          if-no-files-found: warn
+          retention-days: 14
 
   ci-gate:
     name: Required test gates

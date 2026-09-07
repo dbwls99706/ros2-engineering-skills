@@ -34,7 +34,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # version so the whole installed set is mutually consistent.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pytest python3-pip \
-       git ca-certificates build-essential cmake curl \
+       git ca-certificates build-essential cmake curl libxml2-utils \
        python3-vcstool python3-yaml \
        ros-${ROS_DISTRO}-hardware-interface \
        ros-${ROS_DISTRO}-ros2-control \
@@ -47,6 +47,26 @@ RUN apt-get update \
        fi \
     && PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --no-cache-dir 'hypothesis>=6.100,<7' \
     && rm -rf /var/lib/apt/lists/*
+
+# Generated package.xml files reference a public schema. Runtime has no network:
+# retain the original manifests and resolve their schema via a local XML catalog.
+# The referenced common schema is needed too. Pins and hashes are independent of
+# a moving download.ros.org endpoint; a missing or changed schema fails the build.
+COPY tests/schema/catalog.xml /opt/ros2-test-schemas/catalog.xml
+ENV XML_CATALOG_FILES=/opt/ros2-test-schemas/catalog.xml
+RUN set -e; \
+    for file in package_format3.xsd package_common.xsd; do \
+      curl --fail --location --proto '=https' --proto-redir '=https' \
+        --max-time 60 --retry 2 \
+        "https://raw.githubusercontent.com/ros-infrastructure/rep/11ca24a41f31480dfb9562ba99f2a5b93d3ebda5/xsd/$file" \
+        -o "/opt/ros2-test-schemas/$file"; \
+    done; \
+    cd /opt/ros2-test-schemas; \
+    printf '%s\n' \
+      'f096a197ed6d7878984bb2501a55f7f1bd4895d254399fb7857e154bfb644f41  package_format3.xsd' \
+      '941ea8645344f3c4b7b9d7e68799898309d65a18225fa9cbef4169d95d1a3211  package_common.xsd' \
+      > SHA256SUMS; \
+    sha256sum --check SHA256SUMS
 
 # Replace broken rolling binary CMake configs by source-overlaying their
 # upstream source trees on top of /opt/ros/rolling.

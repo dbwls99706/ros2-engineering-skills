@@ -4,6 +4,21 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Resolve generated package manifest schemas through a pinned, hash-checked local
+  XML catalog so network-isolated ROS tests retain real xmllint validation.
+  Require positive and negative schema controls instead of disabling the linter.
+
+- Reduce eagerly selected instructions while retaining detailed principles and all
+  pitfall entries; preserve factual regressions and test every direct route.
+- Add explicit selected-body byte/line limits and named BPE-tokenizer measurements
+  that fail visibly when tokenizer data is unavailable or the budget is exceeded.
+- Add capture schema 2 to retain missed activations, failed/timed-out attempts,
+  absent responses, and actual empty outputs without inventing benchmark results.
+- Enforce hook input limits in UTF-8 bytes and reject ambiguous JSON, invalid
+  working-directory types, and non-Boolean Stop continuation flags.
+- Bound unit-test execution and retain environment, JUnit, coverage, and timeout
+  diagnostics; use concise parameter IDs for oversized-input regressions.
+
 - Separate dependency-image builds from uncached ROS test execution; use isolated
   BuildKit and bounded, named runtime containers with retained diagnostics.
 - Replace daemon-based smoke discovery with unique graph names and owned process

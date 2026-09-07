@@ -76,3 +76,27 @@ provide the corresponding execution evidence. Hardware behavior remains untested
 Sources: [Docker build drivers](https://docs.docker.com/build/builders/drivers/),
 [Docker init process](https://docs.docker.com/reference/cli/docker/container/run/#init),
 and [GNU timeout](https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html).
+
+## Offline XML schema validation
+
+The network-isolated runtime still runs `ament_xmllint`. Generated `package.xml`
+files reference `http://download.ros.org/schema/package_format3.xsd`. A pristine
+container without this schema cannot validate those files offline; a successful
+image build does not satisfy this runtime dependency.
+
+The image now downloads `package_format3.xsd` **and** `package_common.xsd` from
+ROS REP commit `11ca24a41f31480dfb9562ba99f2a5b93d3ebda5`, checks their SHA-256
+hashes, and installs a catalog through `XML_CATALOG_FILES`. The catalog maps the
+original HTTP/HTTPS schema identifiers to the local files. The generator and
+its emitted manifests are unchanged. No schema validation or runtime network
+isolation is disabled.
+
+Before the suite, `tests/check_offline_xml.py` requires both `xmllint --nonet`
+and `ament_xmllint` to accept a valid control and reject a manifest missing its
+required license. A missing tool, failed positive control, accepted negative
+control, or timed-out command fails. Newer ament versions may report that their
+initial URL download failed before falling back to libxml's catalog; the actual
+validation exit status, not that warning alone, determines the result.
+
+Sources: [REP schema](https://github.com/ros-infrastructure/rep/blob/11ca24a41f31480dfb9562ba99f2a5b93d3ebda5/xsd/package_format3.xsd)
+and [ament XML validation](https://github.com/ament/ament_lint/blob/rolling/ament_xmllint/ament_xmllint/main.py).

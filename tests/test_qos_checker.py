@@ -249,13 +249,13 @@ class TestPresets:
         assert sub.lifespan_ms == 200
 
     def test_command_preset_matches_skill_md_table(self):
-        """Cross-document regression: parse SKILL.md's QoS defaults table and
+        """Cross-document regression: parse engineering-principles.md's QoS defaults table and
         confirm the `command` preset values are still the same numbers as the
         "Command velocity" row. If a contributor edits one source without the
         other, this fails and points them at the drift.
         """
         skill_md_path = os.path.join(
-            os.path.dirname(__file__), '..', 'SKILL.md')
+            os.path.dirname(__file__), '..', 'references/engineering-principles.md')
         with open(skill_md_path, 'r', encoding='utf-8') as fh:
             skill = fh.read()
         # Find the "Command velocity" row of the QoS defaults table.
@@ -263,7 +263,7 @@ class TestPresets:
             r'\|\s*Command velocity\s*\|([^\n]+)\|',
             skill)
         assert row_match is not None, (
-            'SKILL.md QoS defaults table is missing the Command velocity row'
+            'engineering-principles.md QoS defaults table is missing the Command velocity row'
         )
         cells = [c.strip() for c in row_match.group(1).split('|')]
         # Table columns: Reliability | Durability | History | Depth | Deadline | Lifespan
@@ -286,11 +286,11 @@ class TestPresets:
         pub = PRESETS["command"]["pub"]
         assert pub.deadline_ms == skill_deadline, (
             f'qos_checker.py "command" preset deadline_ms={pub.deadline_ms} '
-            f'drifted from SKILL.md table value {skill_deadline}'
+            f'drifted from engineering-principles.md table value {skill_deadline}'
         )
         assert pub.lifespan_ms == skill_lifespan, (
             f'qos_checker.py "command" preset lifespan_ms={pub.lifespan_ms} '
-            f'drifted from SKILL.md table value {skill_lifespan}'
+            f'drifted from engineering-principles.md table value {skill_lifespan}'
         )
 
     def test_parameter_events_depth(self):

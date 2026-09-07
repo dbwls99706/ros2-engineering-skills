@@ -33,6 +33,9 @@ rehash the published copy, and retain the original securely for verification.
 
 ## Manifest format
 
+New experiments should use schema 2 below. Schema 1 remains readable for existing
+complete captures; do not use it for a trial that failed or did not activate.
+
 Use one directory per experiment, with `capture.json` and the referenced output
 and trace files. All hashes below are lowercase SHA-256 of the exact bytes.
 Commit revisions are full 40-character SHAs. This abbreviated shape is a schema
@@ -40,7 +43,7 @@ illustration, not an executable or completed experiment:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "skill_revision": "<full commit SHA>",
   "suite_sha256": "<benchmark_suite.json SHA-256>",
   "client": "<actual client>",
@@ -61,6 +64,7 @@ illustration, not an executable or completed experiment:
       "condition": "on",
       "session_id": "<unique fresh session>",
       "skill_loaded": true,
+      "execution_status": "completed",
       "captured_at": "2026-09-07T10:00:00+09:00",
       "prompt_sha256": "<exact prompt hash>",
       "output": {"path": "qos-on-1.txt", "sha256": "<hash>"},
@@ -82,6 +86,45 @@ and escaping paths. It does not invoke a model, validate transcript authenticity
 verify that `skill_loaded` is true in the real client, or grade an answer.
 Hashes protect integrity relative to a declared record; they do not establish
 who produced that record. A reviewer must inspect the traces.
+
+## Schema 2: preserve failed and unactivated attempts
+
+`condition` describes skill availability, not a guarantee that the model used
+it. Schema 1 required `skill_loaded: true` in the on condition and a nonempty
+answer, so it could not honestly represent a missed activation or a timeout
+without output. Schema 2 separates the assigned condition from those outcomes.
+Keep the same suite, hashes, isolated sessions, timestamps, and complete pair
+inventory. Set `schema_version` to `2` and add these fields to **each** run:
+
+```json
+{
+  "execution_status": "timed_out",
+  "skill_loaded": null,
+  "error": "The attempt exceeded its recorded execution deadline.",
+  "duration_seconds": 120.0,
+  "output": null
+}
+```
+
+This is a field-shape example, not an observed experiment. A real run still
+requires all identity fields and its own nonempty hashed trace. Do not invent an
+error, duration, session, or transcript to fill the shape.
+
+`execution_status` is `completed`, `failed`, or `timed_out`. Failures/timeouts
+require an error explanation and may record `output: null` when no response was
+produced. A completed attempt requires an output artifact; an actual empty answer
+is a distinct, possibly zero-byte file with its real SHA-256, not an absent file.
+`skill_loaded` is `true`, `false`, or explicit `null` when observation was
+unavailable. An on run with false/unknown loading stays in the denominator.
+An off run with true loading is contamination and remains invalid. Optional
+`duration_seconds` must be finite and nonnegative; omitting it is different from
+reporting an invented zero cost or duration.
+
+The verifier reports `execution_outcomes` and `unknown_loading_observations` only
+after the complete inventory passes integrity checks. `integrity_valid` never
+means that all attempts succeeded, all loading was observed, or answer quality
+improved. Preserve failures in semantic grading and report unknown activation
+separately; hashes still do not authenticate a client or a model.
 
 ## Report the experiment, not a marketing score
 

@@ -126,7 +126,8 @@ def test_feedback_bounded():
     assert len(hook.notice('x' * 8000)['systemMessage']) <= hook.MAX_FEEDBACK + 20
 
 
-@pytest.mark.parametrize('raw', ['', '[]', '{', 'x' * (hook.MAX_INPUT + 1)])
+@pytest.mark.parametrize('raw', ['', '[]', '{', 'x' * (hook.MAX_INPUT + 1)],
+                         ids=['empty', 'array', 'malformed-json', 'oversized'])
 def test_cli_invalid_payload_is_advisory(monkeypatch, capsys, raw):
     monkeypatch.setattr(hook.sys, 'stdin', io.StringIO(raw))
     assert hook.main(['PreToolUse']) == 0
@@ -146,3 +147,64 @@ def test_cli_clean_json(monkeypatch, capsys):
     monkeypatch.setattr(hook, 'run_hook', Mock(return_value=({}, '', 0)))
     assert hook.main(['Stop']) == 0
     assert json.loads(capsys.readouterr().out) == {}
+
+
+@pytest.mark.parametrize('raw', [
+    '{"hook_event_name":"Stop","hook_event_name":"PreToolUse"}',
+    '{"tool_input":{"command":"safe","command":"other"}}',
+    '{"value":NaN}', '{"value":Infinity}', '{"value":-Infinity}',
+])
+def test_ambiguous_and_nonstandard_json_is_advisory(monkeypatch, capsys, raw):
+    monkeypatch.setattr(hook.sys, 'stdin', io.StringIO(raw))
+    run = Mock(side_effect=AssertionError('invalid input must not reach a validator'))
+    monkeypatch.setattr(hook.subprocess, 'run', run)
+    assert hook.main(['PreToolUse']) == 0
+    assert 'skipped' in json.loads(capsys.readouterr().out)['systemMessage']
+    run.assert_not_called()
+
+
+def test_multibyte_input_limit_is_in_bytes_not_characters(monkeypatch):
+    monkeypatch.setattr(hook, 'MAX_INPUT', 40)
+    raw = json.dumps({'text': '로봇' * 8}, ensure_ascii=False)
+    assert len(raw) < 40 < len(raw.encode('utf-8'))
+    with pytest.raises(ValueError, match='exceeds'):
+        hook.read_payload(io.StringIO(raw))
+
+
+def test_real_binary_stream_is_bounded_and_decoded(monkeypatch):
+    monkeypatch.setattr(hook, 'MAX_INPUT', 40)
+    data = json.dumps({'text': '로봇'}, ensure_ascii=False).encode('utf-8')
+    stream = io.TextIOWrapper(io.BytesIO(data), encoding='utf-8')
+    assert hook.read_payload(stream) == {'text': '로봇'}
+    stream = io.TextIOWrapper(io.BytesIO(b'x' * 100), encoding='utf-8')
+    with pytest.raises(ValueError, match='exceeds'):
+        hook.read_payload(stream)
+    assert stream.buffer.tell() == 41
+
+
+def test_invalid_utf8_stays_advisory(monkeypatch, capsys):
+    stream = io.TextIOWrapper(io.BytesIO(b'\xff'), encoding='utf-8')
+    monkeypatch.setattr(hook.sys, 'stdin', stream)
+    assert hook.main(['Stop']) == 0
+    assert 'skipped' in json.loads(capsys.readouterr().out)['systemMessage']
+
+
+@pytest.mark.parametrize('bad', ['', [], None, 1])
+def test_malformed_cwd_does_not_start_a_scan(monkeypatch, bad):
+    run = Mock(side_effect=AssertionError('invalid cwd must not reach a validator'))
+    monkeypatch.setattr(hook.subprocess, 'run', run)
+    report, error, code = hook.run_hook('Stop', payload('Stop', cwd=bad))
+    assert code == 0 and not error and 'skipped' in report['systemMessage']
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize('bad', ['true', 0, 1, None, []])
+def test_stop_flag_cannot_be_coerced_to_boolean(bad):
+    with pytest.raises(ValueError, match='Boolean'):
+        hook.normalize_payload(payload('Stop', stop_hook_active=bad), 'Stop')
+
+
+def test_excessively_nested_json_stays_advisory(monkeypatch, capsys):
+    monkeypatch.setattr(hook.sys, 'stdin', io.StringIO('[' * 2000 + '0' + ']' * 2000))
+    assert hook.main(['Stop']) == 0
+    assert 'skipped' in json.loads(capsys.readouterr().out)['systemMessage']
