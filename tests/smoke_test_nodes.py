@@ -81,10 +81,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     import rclpy
     from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
 
     context = Context()
-    observer = None
+    observer = executor = None
     handlers = {}
     try:
         rclpy.init(context=context)
@@ -96,9 +97,13 @@ def main(argv=None):
         for sig in (signal.SIGINT, signal.SIGTERM):
             handlers[sig] = signal.signal(sig, interrupted)
         observer = Node('skill_smoke_observer_' + uuid.uuid4().hex, context=context)
+        # rclpy.spin_once without an executor uses the uninitialized default
+        # context, not this observer's private context. Keep all three together.
+        executor = SingleThreadedExecutor(context=context)
+        executor.add_node(observer)
 
         def discover():
-            rclpy.spin_once(observer, timeout_sec=0.1)
+            executor.spin_once(timeout_sec=0.1)
             return set(observer.get_node_names())
 
         for package in ('test_cpp_pkg', 'test_py_pkg'):
@@ -116,12 +121,20 @@ def main(argv=None):
         print('Smoke test failed: ' + str(exc), file=sys.stderr)
         return 1
     finally:
-        if observer is not None:
-            observer.destroy_node()
-        if context.ok():
-            context.shutdown()
-        for sig, handler in handlers.items():
-            signal.signal(sig, handler)
+        try:
+            if executor is not None and not executor.shutdown(timeout_sec=2.0):
+                raise RuntimeError('Observer executor did not shut down before the deadline')
+        finally:
+            try:
+                if observer is not None:
+                    observer.destroy_node()
+            finally:
+                try:
+                    if context.ok():
+                        context.shutdown()
+                finally:
+                    for sig, handler in handlers.items():
+                        signal.signal(sig, handler)
 
 
 if __name__ == '__main__':

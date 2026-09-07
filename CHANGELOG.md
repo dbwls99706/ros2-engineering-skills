@@ -4,6 +4,9 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Keep the ROS smoke observer and its executor on the same initialized context;
+  verify cleanup after initialization, discovery, and shutdown failures.
+
 - Resolve generated package manifest schemas through a pinned, hash-checked local
   XML catalog so network-isolated ROS tests retain real xmllint validation.
   Require positive and negative schema controls instead of disabling the linter.
