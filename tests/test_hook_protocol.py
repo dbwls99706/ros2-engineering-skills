@@ -43,14 +43,14 @@ def test_warning_reaches_model_context(monkeypatch):
 
 
 def test_block_is_stderr_only(monkeypatch):
-    monkeypatch.setattr(hook.subprocess, 'run', Mock(return_value=
-                        subprocess.CompletedProcess([], 2, 'ignored', 'refused')))
+    result = subprocess.CompletedProcess([], 2, 'ignored', 'refused')
+    monkeypatch.setattr(hook.subprocess, 'run', Mock(return_value=result))
     assert hook.run_hook('PreToolUse', payload()) == (None, 'refused', 2)
 
 
 def test_empty_block_reason(monkeypatch):
-    monkeypatch.setattr(hook.subprocess, 'run', Mock(return_value=
-                        subprocess.CompletedProcess([], 2, '', '')))
+    result = subprocess.CompletedProcess([], 2, '', '')
+    monkeypatch.setattr(hook.subprocess, 'run', Mock(return_value=result))
     assert hook.run_hook('PreToolUse', payload())[1] == 'Unsafe command refused.'
 
 
@@ -79,10 +79,10 @@ def test_internal_failure_is_skipped(monkeypatch, exc):
 
 
 @pytest.mark.parametrize('code,text', [(3, '{}'), (0, 'oops'), (0, '[]'),
-                                      (0, '{}'), (1, '{"status":"pass","issues":[],"checks_skipped":[]}')])
+                                       (0, '{}'), (1, '{"status":"pass","issues":[],"checks_skipped":[]}')])
 def test_bad_validator_output_is_never_a_pass(monkeypatch, code, text):
-    monkeypatch.setattr(hook.subprocess, 'run', Mock(return_value=
-                        subprocess.CompletedProcess([], code, text, '')))
+    result = subprocess.CompletedProcess([], code, text, '')
+    monkeypatch.setattr(hook.subprocess, 'run', Mock(return_value=result))
     result, _, status = hook.run_hook('Stop', payload('Stop'))
     assert status == 0 and 'skipped' in result['systemMessage']
 
@@ -112,8 +112,8 @@ def test_multiedit_valid_strings_remain_intact():
 
 
 @pytest.mark.parametrize('report', [[], {}, {'status': 'pass', 'issues': {}, 'checks_skipped': []},
-                                   {'status': 'pass', 'issues': [None], 'checks_skipped': []},
-                                   {'status': 'fail', 'issues': [], 'checks_skipped': []}])
+                                    {'status': 'pass', 'issues': [None], 'checks_skipped': []},
+                                    {'status': 'fail', 'issues': [], 'checks_skipped': []}])
 def test_bad_reports_rejected(report):
     with pytest.raises(ValueError):
         hook.summarize(report)

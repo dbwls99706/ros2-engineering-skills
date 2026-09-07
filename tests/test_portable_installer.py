@@ -9,13 +9,14 @@ from unittest.mock import Mock
 import pytest
 
 from scripts import install_skill as installer
-from tests.test_skill_contract import bundle  # noqa: F401
+from tests.test_skill_contract import bundle as contract_bundle  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def source(bundle):
+def source(request):
+    bundle = request.getfixturevalue('contract_bundle')
     (bundle / 'README.md').write_text('# Test fixture\n')
     (bundle / 'requirements.txt').write_text('PyYAML>=6,<7\n')
     for folder in ('evals', 'examples'):
@@ -156,7 +157,7 @@ def test_cli_returns_install_report(monkeypatch, capsys, tmp_path):
 
 
 @pytest.mark.parametrize('exc', [ValueError('bad'), OSError('no access'),
-                                subprocess.TimeoutExpired('validator', 20)])
+                                 subprocess.TimeoutExpired('validator', 20)])
 def test_cli_reports_failure(monkeypatch, capsys, exc):
     monkeypatch.setattr(installer, 'install', Mock(side_effect=exc))
     assert installer.main(['--target', '/tmp/ros2-engineering-skills']) == 1

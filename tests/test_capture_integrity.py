@@ -56,23 +56,23 @@ def test_complete_pair_is_integrity_only(bundle):
 
 
 @pytest.mark.parametrize('field,value', [('runs', []), ('runs', None), ('schema_version', True),
-                                       ('schema_version', 2), ('skill_revision', 'main'),
-                                       ('suite_sha256', '0' * 64), ('client', ''),
-                                       ('model', None), ('environment', {}),
-                                       ('generation_parameters', [])])
+                                         ('schema_version', 2), ('skill_revision', 'main'),
+                                         ('suite_sha256', '0' * 64), ('client', ''),
+                                         ('model', None), ('environment', {}),
+                                         ('generation_parameters', [])])
 def test_bad_manifest_is_failure(bundle, field, value):
     bundle[2][field] = value
     assert check(bundle)['status'] == 'invalid'
 
 
 @pytest.mark.parametrize('field,value', [('case_id', []), ('case_id', 'unknown'),
-                                       ('trial', True), ('trial', 2), ('condition', []),
-                                       ('condition', 'baseline'), ('skill_loaded', False),
-                                       ('skill_loaded', 'true'), ('session_id', ''),
-                                       ('captured_at', '2026-10-01T00:00:00Z'),
-                                       ('captured_at', '2026-09-06'), ('captured_at', 'bad'),
-                                       ('prompt_sha256', '0' * 64), ('output', []),
-                                       ('trace', {'path': 'missing', 'sha256': '0' * 64})])
+                                         ('trial', True), ('trial', 2), ('condition', []),
+                                         ('condition', 'baseline'), ('skill_loaded', False),
+                                         ('skill_loaded', 'true'), ('session_id', ''),
+                                         ('captured_at', '2026-10-01T00:00:00Z'),
+                                         ('captured_at', '2026-09-06'), ('captured_at', 'bad'),
+                                         ('prompt_sha256', '0' * 64), ('output', []),
+                                         ('trace', {'path': 'missing', 'sha256': '0' * 64})])
 def test_bad_run_is_failure(bundle, field, value):
     bundle[2]['runs'][0][field] = value
     assert check(bundle)['status'] == 'invalid'
@@ -132,8 +132,8 @@ def test_blank_artifact_rejected(bundle):
 
 
 @pytest.mark.parametrize('key,value', [('trials', 0), ('trials', True), ('cases', []),
-                                     ('schema_version', 3), ('cases', [None]),
-                                     ('cases', [{'id': 'qos', 'criteria': []}])])
+                                       ('schema_version', 3), ('cases', [None]),
+                                       ('cases', [{'id': 'qos', 'criteria': []}])])
 def test_invalid_suite(bundle, key, value):
     bundle[3][key] = value
     save(bundle[1], bundle[3])

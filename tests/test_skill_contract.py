@@ -88,9 +88,9 @@ def test_bad_names(bundle, replacement):
 
 
 @pytest.mark.parametrize('field,value', [('description', '""'), ('description', '4'),
-                                       ('description', 'a' * 1025), ('compatibility', 'a' * 501),
-                                       ('compatibility', '[]'), ('allowed-tools', '[]'),
-                                       ('license', 'true'), ('hooks', '{}'), ('context', 'fork')])
+                                         ('description', 'a' * 1025), ('compatibility', 'a' * 501),
+                                         ('compatibility', '[]'), ('allowed-tools', '[]'),
+                                         ('license', 'true'), ('hooks', '{}'), ('context', 'fork')])
 def test_metadata_types_and_portability(bundle, field, value):
     path = bundle / 'SKILL.md'
     lines = [line for line in path.read_text().splitlines() if not line.startswith(field + ':')]
@@ -133,7 +133,7 @@ def test_installation_name_not_checkout_alias(bundle):
 
 
 @pytest.mark.parametrize('relative', ['../secret', '/etc/passwd', 'C:/secret', 'file:///tmp/a',
-                                    'references\\x', '%2e%2e/secret', 'missing.md', ''])
+                                      'references\\x', '%2e%2e/secret', 'missing.md', ''])
 def test_unsafe_reference(bundle, relative):
     with pytest.raises(ValueError):
         contract.bundled_file(bundle, relative)
@@ -153,7 +153,7 @@ def test_broken_router_link(bundle):
 
 
 @pytest.mark.parametrize('field,value', [('name', 'wrong'), ('version', '9.0.0'),
-                                       ('skills', './'), ('hooks', './hooks/hooks.json')])
+                                         ('skills', './'), ('hooks', './hooks/hooks.json')])
 def test_bad_plugin_contract(bundle, field, value):
     change(bundle, '.claude-plugin/plugin.json', lambda d: d.update({field: value}))
     assert contract.validate(bundle)['status'] == 'fail'
@@ -184,15 +184,15 @@ def test_duplicate_json_rejected(bundle):
 
 
 @pytest.mark.parametrize('yaml', ['[]', 'policy: {}', 'interface: {}',
-                                 'interface:\n  display_name: x\n  short_description: x\n  default_prompt: wrong'])
+                                  'interface:\n  display_name: x\n  short_description: x\n  default_prompt: wrong'])
 def test_bad_codex_metadata(bundle, yaml):
     (bundle / 'agents/openai.yaml').write_text(yaml)
     assert contract.validate(bundle)['status'] == 'fail'
 
 
 @pytest.mark.parametrize('field,value', [('review_after', '2026-09-06'),
-                                       ('reviewed_on', '2026-09-08'), ('reviewed_on', 'bad'),
-                                       ('id', ''), ('url', 'http://example.com'), ('covers', [])])
+                                         ('reviewed_on', '2026-09-08'), ('reviewed_on', 'bad'),
+                                         ('id', ''), ('url', 'http://example.com'), ('covers', [])])
 def test_bad_source_registry(bundle, field, value):
     change(bundle, 'docs/sources.json', lambda d: d['sources'][0].update({field: value}))
     assert contract.validate(bundle, sources=True, today=TODAY)['status'] == 'fail'
