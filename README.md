@@ -196,8 +196,9 @@ python3 scripts/skill_validate_hook.py --command 'ros2 topic list'
 SKILL_WORKSPACE=/path/to/ros2_ws python3 scripts/skill_stop_hook.py
 ```
 
-Python 3.10 or newer is required for the bundled validators. Build and runtime
-checks require the target ROS 2 environment.
+Python 3.10 or newer is required for the bundled validators. CI currently tests
+Python 3.10, 3.11, and 3.12. Build and runtime checks require the target ROS 2
+environment.
 
 ## What is included
 

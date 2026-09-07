@@ -9,6 +9,8 @@ All notable changes are documented here.
 - Qualify unsupported ROS 2 generalizations in the core guidance.
 - Replace the speculative README diagnosis with an evidence-first example.
 - Add contribution, security, conduct, and roadmap documents.
+- Make dependency vulnerability auditing a required CI gate.
+- Clarify validator Python coverage and refresh roadmap items.
 
 ## 1.3.0
 

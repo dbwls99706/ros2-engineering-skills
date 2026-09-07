@@ -9,7 +9,7 @@ The roadmap prioritizes evidence and usability over adding more prose.
 - Add an installation verifier for portable Agent Skills and Claude Code plugin
   layouts.
 - Audit claims that vary by ROS 2 distribution or package major version.
-- Add issue templates for factual errors, bugs, and feature proposals.
+- Raise validator-specific coverage for command and edit validation paths.
 
 ## Medium term
 

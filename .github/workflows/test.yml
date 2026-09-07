@@ -33,7 +33,6 @@ jobs:
       - name: mypy
         run: mypy scripts/ --ignore-missing-imports
       - name: pip-audit (current environment)
-        continue-on-error: true
         run: pip-audit --desc
 
   plugin-validation:
