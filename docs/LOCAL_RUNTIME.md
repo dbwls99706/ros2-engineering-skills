@@ -89,3 +89,13 @@ misclassified as newly published inactive samples. Reverting either example
 makes the same probe fail. Both corrected examples passed locally with Fast DDS
 and Cyclone DDS; stable ROS CI jobs also run the probe. The pure-Python extraction
 tests are not substitutes for this runtime check.
+
+The first cross-distribution run exposed a probe assumption, not an additional
+publisher defect: an input queued while inactive was processed after activation
+on newer executors. The never-activated negative control now uses a separate
+node and input channel; it cannot feed the later active phase. Active and
+subsequently deactivated phases still share a node to exercise the real
+transition, and output is classified by input phase rather than arrival time.
+Lifecycle gating in the example is checked when the callback executes; it does
+not promise that every sample sent before activation is discarded. Applications
+requiring fresh-only input need an explicit timestamp or generation policy.

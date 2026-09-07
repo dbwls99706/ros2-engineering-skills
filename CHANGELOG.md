@@ -4,6 +4,9 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Isolate the never-activated runtime control from later active inputs so queued
+  pre-activation samples are not mistaken for inactive publication.
+
 - Execute the documented lifecycle examples against real ROS: delegate C++
   publisher activation/deactivation to the base callbacks and unregister Python
   lifecycle publishers on cleanup, shutdown, and transition error recovery.
