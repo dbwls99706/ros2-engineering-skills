@@ -1,0 +1,33 @@
+# A transferable development environment; no task or model result is baked in.
+FROM ros:humble-ros-base-jammy
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential cmake git curl ca-certificates libxml2-utils \
+       python3-pip python3-colcon-common-extensions python3-yaml \
+       ros-humble-ament-lint-auto ros-humble-ament-lint-common \
+       ros-humble-ament-cmake-gtest ros-humble-example-interfaces \
+       ros-humble-hardware-interface ros-humble-ros2-control \
+       ros-humble-rmw-cyclonedds-cpp ros-humble-tf2-ros \
+    && python3 -m pip install --no-cache-dir -r /tmp/requirements-dev.txt \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
+COPY tests/schema/catalog.xml /opt/ros2-test-schemas/catalog.xml
+ENV XML_CATALOG_FILES=/opt/ros2-test-schemas/catalog.xml
+RUN set -e; \
+    for file in package_format3.xsd package_common.xsd; do \
+      curl --fail --location --proto '=https' --proto-redir '=https' \
+        --max-time 60 --retry 2 \
+        "https://raw.githubusercontent.com/ros-infrastructure/rep/11ca24a41f31480dfb9562ba99f2a5b93d3ebda5/xsd/$file" \
+        -o "/opt/ros2-test-schemas/$file"; \
+    done; \
+    cd /opt/ros2-test-schemas; \
+    printf '%s\n' \
+      'f096a197ed6d7878984bb2501a55f7f1bd4895d254399fb7857e154bfb644f41  package_format3.xsd' \
+      '941ea8645344f3c4b7b9d7e68799898309d65a18225fa9cbef4169d95d1a3211  package_common.xsd' \
+      > SHA256SUMS; sha256sum --check SHA256SUMS
+RUN mkdir -p /work /opt/runtime-provenance \
+    && dpkg-query -W > /opt/runtime-provenance/debian-packages.tsv \
+    && python3 -m pip freeze > /opt/runtime-provenance/python-packages.txt
+WORKDIR /work
