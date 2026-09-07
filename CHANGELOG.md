@@ -4,6 +4,14 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Separate dependency-image builds from uncached ROS test execution; use isolated
+  BuildKit and bounded, named runtime containers with retained diagnostics.
+- Replace daemon-based smoke discovery with unique graph names and owned process
+  groups; preserve all stable ROS gates and explicit Rolling runtime exclusions.
+- Require local ROS runners to execute tests, not merely build an image, and add
+  a CI summary gate that rejects failed, cancelled, skipped, or missing jobs.
+- Preserve recoverable installation backups even when both replacement and
+  rollback fail; serialize portable installers and report retained backups.
 - Align portable Agent Skills metadata with the public specification.
 - Add a standard Claude Code plugin manifest and hook location.
 - Qualify unsupported ROS 2 generalizations in the core guidance.

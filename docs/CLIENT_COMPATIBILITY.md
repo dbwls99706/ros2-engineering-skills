@@ -28,6 +28,12 @@ need `--force`; replacement is staged and validated before the old skill moves.
 `--target` names the complete final skill directory, not its parent. Nested
 symlinks and replacing arbitrary non-skill directories are deliberately refused.
 The legacy `install.sh` and `install.ps1` remain full-checkout copy/link tools.
+Portable installs are serialized with a sibling `.ros2-engineering-skills.install-lock`
+directory. After an interrupted process, remove that lock only after confirming
+no installer is still running. If replacement and rollback both fail, the error
+identifies a `.skill-backup-*/previous` directory containing the old installation;
+it is deliberately not automatically deleted. A `backup_retained` field on a
+successful result means old-backup cleanup failed, not that installation failed.
 
 ## Discovery and explicit invocation
 

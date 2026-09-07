@@ -36,7 +36,7 @@ Run the checks relevant to the change, and run the full Python gate before a
 pull request:
 
 ```bash
-flake8 scripts/ tests/
+flake8 scripts/ tests/ examples/
 mypy scripts/ --ignore-missing-imports
 python -m pytest tests/ -v --tb=short \
   --cov=scripts --cov-report=term-missing --cov-fail-under=90
@@ -44,7 +44,15 @@ python scripts/eval_runner.py
 ```
 
 For generated ROS 2 code, also build and test it in every distribution whose
-behavior the change claims to support.
+behavior the change claims to support:
+
+```bash
+bash tests/run_ros2_tests.sh humble jazzy kilted lyrical rolling
+```
+
+The runner requires Linux, Docker with Buildx, and GNU `timeout`. It performs both
+image creation and test execution, retains diagnostics at the printed path, and
+returns nonzero on build or runtime failure. See [ROS CI](docs/ROS_CI.md).
 
 ## Documentation accuracy
 

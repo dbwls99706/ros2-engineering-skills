@@ -220,7 +220,19 @@ builds, installer tests, Claude plugin structure/component discovery, and Docker
 jobs for Humble, Jazzy, Kilted, Lyrical, and Rolling. It adds individual validator
 coverage floors, portable Windows installation, protocol integration, source-date
 checks, preregistered-suite checks, and a controlled QoS mismatch/repair experiment.
-Dependency vulnerability auditing is blocking, not advisory.
+Dependency vulnerability auditing is blocking, not advisory. The `Required test
+gates` summary rejects any required job that did not succeed.
+
+ROS image construction and test execution are separate. Every run executes the
+suite in a fresh, network-isolated container; a cached image is not a test pass.
+Build/runtime logs, container state, and installed package versions are retained
+as workflow artifacts. The local command uses the same runner:
+
+```bash
+bash tests/run_ros2_tests.sh humble
+```
+
+See [ROS CI and failure diagnosis](docs/ROS_CI.md).
 
 Rolling retains its documented RMW runtime exclusions. A successful Rolling build
 is not a successful DDS runtime test. The stable-distribution QoS experiment runs

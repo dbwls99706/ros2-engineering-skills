@@ -6,6 +6,7 @@ For the full Claude plugin use the marketplace instructions in README.md.
 """
 
 import argparse
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import shutil
@@ -26,13 +27,8 @@ def destination(client, project=None, home=None):
     return base / CLIENT_DIRS[client] / 'skills' / NAME
 
 
-def install(source, target, force=False, dry_run=False):
-    source = Path(source).resolve()
-    target = Path(target).expanduser().absolute()
-    resolved = target.resolve()
-    if (target.name != NAME or resolved == source
-            or resolved.is_relative_to(source) or source.is_relative_to(resolved)):
-        raise ValueError('Target must be a separate skill directory named ' + NAME)
+def check_target(target, force):
+    """Rechecked under the installer lock, before changing an existing target."""
     if target.is_symlink():
         raise ValueError('Refusing to replace a symlink; remove it explicitly first')
     if target.exists():
@@ -40,6 +36,29 @@ def install(source, target, force=False, dry_run=False):
             raise ValueError('Target exists; use --force to replace a skill installation')
         if not target.is_dir() or not (target / 'SKILL.md').is_file():
             raise ValueError('Refusing to replace a target that is not a skill installation')
+
+
+@contextmanager
+def install_lock(parent):
+    lock = parent / ('.' + NAME + '.install-lock')
+    try:
+        lock.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise ValueError('Another installation or stale lock exists: ' + str(lock)) from exc
+    try:
+        yield
+    finally:
+        lock.rmdir()
+
+
+def install(source, target, force=False, dry_run=False):
+    source = Path(source).resolve()
+    target = Path(target).expanduser().absolute()
+    resolved = target.resolve()
+    if (target.name != NAME or resolved == source
+            or resolved.is_relative_to(source) or source.is_relative_to(resolved)):
+        raise ValueError('Target must be a separate skill directory named ' + NAME)
+    check_target(target, force)
     for relative in BUNDLE:
         entry = source / relative
         if not entry.exists():
@@ -53,7 +72,8 @@ def install(source, target, force=False, dry_run=False):
     target.parent.mkdir(parents=True, exist_ok=True)
     # Validate in a sibling staging directory before touching an existing install.
     # Backup rename allows restoration if the final rename fails.
-    with tempfile.TemporaryDirectory(prefix='.skill-install-', dir=target.parent) as tmp:
+    with install_lock(target.parent), tempfile.TemporaryDirectory(prefix='.skill-install-', dir=target.parent) as tmp:
+        check_target(target, force)
         staging = Path(tmp) / NAME
         staging.mkdir()
         for relative in BUNDLE:
@@ -73,17 +93,41 @@ def install(source, target, force=False, dry_run=False):
         report = json.loads(result.stdout)
         if not isinstance(report, dict) or report.get('status') != 'pass':
             raise ValueError('Staged skill failed validation: unrecognized report')
-        backup = Path(tmp) / 'previous'
+        # Keep the backup OUTSIDE TemporaryDirectory. If final rename and
+        # rollback both fail, automatic staging cleanup must never erase it.
+        backup_root = None
+        backup = None
         if target.exists():
-            target.rename(backup)
+            backup_root = Path(tempfile.mkdtemp(prefix='.skill-backup-', dir=target.parent))
+            backup = backup_root / 'previous'
+            try:
+                target.rename(backup)
+            except OSError:
+                backup_root.rmdir()
+                raise
         try:
             staging.rename(target)
-        except OSError:
-            if backup.exists():
-                backup.rename(target)
+        except OSError as install_error:
+            if backup is not None:
+                try:
+                    backup.rename(target)
+                except OSError as restore_error:
+                    raise OSError('Installation and rollback failed; previous installation '
+                                  f'preserved at {backup}: {restore_error}') from install_error
+                backup_root.rmdir()
             raise
-    return {'status': 'installed', 'target': str(target), 'layout': 'knowledge-only',
-            'hooks_installed': False}
+        retained_backup = None
+        if backup_root is not None:
+            try:
+                shutil.rmtree(backup_root)
+            except OSError:
+                # Installation succeeded; a cleanup failure is not a rollback.
+                retained_backup = str(backup_root)
+    report = {'status': 'installed', 'target': str(target), 'layout': 'knowledge-only',
+              'hooks_installed': False}
+    if retained_backup is not None:
+        report['backup_retained'] = retained_backup
+    return report
 
 
 def main(argv=None):

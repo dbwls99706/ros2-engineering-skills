@@ -170,3 +170,90 @@ def test_zero_exit_without_valid_report_is_not_installed(source, monkeypatch):
     with pytest.raises(ValueError, match='unrecognized report'):
         installer.install(source, target(source))
     assert not target(source).exists()
+
+
+def test_double_rename_failure_preserves_recoverable_backup(source, monkeypatch):
+    dst = target(source)
+    installer.install(source, dst)
+    (dst / 'keep.txt').write_text('original must survive')
+    rename = Path.rename
+
+    def fail_swap_and_restore(path, to):
+        if '.skill-install-' in str(path) or path.name == 'previous':
+            raise OSError('simulated rename failure')
+        return rename(path, to)
+
+    monkeypatch.setattr(Path, 'rename', fail_swap_and_restore)
+    with pytest.raises(OSError, match='preserved at') as error:
+        installer.install(source, dst, force=True)
+    backups = list(dst.parent.glob('.skill-backup-*/previous'))
+    assert len(backups) == 1
+    assert str(backups[0]) in str(error.value)
+    assert (backups[0] / 'keep.txt').read_text() == 'original must survive'
+    assert not list(dst.parent.glob('.skill-install-*'))
+    assert not (dst.parent / ('.' + installer.NAME + '.install-lock')).exists()
+
+
+def test_backup_rename_failure_leaves_original(source, monkeypatch):
+    dst = target(source)
+    installer.install(source, dst)
+    (dst / 'keep.txt').write_text('original')
+    rename = Path.rename
+
+    def refuse_backup(path, to):
+        if path == dst:
+            raise OSError('cannot move original')
+        return rename(path, to)
+
+    monkeypatch.setattr(Path, 'rename', refuse_backup)
+    with pytest.raises(OSError, match='cannot move original'):
+        installer.install(source, dst, force=True)
+    assert (dst / 'keep.txt').read_text() == 'original'
+    assert not list(dst.parent.glob('.skill-backup-*'))
+
+
+def test_backup_cleanup_failure_is_reported_without_rollback(source, monkeypatch):
+    dst = target(source)
+    installer.install(source, dst)
+    rmtree = shutil.rmtree
+
+    def refuse_backup_cleanup(path, *args, **kwargs):
+        if Path(path).name.startswith('.skill-backup-'):
+            raise OSError('backup cleanup refused')
+        return rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, 'rmtree', refuse_backup_cleanup)
+    report = installer.install(source, dst, force=True)
+    assert report['status'] == 'installed'
+    assert Path(report['backup_retained']).is_dir()
+    assert (dst / 'SKILL.md').is_file()
+
+
+def test_installer_lock_refuses_concurrent_writer(source):
+    dst = target(source)
+    dst.parent.mkdir()
+    lock = dst.parent / ('.' + installer.NAME + '.install-lock')
+    lock.mkdir()
+    with pytest.raises(ValueError, match='lock exists'):
+        installer.install(source, dst)
+    assert lock.is_dir()
+    assert not dst.exists()
+
+
+def test_target_rechecked_after_lock_is_acquired(source, monkeypatch):
+    dst = target(source)
+    dst.parent.mkdir()
+    check_target = installer.check_target
+    calls = []
+
+    def race(target_path, force):
+        calls.append(target_path)
+        if len(calls) == 2:
+            dst.mkdir()
+            (dst / 'private.txt').write_text('unrelated concurrent creator')
+        check_target(target_path, force)
+
+    monkeypatch.setattr(installer, 'check_target', race)
+    with pytest.raises(ValueError, match='not a skill'):
+        installer.install(source, dst, force=True)
+    assert (dst / 'private.txt').read_text() == 'unrelated concurrent creator'

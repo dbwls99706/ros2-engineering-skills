@@ -5,7 +5,7 @@
 #
 # Usage:
 #   docker build -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-test:humble .
-#   docker run --rm ros2-test:humble
+#   docker run --rm --init --network none ros2-test:humble
 
 ARG ROS_DISTRO=jazzy
 FROM osrf/ros:${ROS_DISTRO}-desktop
@@ -14,11 +14,11 @@ FROM osrf/ros:${ROS_DISTRO}-desktop
 ARG ROS_DISTRO
 ENV ROS_DISTRO=${ROS_DISTRO}
 ENV DEBIAN_FRONTEND=noninteractive
-SHELL ["/bin/bash", "-c"]
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # osrf/ros:*-desktop already includes pytest, colcon, rclcpp, rosidl, etc.
 # Install ros2_control for hardware_interface package testing.
-# Humble (22.04) pip doesn't support --break-system-packages; Jazzy+ (24.04) requires it.
+# PIP_BREAK_SYSTEM_PACKAGES is honored by newer pip and ignored by older pip.
 # git/curl/python3-vcstool/python3-yaml are needed for the rolling-only
 # source overlay below.
 #
@@ -45,8 +45,7 @@ RUN apt-get update \
            DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade $pkgs; \
          fi; \
        fi \
-    && pip3 install hypothesis 2>/dev/null \
-    || pip3 install --break-system-packages hypothesis \
+    && PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --no-cache-dir 'hypothesis>=6.100,<7' \
     && rm -rf /var/lib/apt/lists/*
 
 # Replace broken rolling binary CMake configs by source-overlaying their
@@ -102,6 +101,7 @@ print('overlay repos (typesupport/python/dds excluded to preserve binary ABI):',
       git clone --quiet --depth=1 https://github.com/ros-controls/ros2_control_cmake.git src/ros2_control_cmake; \
       git clone --quiet --depth=1 https://github.com/ros-controls/control_msgs.git src/control_msgs; \
       git clone --quiet --depth=1 https://github.com/ros-controls/ros2_control.git src/ros2_control; \
+      vcs export --exact src > /opt/ros/${ROS_DISTRO}/ci-overlay.repos; \
       echo "[overlay] packages staged in src/:"; \
       ls src; \
       echo "[overlay] colcon build (output redirected to /tmp/colcon.log; summary printed at end)"; \
@@ -141,93 +141,7 @@ print('overlay repos (typesupport/python/dds excluded to preserve binary ABI):',
 WORKDIR /ws/ros2-engineering-skills
 COPY . .
 
-# Stage 1: Pure-Python unit tests on the utility scripts
-RUN python3 -m pytest tests/ -v --tb=short
-
-# Stage 2: Scaffold packages (C++, Python, interfaces, hardware_interface)
-RUN mkdir -p /ws/test_ws/src \
-    && python3 scripts/create_package.py test_cpp_pkg --type cpp --dest /ws/test_ws/src \
-    && python3 scripts/create_package.py test_py_pkg --type python --dest /ws/test_ws/src \
-    && python3 scripts/create_package.py test_iface_pkg --type interfaces --dest /ws/test_ws/src \
-    && python3 scripts/create_package.py test_hw_pkg --type hardware_interface --dest /ws/test_ws/src
-
-# Stage 3: Build all scaffolded packages WITH testing enabled
-# This compiles the generated gtest targets to verify the scaffolding is valid C++.
-RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
-    && cd /ws/test_ws \
-    && colcon build \
-         --executor sequential \
-         --event-handlers console_direct+ \
-         --cmake-args -DCMAKE_BUILD_TYPE=Release
-
-# Stage 4a: Run C++ and interfaces tests (CTest via colcon)
-#
-# On rolling, test_cpp_pkg's gtest is excluded from runtime execution. The
-# package itself builds successfully (validated in Stage 3) — the scaffold
-# is correct. The runtime exclusion is solely because rolling's apt-shipped
-# RMW stack is in a transient state (rosidl / rclcpp / fastrtps split mid-
-# refactor) where `rclcpp::init()` fails with "failed to load any RMW
-# implementations" at runtime. test_hw_pkg's gtest exercises the
-# hardware_interface pluginlib loader without rclcpp init, so it remains in
-# the gated set on every distro.
-RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
-    && cd /ws/test_ws \
-    && if [ "${ROS_DISTRO}" = "rolling" ]; then \
-         test_pkgs="test_iface_pkg test_hw_pkg"; \
-       else \
-         test_pkgs="test_cpp_pkg test_iface_pkg test_hw_pkg"; \
-       fi \
-    && colcon test \
-         --executor sequential \
-         --event-handlers console_direct+ \
-         --packages-select $test_pkgs \
-    && colcon test-result --verbose
-
-# Stage 4b: Run Python package tests with pytest directly
-# (colcon test uses unittest runner for ament_python, which cannot discover pytest-style tests)
-#
-# On rolling, deselect test_node_creation for the same reason test_cpp_pkg's
-# gtest is excluded above: rclpy.init() fails with "failed to load any RMW
-# implementations" while upstream's rclcpp/rmw refactor is in progress. The
-# linter tests (copyright / flake8 / pep257) still run on every distro.
-RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
-    && source /ws/test_ws/install/setup.bash \
-    && cd /ws/test_ws/src/test_py_pkg \
-    && if [ "${ROS_DISTRO}" = "rolling" ]; then \
-         pytest_extra="--deselect test/test_test_py_pkg.py::test_node_creation"; \
-       else \
-         pytest_extra=""; \
-       fi \
-    && python3 -m pytest test/ -v $pytest_extra
-
-# Stage 5: Validate generated launch files
-RUN python3 scripts/launch_validator.py /ws/test_ws/src/test_cpp_pkg/launch/ \
-    && python3 scripts/launch_validator.py /ws/test_ws/src/test_py_pkg/launch/
-
-# Stage 6: QoS checker — all presets including safety_heartbeat with deadline/lifespan
-RUN python3 scripts/qos_checker.py --preset sensor \
-    && python3 scripts/qos_checker.py --preset command \
-    && python3 scripts/qos_checker.py --preset map \
-    && python3 scripts/qos_checker.py --preset diagnostics \
-    && python3 scripts/qos_checker.py --preset parameter_events \
-    && python3 scripts/qos_checker.py --preset action_feedback \
-    && python3 scripts/qos_checker.py --preset safety_heartbeat
-
-# Stage 7: Smoke-test — verify generated nodes actually start in ROS 2
-#
-# Skipped on rolling: the smoke test launches generated nodes and checks
-# they appear in `ros2 node list`, which requires a working RMW backend.
-# Rolling's RMW stack is currently mid-refactor (the same reason the
-# rclcpp::init() / rclpy.init() tests are excluded above) — librmw_fastrtps
-# fails to dlopen `libfastcdr.so.2` because the base image's Fast-CDR
-# soname doesn't match what the upgraded rmw_fastrtps_cpp expects. The
-# packages built and the linters all pass; runtime DDS execution is the
-# only thing that doesn't work, and that's an upstream issue.
-RUN if [ "${ROS_DISTRO}" = "rolling" ]; then \
-      echo "[smoke] skipped on rolling (RMW runtime mid-refactor)"; \
-    else \
-      chmod +x tests/smoke_test_nodes.sh \
-        && timeout 30 bash tests/smoke_test_nodes.sh; \
-    fi
-
-CMD echo "All tests passed for ROS 2 ${ROS_DISTRO}!"
+# Tests deliberately execute at container runtime, not in BuildKit RUN layers.
+# A cached image build is never test evidence, and DDS processes must not live
+# inside an image exporter. The default command runs the complete test suite.
+CMD ["bash", "tests/run_ros2_container_tests.sh"]
