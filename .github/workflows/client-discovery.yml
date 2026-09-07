@@ -26,6 +26,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Record reproducible input revision
+        run: |
+          mkdir -p "$RUNNER_TEMP/discovery"
+          git rev-parse HEAD > "$RUNNER_TEMP/discovery/revision.txt"
+          git archive --format=zip HEAD > "$RUNNER_TEMP/discovery/source.zip"
+          sha256sum "$RUNNER_TEMP/discovery/source.zip" > "$RUNNER_TEMP/discovery/source.sha256"
       - name: Install pinned clients and runtime dependencies
         run: |
           npm install --global @openai/codex@0.153.4 @google/gemini-cli@0.58.0
