@@ -1,30 +1,32 @@
 # Roadmap
 
-The roadmap prioritizes evidence and usability over adding more prose.
+Prioritize measured usefulness and correctness over additional prose.
 
-## Near term
+## Implemented verification infrastructure
 
-- Publish positive and negative trigger cases for each supported client.
-- Capture reproducible skill-on and skill-off outputs with immutable metadata.
-- Add an installation verifier for portable Agent Skills and Claude Code plugin
-  layouts.
-- Audit claims that vary by ROS 2 distribution or package major version.
-- Raise validator-specific coverage for command and edit validation paths.
+- Portable metadata, link, packaging, and source-review-date checks.
+- Knowledge-only staged installation with client-specific discovery paths.
+- Claude protocol adapter, notebook normalization, bounded calls, and advisory Stop.
+- Positive/negative/explicit trigger cases and preregistered paired quality suite.
+- Capture completeness, prompt/output/trace hashes, and session-isolation checks.
+- Validator-specific coverage gates and controlled ROS QoS failure/repair example.
+- Contribution, security, conduct, issue templates, and release-gate documentation.
 
-## Medium term
+## Next evidence to collect
 
-- Add small runnable workspaces for QoS, callback-group, lifecycle, and launch
-  failure modes.
-- Publish real case studies showing which defect was found, what evidence
-  isolated it, and which verification level was reached.
-- Package user-facing validators independently of the full reference corpus.
-- Track reference freshness and require review when a source passes its review
-  date.
+- Authenticated loading and invocation traces for exact Claude, Codex, Cursor,
+  and Gemini versions, including negative cases and remote execution environments.
+- Complete immutable skill-on/off captures, repeated trials, semantic grading,
+  failures, latency, and cost rather than fixture-derived improvement claims.
+- Context-cost measurement with each target tokenizer and a smaller selected
+  body that retains factual coverage and demonstrably useful routing.
+- Distribution-sensitive audits backed by installed package versions and tests.
+- More controlled workspaces for callback groups, lifecycle, launch, and provenance.
 
-## Long term
+## Longer-term validation
 
-- Maintain client-neutral conformance tests for Agent Skills loading and
-  progressive disclosure.
-- Build distribution-specific verification fixtures from installed package
-  versions rather than manually maintained assumptions.
-- Establish an external technical review process for safety-sensitive guidance.
+- Restore Rolling runtime gates after reproducing and resolving the actual stack
+  mismatch; do not remove an exclusion merely because an image builds.
+- Independent review of safety-sensitive guidance and authorized hardware studies.
+- Package standalone validators and establish a versioned release process after
+  the relevant gates pass. Branch pushes do not publish releases.

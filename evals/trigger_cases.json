@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "purpose": "Fresh-session activation tests; no recorded results.",
+  "clients": ["claude", "codex", "cursor", "gemini"],
+  "cases": [
+    {"id":"qos","mode":"implicit","should_trigger":true,"prompt":"My ROS 2 image subscriber receives no data; diagnose the live QoS endpoints."},
+    {"id":"launch","mode":"implicit","should_trigger":true,"prompt":"Review this ROS 2 Python launch file without changing it."},
+    {"id":"lifecycle","mode":"implicit","should_trigger":true,"prompt":"Design lifecycle transitions for a ROS 2 camera driver."},
+    {"id":"control","mode":"implicit","should_trigger":true,"prompt":"Review a ros2_control SystemInterface for our installed distribution."},
+    {"id":"provenance","mode":"implicit","should_trigger":true,"prompt":"My ROS 2 process still uses old parameters after editing src config."},
+    {"id":"stop","mode":"implicit","should_trigger":true,"prompt":"Does publishing zero Twist prove our ROS 2 robot has stopped?"},
+    {"id":"tf","mode":"implicit","should_trigger":true,"prompt":"Find stale TF and duplicate broadcasters in this ROS 2 workspace."},
+    {"id":"executor","mode":"implicit","should_trigger":true,"prompt":"Diagnose a rclpy callback waiting for a service response."},
+    {"id":"nav2","mode":"implicit","should_trigger":true,"prompt":"Review Nav2 recovery behavior for an unvalidated robot."},
+    {"id":"bag","mode":"implicit","should_trigger":true,"prompt":"Investigate ROS 2 bag playback subscriber compatibility."},
+    {"id":"cpp","mode":"implicit","should_trigger":false,"prompt":"Explain C++ move semantics using a vector example."},
+    {"id":"python","mode":"implicit","should_trigger":false,"prompt":"Write a Python CSV parser for sales data."},
+    {"id":"web","mode":"implicit","should_trigger":false,"prompt":"Fix CSS alignment on a login page."},
+    {"id":"mobile","mode":"implicit","should_trigger":false,"prompt":"Diagnose a React Native app startup crash."},
+    {"id":"nonros","mode":"implicit","should_trigger":false,"prompt":"Explain MQTT retained messages for a home thermostat."},
+    {"id":"robot-name","mode":"implicit","should_trigger":false,"prompt":"Write a poem about a robot named ROS."},
+    {"id":"translation","mode":"implicit","should_trigger":false,"prompt":"Translate the phrase Robot Operating System into Korean."},
+    {"id":"git","mode":"implicit","should_trigger":false,"prompt":"Explain how to rename a Git branch."},
+    {"id":"calendar","mode":"implicit","should_trigger":false,"prompt":"Summarize my meeting schedule."},
+    {"id":"sql","mode":"implicit","should_trigger":false,"prompt":"Optimize a SQL query against customer purchases."},
+    {"id":"explicit-claude","mode":"explicit","client":"claude","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."},
+    {"id":"explicit-codex","mode":"explicit","client":"codex","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."},
+    {"id":"explicit-cursor","mode":"explicit","client":"cursor","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."},
+    {"id":"explicit-gemini","mode":"explicit","client":"gemini","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."}
+  ]
+}

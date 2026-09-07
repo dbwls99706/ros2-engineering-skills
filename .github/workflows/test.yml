@@ -14,6 +14,14 @@ on:
       - 'refactor/**'
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -29,7 +37,7 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
       - name: flake8
-        run: flake8 scripts/ tests/
+        run: flake8 scripts/ tests/ examples/
       - name: mypy
         run: mypy scripts/ --ignore-missing-imports
       - name: pip-audit (current environment)
@@ -49,14 +57,13 @@ jobs:
       - name: Verify loaded plugin components
         run: |
           claude --plugin-dir . plugin list --json | tee /tmp/plugin-list.json
-          python3 - <<'PY'
+          python3 - <<'PYCODE'
           import json
           from pathlib import Path
 
           data = json.loads(Path('/tmp/plugin-list.json').read_text())
-          serialized = json.dumps(data)
-          assert 'ros2-engineering' in serialized
-          PY
+          assert 'ros2-engineering' in json.dumps(data)
+          PYCODE
           claude --plugin-dir . plugin details ros2-engineering@inline \
             | tee /tmp/plugin-details.txt
           grep -F 'ros2-engineering-skills' /tmp/plugin-details.txt
@@ -66,8 +73,9 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -80,6 +88,11 @@ jobs:
           python -m pytest tests/ -v --tb=short \
             --cov=scripts --cov-report=term-missing --cov-report=xml \
             --cov-fail-under=90
+      - name: Enforce individual validator coverage
+        run: |
+          for module in skill_validate_hook skill_stop_hook claude_hook validate_skill install_skill verify_eval_capture; do
+            python -m coverage report --include="*/${module}.py" --fail-under=90
+          done
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v6
@@ -91,16 +104,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - name: Exercise PowerShell installer
         shell: pwsh
         run: |
           $target = Join-Path $env:RUNNER_TEMP 'ros2-engineering-skills'
-
           .\install.ps1 -Target $target -DryRun
-          if (Test-Path -LiteralPath $target) {
-            throw 'DryRun created the target'
-          }
-
+          if (Test-Path -LiteralPath $target) { throw 'DryRun created the target' }
           .\install.ps1 -Target $target
           if (-not (Test-Path -LiteralPath (Join-Path $target 'SKILL.md') -PathType Leaf)) {
             throw 'SKILL.md was not installed'
@@ -108,11 +120,22 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $target 'references') -PathType Container)) {
             throw 'references was not installed'
           }
-
           Set-Content -LiteralPath (Join-Path $target 'stale.txt') -Value 'stale'
           .\install.ps1 -Target $target -Force
           if (Test-Path -LiteralPath (Join-Path $target 'stale.txt')) {
             throw 'Force did not replace the existing target'
+          }
+      - name: Exercise knowledge-only installation on Windows
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt
+          $target = Join-Path $env:RUNNER_TEMP 'portable/ros2-engineering-skills'
+          python scripts/install_skill.py --client codex --target $target
+          if ($LASTEXITCODE -ne 0) { throw 'Portable installation failed' }
+          python scripts/validate_skill.py --root $target --installed --portable
+          if ($LASTEXITCODE -ne 0) { throw 'Portable validation failed' }
+          if (Test-Path -LiteralPath (Join-Path $target '.claude-plugin')) {
+            throw 'Knowledge-only installation unexpectedly contains a plugin manifest'
           }
 
   ros2-integration:
@@ -132,8 +155,16 @@ jobs:
             -f tests/Dockerfile.ros2-test \
             --build-arg ROS_DISTRO=${{ matrix.ros_distro }} \
             --progress=plain \
-            -t ros2-test:${{ matrix.ros_distro }} \
-            .
+            -t ros2-test:${{ matrix.ros_distro }} .
+      - name: Exercise controlled QoS mismatch and repair
+        if: matrix.ros_distro != 'rolling'
+        run: |
+          docker run --rm --network none -e ROS_DOMAIN_ID=83 \
+            ros2-test:${{ matrix.ros_distro }} \
+            bash -lc 'source /opt/ros/$ROS_DISTRO/setup.bash && timeout 30 python3 examples/qos_roundtrip.py'
+      - name: Record Rolling runtime exclusion
+        if: matrix.ros_distro == 'rolling'
+        run: echo 'QoS runtime case skipped; Rolling build does not establish L3 DDS behavior.'
 
   markdown-lint:
     runs-on: ubuntu-latest
@@ -156,7 +187,7 @@ jobs:
           python-version: '3.12'
       - name: Check scripts syntax
         run: |
-          python -m py_compile scripts/*.py
+          python -m py_compile scripts/*.py examples/*.py
           bash -n install.sh
       - name: Verify user-facing versions
         run: |
@@ -178,9 +209,14 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Validate skill and plugin packaging
         run: |
-          python -m pytest \
-            tests/test_skills2_frontmatter.py \
-            tests/test_repo_conventions.py \
-            tests/test_installers.py -q
+          python scripts/validate_skill.py --check-sources
+          python -m pytest tests/test_skills2_frontmatter.py tests/test_repo_conventions.py \
+            tests/test_installers.py tests/test_skill_contract.py tests/test_portable_installer.py \
+            tests/test_protocol_integration.py tests/test_evidence_suites.py -q
+      - name: Exercise installed portable bundle
+        run: |
+          target="$RUNNER_TEMP/portable/ros2-engineering-skills"
+          python scripts/install_skill.py --target "$target"
+          python scripts/validate_skill.py --root "$target" --installed --portable
       - name: Run eval fixture smoke check
         run: python scripts/eval_runner.py

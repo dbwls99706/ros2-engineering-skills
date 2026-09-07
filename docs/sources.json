@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "scope": "Only the claims in the named files; not a full audit of all ROS references.",
+  "sources": [
+    {"id":"agent-skills","url":"https://agentskills.io/specification","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/SKILL_CONTRACT.md","scripts/validate_skill.py"]},
+    {"id":"skill-practices","url":"https://agentskills.io/skill-creation/best-practices","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/EVIDENCE_CAPTURE.md"]},
+    {"id":"trigger-evaluation","url":"https://agentskills.io/skill-creation/optimizing-descriptions","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/EVIDENCE_CAPTURE.md"]},
+    {"id":"claude-skills","url":"https://code.claude.com/docs/en/skills","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
+    {"id":"claude-hooks","url":"https://code.claude.com/docs/en/hooks","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/SKILL_CONTRACT.md","scripts/claude_hook.py"]},
+    {"id":"codex-skills","url":"https://learn.chatgpt.com/docs/build-skills","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md","agents/openai.yaml"]},
+    {"id":"cursor-skills","url":"https://cursor.com/docs/skills","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
+    {"id":"gemini-skills","url":"https://geminicli.com/docs/cli/skills/","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
+    {"id":"ros-qos","url":"https://docs.ros.org/en/humble/Concepts/Intermediate/About-Quality-of-Service-Settings.html","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/QOS_CASE_STUDY.md"]}
+  ]
+}
