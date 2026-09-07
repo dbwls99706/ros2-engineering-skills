@@ -58,6 +58,9 @@ if [[ "$ROS_DISTRO" != rolling ]]; then
     (cd "$WS/src/test_lifecycle_pkg" && python3 -m pytest test/ -v)
     timeout --signal=TERM --kill-after=5s 30s \
         python3 "$ROOT/tests/check_generated_lifecycle.py" test_lifecycle_pkg
+    echo '=== Real documented lifecycle examples and publisher cleanup ==='
+    timeout --signal=TERM --kill-after=5s 150s \
+        python3 "$ROOT/tests/check_lifecycle_reference.py"
 fi
 cd "$ROOT"
 echo '=== Generated launch files and all QoS presets ==='

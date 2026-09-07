@@ -65,3 +65,27 @@ network performance on other hosts, or physical safety. Chroot lacked mounted
 `/proc` and `/sys`; `/dev/shm` was an ordinary directory. Local subprocess PIDs,
 command results, initial provisioning failures, and before/after logs must remain
 part of the evidence rather than being silently replaced by successful runs.
+
+## Executing the reference examples themselves
+
+A separate local run began from `0867b34df11d7fd8a4779fd7edbeb946ada1799c`
+with the matching exported Humble runtime. Six generated variants built, both
+DDS implementations passed repeated QoS/lifecycle/callback checks, and live
+launch, component load/list/unload, and source/install parameter checks passed.
+
+Executing the verbatim lifecycle reference exposed two additional defects:
+C++ activation returned success without enabling its publisher, and Python
+cleanup destroyed the native publisher without unregistering its managed object.
+The original C++ example received zero filtered samples despite a positive input
+control. After three Python cleanup cycles, three destroyed publishers remained
+retained. The corrected examples delegate activation/deactivation and use
+`destroy_lifecycle_publisher`, with explicit shutdown/error resource cleanup.
+
+`tests/check_lifecycle_reference.py` now extracts those exact examples, compiles
+and executes the C++ node, and checks Python object release across repeated
+transitions, active shutdown, and deliberate transition ERROR recovery. The C++
+probe labels samples by their input phase so queued active samples are not
+misclassified as newly published inactive samples. Reverting either example
+makes the same probe fail. Both corrected examples passed locally with Fast DDS
+and Cyclone DDS; stable ROS CI jobs also run the probe. The pure-Python extraction
+tests are not substitutes for this runtime check.

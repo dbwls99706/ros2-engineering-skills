@@ -122,22 +122,21 @@ public:
   }
 
   // on_activate: start processing, enable outputs
-  CallbackReturn on_activate(const rclcpp_lifecycle::State & /*previous_state*/) override
+  CallbackReturn on_activate(const rclcpp_lifecycle::State & state) override
   {
     RCLCPP_INFO(get_logger(), "Activating...");
-    // LifecyclePublisher automatically enables on activate
-    // Any additional activation logic (e.g., hardware enable) goes here
-    return CallbackReturn::SUCCESS;
+    // An override must delegate to activate the managed lifecycle publishers.
+    // The Active state label alone does not enable this publisher.
+    return LifecycleNode::on_activate(state);
   }
 
   // on_deactivate: stop processing, disable outputs
-  CallbackReturn on_deactivate(const rclcpp_lifecycle::State & /*previous_state*/) override
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State & state) override
   {
     RCLCPP_INFO(get_logger(), "Deactivating...");
-    // LifecyclePublisher automatically disables on deactivate
-    // Clear transient state
+    const auto result = LifecycleNode::on_deactivate(state);
     filter_buffer_.clear();
-    return CallbackReturn::SUCCESS;
+    return result;
   }
 
   // on_cleanup: release resources, return to Unconfigured
@@ -160,10 +159,14 @@ public:
     return CallbackReturn::SUCCESS;
   }
 
-  // on_error: called when a transition fails — attempt recovery
+  // on_error: called for a transition ERROR — attempt recovery
   CallbackReturn on_error(const rclcpp_lifecycle::State & previous_state) override
   {
     RCLCPP_ERROR(get_logger(), "Error from state %s", previous_state.label().c_str());
+    // Recovery to Unconfigured must release resources from partial configuration.
+    scan_pub_.reset();
+    scan_sub_.reset();
+    filter_buffer_.clear();
     // Return SUCCESS to transition to Unconfigured (recovery)
     // Return FAILURE to transition to Finalized (unrecoverable)
     return CallbackReturn::SUCCESS;
@@ -204,26 +207,33 @@ RCLCPP_COMPONENTS_REGISTER_NODE(my_robot_perception::LidarProcessor)
 
 ### Key lifecycle publisher behavior
 
-`LifecyclePublisher` is a special publisher that only delivers messages when
-the node is in the `Active` state. Messages published in other states are
-silently dropped. This prevents accidental output during configuration or
-after deactivation.
+`LifecyclePublisher` has its own activation flag; the node's state label alone
+does not toggle it. The default `LifecycleNode::on_activate` and
+`on_deactivate` callbacks update managed publishers. An override must call the
+base implementation, as above, or explicitly manage every publisher. Otherwise
+an Active node may publish nothing, or a publisher may remain enabled after a
+transition. Publishing while disabled is suppressed and may produce a warning.
+This is application-level lifecycle behavior, not a hardware safety function.
 
 ```cpp
-// This publisher only works when the node is Active
-auto pub = create_publisher<Msg>("topic", qos);  // LifecyclePublisher
+// rclcpp LifecycleNode::create_publisher creates a managed LifecyclePublisher.
+// Its activation depends on the transition callbacks being wired correctly.
+auto pub = create_publisher<Msg>("topic", qos);
 
-// Note: In a lifecycle node, ALL publishers from create_publisher() are
-// LifecyclePublishers that are silenced outside Active state.
-// For always-active publishing (diagnostics, heartbeats), use a separate
-// rclcpp::Node dedicated to diagnostics running in the same process.
+// For always-active diagnostics, use a separate rclcpp::Node in the same process.
 ```
+
+In rclpy, pair `create_lifecycle_publisher()` with
+`destroy_lifecycle_publisher()`. The ordinary `destroy_publisher()` removes the
+native publisher but does not unregister its managed lifecycle object. Test
+cleanup/reconfigure and active shutdown, not just the first activation.
 
 ## 3. Implementing lifecycle transitions (rclpy)
 
 ```python
 import rclpy
-from rclpy.lifecycle import LifecycleNode, State, TransitionCallbackReturn
+from rclpy.executors import ExternalShutdownException
+from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from sensor_msgs.msg import LaserScan
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
@@ -236,7 +246,7 @@ class LidarProcessor(LifecycleNode):
         self._scan_pub = None
         self._scan_sub = None
 
-    def on_configure(self, state: State) -> TransitionCallbackReturn:
+    def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info('Configuring...')
         self._min_range = self.get_parameter('min_range').value
         self._max_range = self.get_parameter('max_range').value
@@ -248,29 +258,35 @@ class LidarProcessor(LifecycleNode):
 
         return TransitionCallbackReturn.SUCCESS
 
-    def on_activate(self, state: State) -> TransitionCallbackReturn:
+    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info('Activating...')
         return super().on_activate(state)
 
-    def on_deactivate(self, state: State) -> TransitionCallbackReturn:
+    def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info('Deactivating...')
         return super().on_deactivate(state)
 
-    def on_cleanup(self, state: State) -> TransitionCallbackReturn:
+    def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info('Cleaning up...')
-        self.destroy_publisher(self._scan_pub)
-        self.destroy_subscription(self._scan_sub)
-        self._scan_pub = None
-        self._scan_sub = None
+        self._release_resources()
         return TransitionCallbackReturn.SUCCESS
 
-    def on_shutdown(self, state: State) -> TransitionCallbackReturn:
+    def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.get_logger().info(f'Shutting down from {state.label}')
-        if self._scan_pub:
-            self.destroy_publisher(self._scan_pub)
-        if self._scan_sub:
-            self.destroy_subscription(self._scan_sub)
+        self._release_resources()
         return TransitionCallbackReturn.SUCCESS
+
+    def on_error(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._release_resources()
+        return TransitionCallbackReturn.SUCCESS
+
+    def _release_resources(self):
+        if self._scan_pub is not None:
+            self.destroy_lifecycle_publisher(self._scan_pub)
+            self._scan_pub = None
+        if self._scan_sub is not None:
+            self.destroy_subscription(self._scan_sub)
+            self._scan_sub = None
 
     def _scan_callback(self, msg: LaserScan):
         if self._scan_pub is None or not self._scan_pub.is_activated:
@@ -293,14 +309,18 @@ class LidarProcessor(LifecycleNode):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = LidarProcessor()
+    node = None
     try:
+        node = LidarProcessor()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            if node is not None:
+                node.destroy_node()
+        finally:
+            rclpy.try_shutdown()
 ```
 
 ## 4. Component node registration
@@ -695,7 +715,7 @@ ros2 lifecycle set /lidar_processor shutdown
 | Symptom | Cause | Fix |
 |---|---|---|
 | Component not found during load | Plugin not registered or shared library not installed | Verify `rclcpp_components_register_nodes()` in CMakeLists.txt, rebuild, source setup.bash |
-| LifecyclePublisher not publishing | Node not in Active state | Transition to Active before publishing; check with `ros2 lifecycle get` |
+| LifecyclePublisher not publishing | Node inactive or publisher activation callback bypassed | Check the live state and ensure overrides delegate to the base callbacks or explicitly activate the publisher |
 | `on_configure` fails | Resource allocation error (port busy, memory) | Log the specific error, ensure cleanup releases resources on retry |
 | Transition hangs indefinitely | Blocking call in transition callback | Keep transitions fast; offload heavy init to a thread if needed |
 | Components crash container | Unhandled exception in one component | Catch all exceptions in component callbacks; consider `component_container_isolated` |

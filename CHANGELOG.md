@@ -4,6 +4,12 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Execute the documented lifecycle examples against real ROS: delegate C++
+  publisher activation/deactivation to the base callbacks and unregister Python
+  lifecycle publishers on cleanup, shutdown, and transition error recovery.
+- Keep repeatable runtime regressions for actual filtered output and released
+  publisher objects; a successful lifecycle state transition alone is not a pass.
+
 - Fix generated C++ component target linkage and exercise component builds in
   the ROS distribution matrix, alongside Python lifecycle variants.
 - Make generated lifecycle configuration repeatable, reject invalid timer rates,
