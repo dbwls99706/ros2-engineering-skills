@@ -4,6 +4,11 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Correct perception and deployment reference guidance: qualify image transport
+  and copy-avoidance claims, check timestamp/clock evidence before queue tuning,
+  complete the health-monitor example, and distinguish real device
+  acknowledgements from fixed shutdown sleeps.
+
 ## 1.4.0 - 2026-09-08
 
 - Make generated lifecycle startup independent of transition-event delivery: query

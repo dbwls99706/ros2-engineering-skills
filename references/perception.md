@@ -16,9 +16,12 @@
 
 ## 1. image_transport
 
-`image_transport` provides transparent compression for image topics. Always
-use it instead of raw `sensor_msgs/Image` publishers/subscribers — it
-automatically handles raw, compressed (JPEG/PNG), and Theora video streams.
+`image_transport` provides transport selection and optional compression for image
+messages. Prefer it for conventional ROS image-topic pipelines when you want
+transport plugins such as compressed images. Raw `sensor_msgs/Image` or an
+existing transport can still be the right choice when another protocol owns the
+wire format, exact original bytes/metadata must be preserved, or measured
+latency/copy constraints require a different path.
 
 ### Publisher (C++)
 
@@ -170,10 +173,13 @@ def image_callback(msg):
     publisher.publish(out_msg)
 ```
 
-### Type adapters for perception (zero-copy cv::Mat)
+### Type adapters for perception (copy avoidance)
 
-Instead of using `cv_bridge::toCvCopy()` which copies the entire image, use a type adapter
-(Humble+) to work natively with `cv::Mat` and let ROS handle serialization:
+A type adapter (Humble+) can let application code publish a custom type such as
+`cv::Mat` and can avoid some serialization or conversion work on supported
+intra-process paths. It is not automatically zero-copy end to end: adapter
+conversion functions may still allocate or copy, and inter-process DDS paths
+normally serialize data.
 
 ```cpp
 #include <rclcpp/type_adapter.hpp>
@@ -198,12 +204,15 @@ struct rclcpp::TypeAdapter<cv::Mat, sensor_msgs::msg::Image>
 // Define a convenient alias for the adapted type
 using CvMatImage = rclcpp::TypeAdapter<cv::Mat, sensor_msgs::msg::Image>;
 
-// Now publish cv::Mat directly — zero-copy when intra-process is enabled
+// Publish cv::Mat directly; measure the selected path before making copy claims.
 auto pub = node->create_publisher<CvMatImage>("image", 10);
 pub->publish(my_cv_mat);
 ```
 
-Combined with intra-process communication, this eliminates ALL copies in an image processing pipeline.
+The example's `convert_to_custom()` deliberately calls `toCvCopy()`, so that
+conversion path still deep-copies the image. Treat copy avoidance as a property
+of the actual publisher/subscriber/RMW path and measure it instead of assuming
+that all copies are removed.
 
 ## 3. Point cloud processing with PCL
 
@@ -565,7 +574,7 @@ These use NITROS for zero-copy GPU memory transfer between nodes. Install via Is
 | Image appears blue/red swapped | BGR vs RGB encoding mismatch | Check source encoding; use `bgr8` for OpenCV, `rgb8` for some cameras |
 | Point cloud is empty | Depth camera not producing data or wrong topic | Check `ros2 topic echo` on depth topic, verify camera is running |
 | `cv_bridge` conversion error | Encoding mismatch between source and requested | Use `toCvCopy(msg, "")` with empty encoding to keep original format |
-| Synchronized callback never fires | Timestamps too far apart between sensors | Increase `ApproximateTime` queue size, verify sensor clock sync |
+| Synchronized callback never fires | Timestamps too far apart between sensors | Verify both topics arrive and timestamps share a compatible clock/domain and offset; then tune `ApproximateTime` queue/slop within the latency budget |
 | Depth values are all 0 or NaN | Camera too close/far, IR interference | Adjust min/max depth, check for reflective surfaces |
 | Camera image is dark/overexposed | Auto-exposure not configured | Set camera exposure params via ROS parameters or vendor tools |
 | PCL processing is too slow | Too many points, no downsampling | Apply `VoxelGrid` filter first, reduce point cloud resolution |
