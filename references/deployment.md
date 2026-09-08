@@ -510,9 +510,9 @@ export ROS_SECURITY_STRATEGY=Permissive  # Use Enforce in production
 
 ### Health check endpoint pattern
 
+This is an illustrative node pattern, not a standalone tested program.
 The example below uses concrete message types and defines the timestamp update
-path. Replace the topics, message types, and timeouts with the ones that matter to
-your system.
+path.
 
 ```python
 from rclpy.node import Node
