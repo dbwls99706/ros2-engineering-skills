@@ -153,14 +153,35 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False):
         states = [client(GetState, n + '/get_state') for n in names] if lifecycle else []
         changes = [client(ChangeState, n + '/change_state') for n in names] if lifecycle else []
 
-        def call(endpoint, request):
+        def call(endpoint, request, *, timeout=5.0):
             future = endpoint.call_async(request)
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + timeout
             while not future.done() and time.monotonic() < deadline:
                 executor.spin_once(timeout_sec=0.05)
-            if not future.done() or future.result() is None:
+            if not future.done():
+                future.cancel()
                 raise RuntimeError('Fleet service did not respond: ' + endpoint.srv_name)
-            return future.result()
+            try:
+                response = future.result()
+            except Exception as exc:
+                raise RuntimeError('Fleet service failed: ' + endpoint.srv_name) from exc
+            if response is None:
+                raise RuntimeError('Fleet service did not respond: ' + endpoint.srv_name)
+            return response
+
+        def read_call(endpoint, request):
+            """Retry idempotent reads only; never replay state-changing requests."""
+            last_error = None
+            for attempt in range(3):
+                try:
+                    return call(endpoint, request, timeout=2.0)
+                except RuntimeError as exc:
+                    last_error = exc
+                    if attempt < 2:
+                        executor.spin_once(timeout_sec=0.1)
+            raise RuntimeError(
+                'Fleet read service did not respond after 3 attempts: ' + endpoint.srv_name
+            ) from last_error
 
         verified = package + ': fleet verified'
 
@@ -169,34 +190,51 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False):
             missing = [c.srv_name for c in clients if not c.service_is_ready()]
             discover.last_observation = {'missing_services': missing}
             if missing:
+                discover.active_since = None
                 return set()
-            observed = [call(c, GetState.Request()).current_state for c in states]
+            observed = [read_call(c, GetState.Request()).current_state for c in states]
             discover.last_observation['states'] = {
                 name: {'id': state.id, 'label': state.label}
                 for name, state in zip(names, observed)}
             if any(state.id != State.PRIMARY_STATE_ACTIVE for state in observed):
+                discover.active_since = None
+                return set()
+            now = time.monotonic()
+            if discover.active_since is None:
+                discover.active_since = now
+                discover.last_observation['stable_active_for'] = 0.0
+                return set()
+            stable_for = now - discover.active_since
+            discover.last_observation['stable_active_for'] = stable_for
+            if stable_for < 0.2:
                 return set()
             for c in parameters:
-                values = call(c, GetParameters.Request(names=['publish_rate'])).values
+                values = read_call(c, GetParameters.Request(names=['publish_rate'])).values
                 if len(values) != 1 or values[0].type != 3 or values[0].double_value != 17.0:
                     raise RuntimeError('Namespaced fleet did not load the nondefault YAML value')
-            if lifecycle:
+            if lifecycle and not drop_transition_events:
                 request = ChangeState.Request()
                 request.transition.id = Transition.TRANSITION_DEACTIVATE
                 if not call(changes[0], request).success:
                     raise RuntimeError('Could not deactivate first fleet node')
-                ids = [call(c, GetState.Request()).current_state.id for c in states]
+                ids = [read_call(c, GetState.Request()).current_state.id for c in states]
                 if ids != [State.PRIMARY_STATE_INACTIVE, State.PRIMARY_STATE_ACTIVE]:
                     raise RuntimeError('Transition leaked to a sibling or auto-reactivated: ' + str(ids))
                 request.transition.id = Transition.TRANSITION_ACTIVATE
                 if not call(changes[0], request).success:
                     raise RuntimeError('Could not reactivate first fleet node')
+                ids = [read_call(c, GetState.Request()).current_state.id for c in states]
+                if ids != [State.PRIMARY_STATE_ACTIVE, State.PRIMARY_STATE_ACTIVE]:
+                    raise RuntimeError(
+                        'Fleet did not return to active after sibling test: ' + str(ids))
             return {verified}
 
         discover.last_observation = {}
+        discover.active_since = None
         children = run_launch(work, package, discover, drop_transition_events)
         return {'package': package, 'nodes': names, 'publish_rate': 17.0,
-                'lifecycle': lifecycle, 'sibling_isolation': lifecycle,
+                'lifecycle': lifecycle,
+                'sibling_isolation': lifecycle and not drop_transition_events,
                 'transition_events_discarded': drop_transition_events,
                 'children': children, 'status': 'pass'}
     finally:
