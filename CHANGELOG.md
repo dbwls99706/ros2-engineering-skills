@@ -4,10 +4,34 @@ All notable changes are documented here.
 
 ## Unreleased
 
+## 1.5.0 - 2026-09-08
+
+- Add evidence-driven progression rules for acceptance gates: review threshold
+  provenance, measured quantity, uncertainty, error-budget relevance, and clearing
+  conditions instead of treating existing code as automatic authority or tuning
+  criteria merely to make a failed run pass.
+- Separate user authorization, authorization validity, execution authority,
+  supervised-test readiness, L0-L6 evidence, and operational readiness. Preserve
+  unchanged, unexpired, unrevoked approvals without turning permission into proof
+  or overriding client, product, site, or safety execution policy.
+- Give L5 and L6 distinct execution preconditions, retain operator-only execution
+  for high-risk physical fault injection, and repair stale numbered-principle links
+  so detailed references point to the engineering-principles source of truth.
+- Turn repeated blockers into concrete resolution plans with independent variables,
+  required evidence, pass/fail criteria, and stop conditions; distinguish current
+  healthy observations from latched historical failures and prevent stale-command
+  replay during recovery.
+- Add canonical progression behavior fixtures for gate-policy review, supervised
+  test authorization, latched localization recovery, and sensor-metric separation.
+  Public calibration examples are explicitly synthetic, and the structural runner
+  remains clearly separated from real model-output judging.
 - Correct perception and deployment reference guidance: qualify image transport
   and copy-avoidance claims, check timestamp/clock evidence before queue tuning,
   complete the health-monitor example, and distinguish real device
   acknowledgements from fixed shutdown sleeps.
+- Stabilize generated-fleet readiness acceptance by retrying idempotent read
+  services within bounds, requiring a brief stable-active window, and keeping
+  sibling transition churn out of the transition-event-loss negative control.
 
 ## 1.4.0 - 2026-09-08
 

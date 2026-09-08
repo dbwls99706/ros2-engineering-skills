@@ -144,7 +144,7 @@ WebSocket loop). This is where the same failure keeps being reintroduced:
   the reverse) without a deliberate integration means one of them starves
   whenever the other is busy. Run the executor in its own thread and hand data
   across with a queue, or use the client library's supported async model
-  (`SKILL.md` Principle 8).
+  (`references/engineering-principles.md` Principle 8).
 - **Reconnect storms.** Retry with bounded exponential backoff. An unbounded
   retry loop competes for the same degraded link and turns a recoverable
   dropout into a permanent one.
@@ -153,10 +153,10 @@ WebSocket loop). This is where the same failure keeps being reintroduced:
   reactivation, and any command received before the drop must be discarded
   rather than replayed (`references/safety-estop.md` §5).
 
-A bridge node is a resource-owning node in the sense of `SKILL.md` Principle 9 —
-lifecycle transitions give the system a defined way to take it out of service
-when the far side is gone, instead of leaving a half-connected node publishing
-stale data.
+A bridge node is a resource-owning node in the sense of
+`references/engineering-principles.md` Principle 9 — lifecycle transitions give
+the system a defined way to take it out of service when the far side is gone,
+instead of leaving a half-connected node publishing stale data.
 
 ## 5. Symptom to layer table
 
@@ -189,6 +189,7 @@ confirms it before you start changing configuration.
 ---
 
 **See also:** `references/runtime-provenance.md` for "what is actually running",
+`references/evidence-progression.md` for latched-state and recovery evidence,
 `references/debugging.md` for tracing, rosbag2, and DDS-level tools,
 `references/system-bringup.md` for udev, boot ordering, and watchdogs,
 `references/nodes-executors.md` for executor and callback-group behavior.

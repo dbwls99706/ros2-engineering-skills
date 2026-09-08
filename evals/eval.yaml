@@ -9,7 +9,7 @@
 #   - token_count: approximate tokens consumed
 
 skill: ros2-engineering-skills
-version: 1.4.0
+version: 1.5.0
 classification: capability
 deprecation-risk: medium
 
@@ -328,6 +328,107 @@ evals:
         weight: 0.8
     timeout: 60000
     tags: [sensors, lidar, camera, calibration, tf2, time-sync]
+
+  - name: gate-policy-review
+    description: >
+      Reviews an existing commissioning threshold for provenance, measured quantity,
+      uncertainty, and error-budget relevance without outcome tuning or code-as-authority.
+    prompt: progression/prompts/gate-policy-review.md
+    expected: progression/expected/gate-policy-review.md
+    criteria:
+      - id: gate-provenance
+        description: "Must identify gate purpose, source, measured quantity, uncertainty/error budget, and clearing condition"
+        weight: 1.0
+      - id: no-outcome-tuning
+        description: "Must reject raising the threshold merely to make the failed observation pass"
+        weight: 1.0
+      - id: no-code-authority
+        description: "Must reject treating an unexplained value as authoritative merely because it exists in code"
+        weight: 1.0
+      - id: metric-separation
+        description: "Must distinguish local plane-normal error from range precision and global robot yaw"
+        weight: 1.0
+      - id: revision-regression
+        description: "Must require independently justified revised criteria plus regression evidence without rewriting the old run as a pass"
+        weight: 0.9
+    timeout: 60000
+    tags: [policy, calibration, evidence, commissioning]
+
+  - name: supervised-test-authorization
+    description: >
+      Preserves valid authorization for an unchanged bounded hardware test while
+      keeping permission, execution authority, technical evidence, test readiness,
+      and operational readiness separate.
+    prompt: progression/prompts/supervised-test-authorization.md
+    expected: progression/expected/supervised-test-authorization.md
+    criteria:
+      - id: preserve-authorization
+        description: "Must recognize the unchanged, unexpired, unrevoked test envelope is already authorized and not ask for the same permission again"
+        weight: 1.0
+      - id: envelope
+        description: "Must preserve the bounded stand, command duration, motion limit, operator, and independent-stop conditions"
+        weight: 1.0
+      - id: permission-vs-proof
+        description: "Must separate authorization from verification level, technical readiness, and execution authority"
+        weight: 1.0
+      - id: progress-when-ready
+        description: "Must advance to an operator-ready bounded test when physical actuation is operator-reserved instead of repeating the authorization refusal"
+        weight: 1.0
+      - id: bounded-claim
+        description: "Must not promote a successful L5 bounded test to L6, production, or general safety"
+        weight: 1.0
+    timeout: 60000
+    tags: [authorization, safety, testing, hardware]
+
+  - name: latched-localization-recovery
+    description: >
+      Separates current fresh localization from a historical LOST latch and designs
+      recovery evidence without stale-command replay.
+    prompt: progression/prompts/latched-localization-recovery.md
+    expected: progression/expected/latched-localization-recovery.md
+    criteria:
+      - id: current-vs-history
+        description: "Must separate current fresh/stable pose from the historical failure and persistent latch reason"
+        weight: 1.0
+      - id: no-freshness-clear
+        description: "Must not clear LOST merely because the data source is fresh again"
+        weight: 1.0
+      - id: recovery-evidence
+        description: "Must require stopped/owned command path and independent evidence that re-establishes the invalidated localization state"
+        weight: 1.0
+      - id: preserve-history
+        description: "Must preserve invalidated proof as history instead of reviving it as current evidence"
+        weight: 0.8
+      - id: no-stale-resume
+        description: "Must invalidate the pre-loss command by default and require a fresh command unless a separately validated resume protocol exists"
+        weight: 1.0
+    timeout: 60000
+    tags: [localization, recovery, state-machine, navigation, safety]
+
+  - name: sensor-metric-separation
+    description: >
+      Keeps range precision, plane orientation, PnP/extrinsic error, registration residual,
+      and robot pose accuracy distinct and designs measurements that discriminate them.
+    prompt: progression/prompts/sensor-metric-separation.md
+    expected: progression/expected/sensor-metric-separation.md
+    criteria:
+      - id: distinguish-metrics
+        description: "Must distinguish range precision, plane-normal fit, PnP/extrinsic error, registration residual, and robot pose/yaw"
+        weight: 1.0
+      - id: no-yaw-substitution
+        description: "Must not relabel the plane-normal difference as the same robot yaw error"
+        weight: 1.0
+      - id: no-range-dismissal
+        description: "Must not use millimeter range repeatability to dismiss orientation uncertainty from a small ROI"
+        weight: 1.0
+      - id: preserve-observation
+        description: "Must keep repeatable operator visual observations at their actual qualitative evidence strength"
+        weight: 0.8
+      - id: discriminating-test
+        description: "Must propose additional measurements that discriminate plane-fit, extrinsic, localization, and navigation-clearance hypotheses"
+        weight: 1.0
+    timeout: 60000
+    tags: [sensors, calibration, evidence, metrics]
 
 # Parity test configuration for deprecation assessment
 parity_test:

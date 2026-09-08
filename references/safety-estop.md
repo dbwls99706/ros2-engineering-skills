@@ -73,10 +73,10 @@ if msg.emergency_stop:
 
 ### Heartbeat with enforcing QoS
 
-Use the safety-heartbeat QoS profile from `SKILL.md` Principle 6: RELIABLE, VOLATILE,
-KEEP_LAST/1, DEADLINE 500 ms, LIFESPAN 1 s. DEADLINE turns "the heartbeat stopped"
-into a middleware event; LIFESPAN prevents a stale queued message from being read as
-a fresh permit after a hiccup.
+Use the safety-heartbeat QoS profile from `references/engineering-principles.md`
+Principle 6: RELIABLE, VOLATILE, KEEP_LAST/1, DEADLINE 500 ms, LIFESPAN 1 s.
+DEADLINE turns "the heartbeat stopped" into a middleware event; LIFESPAN prevents
+a stale queued message from being read as a fresh permit after a hiccup.
 
 ```cpp
 // safety_heartbeat_publisher — runs on the safety node (operator station or
@@ -314,7 +314,7 @@ behavior, the vendor's documented command latency, and the sensor noise floor (a
 threshold below your encoder's resolution is not a criterion). Publish them with
 the stop-path test results so a later run can be compared against the same bar.
 
-| Link | Evidence | Level (`SKILL.md` Principle 13) |
+| Link | Evidence | Level (`references/engineering-principles.md` Principle 13) |
 |---|---|---|
 | Command ownership | `ros2 topic info -v` publisher set vs declared architecture, SROS2 policy, enforcement test | L3 |
 | Driver translation | driver source / vendor API path taken by a zero command | L0 + L4 |
@@ -323,9 +323,10 @@ the stop-path test results so a later run can be compared against the same bar.
 | Hardware response | encoder/current/IMU feedback vs `epsilon_stop`/`T_stop`/`T_hold` | L5 |
 
 Only the full chain is a verified stop. Reporting link 1 as if it were link 4 is
-pitfall 15 in `SKILL.md`. Link 4 requires commanded motion on a restrained
-platform with an operator present — the conditions in Section 6 apply in full,
-and it is never an unattended CI step or an AI agent action.
+pitfall 15 in `references/engineering-principles.md`. Link 4 requires commanded
+motion on a restrained platform with an operator present — the conditions in
+Section 6 apply in full, and it is never an unattended CI step or an AI agent
+action.
 
 ### Stopping through ros2_control
 
@@ -509,6 +510,12 @@ Reset rules that survive incident reviews:
 A stop path that has never been fault-injected does not work — it only compiles. Test
 the *failure* behaviors, not the happy path. General launch_testing setup is in
 `references/testing.md`; these are the safety-specific cases.
+
+Physical stop-path and spoofing checks in this section are deliberately high-risk
+fault-injection tests. User authorization is necessary but does not delegate execution
+authority: on physical hardware this reference reserves their execution to the
+operator. An agent may prepare the exact bounded procedure and evaluate the evidence,
+but it must not execute these physical fault injections itself.
 
 ### Fault-injection integration test
 

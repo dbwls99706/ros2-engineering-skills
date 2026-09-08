@@ -8,7 +8,8 @@ diverge constantly — an old `install/` prefix, a second overlay on the
 nobody remembers starting.
 
 Every check here is read-only and runs at verification level **L3–L4**
-(`SKILL.md` Principle 13): it observes a live system, it does not move a robot.
+(`references/engineering-principles.md` Principle 13): it observes a live system,
+it does not move a robot.
 
 ## Table of contents
 
@@ -143,8 +144,9 @@ done
 ```
 
 The fix is to delete `build/`, `install/`, and `log/` for that package and
-rebuild — and the same reasoning is why `SKILL.md` Principle 10 restricts
-caching those directories in CI.
+rebuild — and the same reasoning is why
+`references/engineering-principles.md` Principle 10 restricts caching those
+directories in CI.
 
 The same diff applies to Python modules, with the §1 caveat attached:
 `get_package_share_directory()` and a module's `__file__` resolve through the
@@ -339,9 +341,10 @@ Limits that apply to the whole checklist, not to single rows:
   contention that appears for 200 ms during a reconnect will not show up in a
   single `ros2 topic info -v`. Sample repeatedly, or monitor graph events.
 
-Cite the level with the result (`SKILL.md` Principle 13): this checklist reaches
-**L3** with the robot disconnected, **L4** with hardware powered and actuation
-isolated. It never reaches L5 — nothing here commands motion.
+Cite the level with the result (`references/engineering-principles.md` Principle
+13): this checklist reaches **L3** with the robot disconnected, **L4** with
+hardware powered and actuation isolated. It never reaches L5 — nothing here
+commands motion.
 
 ## 10. Common failures and fixes
 

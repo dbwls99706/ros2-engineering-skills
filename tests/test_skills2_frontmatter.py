@@ -137,7 +137,7 @@ class TestVersionConsistency:
         assert result.stdout, result.stderr
         return str(json.loads(result.stdout)['version'])
 
-    def test_all_release_surfaces_match(self, tmp_path):
+    def test_all_bundle_release_surfaces_match(self):
         skill_version = str(_parse_frontmatter()['metadata']['version'])
         with (ROOT / 'evals' / 'eval.yaml').open(
                 'r', encoding='utf-8') as handle:
@@ -150,12 +150,9 @@ class TestVersionConsistency:
             eval_version,
             plugin_version,
             marketplace_version,
-            self._hook_version('skill_stop_hook.py', tmp_path),
-            self._hook_version(
-                'skill_validate_hook.py', tmp_path,
-                extra_args=('--command', 'ros2 topic list')),
         }
-        assert versions == {'1.4.0'}
+        assert re.fullmatch(r'\d+\.\d+\.\d+', skill_version)
+        assert versions == {skill_version}
         changelog = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
         release = re.search(r'^## (\d+\.\d+\.\d+) - (\d{4}-\d{2}-\d{2})$',
                             changelog, re.MULTILINE)
@@ -163,6 +160,17 @@ class TestVersionConsistency:
         assert release.group(1) == skill_version
         assert f'Source version: **{skill_version}**' in (
             ROOT / 'README.md').read_text(encoding='utf-8')
+
+    def test_hook_report_versions_are_independent_but_consistent(self, tmp_path):
+        hook_versions = {
+            self._hook_version('skill_stop_hook.py', tmp_path),
+            self._hook_version(
+                'skill_validate_hook.py', tmp_path,
+                extra_args=('--command', 'ros2 topic list')),
+        }
+        assert len(hook_versions) == 1
+        hook_version = next(iter(hook_versions))
+        assert re.fullmatch(r'\d+\.\d+\.\d+', hook_version)
 
 
 class TestSkillSizeBudget:

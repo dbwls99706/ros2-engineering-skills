@@ -94,9 +94,9 @@ PRESETS = {
         "sub": QoSProfile(Reliability.BEST_EFFORT, Durability.VOLATILE, History.KEEP_LAST, 5, "Sensor Subscriber"),
     },
     "command": {
-        # Matches SKILL.md Principle 6 "Command velocity" row: deadline 100 ms,
-        # lifespan 200 ms. Catches stale commands so the executor side does not
-        # act on an outdated velocity if the publisher hangs.
+        # Matches references/engineering-principles.md Principle 6 "Command velocity"
+        # row: deadline 100 ms, lifespan 200 ms. Catches stale commands so the
+        # executor side does not act on an outdated velocity if the publisher hangs.
         "pub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
                           "Command Publisher",
                           deadline_ms=100, lifespan_ms=200),
@@ -563,7 +563,7 @@ Examples:
   %(prog)s --pub reliable,volatile,keep_last,1 --sub reliable,volatile,keep_last,1
   %(prog)s --preset sensor
   %(prog)s --preset command
-  %(prog)s --pub reliable,volatile,keep_last,1,100,0,automatic,0 \\
+  %(prog)s --pub reliable,volatile,keep_last,1,100,0,automatic,0 \
            --sub reliable,volatile,keep_last,1,50,0,automatic,0 --json
 
 Extended format: reliability,durability,history,depth,deadline_ms,

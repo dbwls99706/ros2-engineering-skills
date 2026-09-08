@@ -1,6 +1,6 @@
 # ros2-engineering-skills
 
-Source version: **1.4.0**. See [release notes](CHANGELOG.md#140---2026-09-08) and
+Source version: **1.5.0**. See [release notes](CHANGELOG.md#150---2026-09-08) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -188,7 +188,7 @@ Detailed tables and the 22 recurring pitfalls are retained in
 loaded only when relevant. The [context budget](docs/CONTEXT_BUDGET.md) separates
 byte/line limits from measured, named-tokenizer counts.
 
-The decision router in [SKILL.md](SKILL.md) selects among 25 task-specific
+The decision router in [SKILL.md](SKILL.md) selects among 26 task-specific
 references plus cross-cutting engineering principles.
 Metadata is advertised before activation; the selected body and needed references
 supply the workflow. See [Skill contract](docs/SKILL_CONTRACT.md) for scope,
@@ -208,6 +208,10 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `eval_runner.py` | Check fixtures or lexically score supplied text | Does not invoke a model or prove semantics |
 | `verify_eval_capture.py` | Require complete paired captures with hashes | Integrity, not authenticity or quality |
 | `measure_context.py` | Count the selected body with named tokenizers | Excludes client wrappers and on-demand references |
+
+The JSON `version` emitted by the two validation hooks is the hook-report contract
+version, not the source bundle version. It changes only when that report contract
+changes; standalone utility versions follow the same independent-interface rule.
 
 ## Verification levels
 

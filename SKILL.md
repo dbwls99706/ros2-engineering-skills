@@ -13,7 +13,7 @@ compatibility: >
   target ROS 2 environment. Claude plugin hooks are client-specific.
 metadata:
   author: dbwls99706
-  version: "1.4.0"
+  version: "1.5.0"
   repository: "https://github.com/dbwls99706/ros2-engineering-skills"
 ---
 
@@ -43,14 +43,35 @@ root. Load only the reference section needed for the next decision.
    Prefer read-only, non-actuating checks first. Do not issue an unrelated set
    of CLI commands merely because ROS is mentioned. Check the installed API and
    command `--help` before copying version-sensitive examples.
-4. **Change and verify.** Make the smallest authorized change, keep a regression
+4. **Validate gates, not only outcomes.** Treat thresholds, latches, approval
+   rules, and readiness flags as engineering decisions with provenance. Identify
+   what a gate measures, why it exists, its source, uncertainty or error budget,
+   and its clearing condition. Never relax a gate merely because a run failed,
+   but do not assume a gate is valid merely because it already exists in code.
+5. **Change and verify.** Make the smallest authorized change, keep a regression
    for the observed defect, and rerun the relevant validator/test. Invoke bundled
    utilities using absolute paths under the discovered skill root, from the
    task's workspace. A validator inspects input; it does not authorize execution.
    Missing dependencies, cancelled commands, skipped checks, and partial output
    are not passes. Fix observed failures without deleting tests or weakening
    assertions to obtain a green result.
-5. **Finish at the requested boundary.** Report evidence, affected files, actual
+6. **Turn blockers into a resolution plan.** Do not repeat the same blocker with
+   no new evidence. Separate code changes, measurements, and operator decisions;
+   define the next test's independent variable, evidence, pass/fail criterion,
+   and stop condition. A count target is not proof that observations are
+   independent.
+7. **Separate permission from proof.** Track user authorization, the authorized
+   test envelope, observed technical state, supervised-test readiness, and
+   operational readiness separately. Authorization never raises a verification
+   level. Once authorization for the same unchanged, unexpired, and unrevoked
+   test envelope is established, do not ask for it again. Authorization is valid
+   only for its stated session or time window and until revoked; expiry,
+   revocation, or a material envelope change requires renewal. Execution authority
+   is separate: user authorization does not override product, client, site, or
+   safety policy or client tool permissions. If physical actuation is reserved to
+   an operator, state that once and provide the operator-ready bounded next action
+   instead of pretending authorization is missing.
+8. **Finish at the requested boundary.** Report evidence, affected files, actual
    commands and exit/results, verification level, and remaining limits. Stop when
    the requested scope is complete. Do not turn a review into deployment or a
    software test into an unrequested hardware experiment.
@@ -72,6 +93,7 @@ root. Load only the reference section needed for the next decision.
 | Camera, LiDAR, PCL, cv_bridge, depth | `references/perception.md` |
 | Sensor drivers, clock sync, extrinsics | `references/sensor-integration.md` |
 | Unit/integration tests, launch_testing, CI | `references/testing.md` |
+| Threshold provenance, authorization, blocked work, recovery evidence | `references/evidence-progression.md` |
 | Debugging, tracing, profiling, rosbag2, CLI | `references/debugging.md` |
 | Which install, configuration, or publisher actually runs | `references/runtime-provenance.md` |
 | Faults across ROS, network, bridge, and driver layers | `references/system-diagnostics.md` |
@@ -114,7 +136,9 @@ path crosses a trust boundary or owns hardware.
   or returning from a local SDK call does not prove that an actuator stopped.
   Motion recovery and fault injection require explicit authorization, an
   operator, conservative limits, restraint where appropriate, and independent
-  stopping. Do not enable Nav2 Spin/BackUp on unvalidated hardware by default.
+  stopping. Authorization is permission to attempt a bounded test, not evidence
+  that the stop path is already verified. Do not enable Nav2 Spin/BackUp on
+  unvalidated hardware by default.
 - **Timing and data:** use the actual message definition, joint names, units,
   frames, timestamps, and covariance layout. Match simulation time to a live
   `/clock`. Choose C++/Python and copy-avoidance mechanisms from measured

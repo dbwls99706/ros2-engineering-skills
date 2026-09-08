@@ -770,9 +770,9 @@ class TestPerceptionRegression(unittest.TestCase):
 ## 11. Verification levels
 
 Everything above produces evidence at some level of confidence, and the levels
-are not interchangeable. `SKILL.md` Principle 13 defines the ladder; this
-section is the working detail — what each level proves, what it explicitly does
-not, and what to cite as evidence.
+are not interchangeable. `references/engineering-principles.md` Principle 13
+defines the ladder; this section is the working detail — what each level proves,
+what it explicitly does not, and what to cite as evidence.
 
 State the level with every claim. The failure this prevents is not a wrong
 result; it is a *correct* result described in the language of a level it never
@@ -796,14 +796,29 @@ Rules for using the ladder:
   L3; passing L3 in simulation says nothing about L4 provenance.
 - **Name skipped levels.** "L1 and L2 pass; L4+ not run — no hardware access" is
   a complete report. Silence about hardware reads as hardware verification.
-- **L5 and L6 have preconditions, not just procedures.** Operator approval, a
-  physically restrained platform, and a hardware e-stop in hand. They are never
-  unattended CI steps and never AI agent actions on hardware
-  (`references/hardware-interface.md`, `references/safety-estop.md` §6).
+- **L5 preconditions are test-specific.** Require an explicitly authorized,
+  bounded envelope, an operator, an independent stop path, conservative limits,
+  and physical restraint/containment appropriate to the failure mode. The
+  high-risk physical fault-injection checks in `references/safety-estop.md` §6
+  and the failsafe kill test in `references/hardware-interface.md` are
+  operator-executed only.
+- **L6 preconditions are field-specific.** Require the applicable site/product
+  procedure, supervised operation, an operator stop path, and recorded evidence
+  for the actual duty cycle. L6 is never an unattended CI step.
+- **Authorization and execution authority are separate.** User/operator approval
+  does not override client, product, site, safety, or tool-permission policy. If
+  the active policy reserves physical actuation to an operator, provide the exact
+  operator-ready bounded action and evaluate the resulting evidence rather than
+  asking for the same authorization again (`references/evidence-progression.md`).
 - **Safety claims cite their weakest link.** A stop path verified at L3 is a
   stop path verified in simulation, however many tests it passed
   (`references/safety-estop.md` §3).
 
 ---
 
-**See also:** `references/simulation.md` for headless simulation testing in CI, `references/launch-system.md` for launch_testing framework patterns, `references/workspace-build.md` for colcon test configuration and CI/CD setup, `references/runtime-provenance.md` for verifying what a running system actually loaded.
+**See also:** `references/simulation.md` for headless simulation testing in CI,
+`references/launch-system.md` for launch_testing framework patterns,
+`references/workspace-build.md` for colcon test configuration and CI/CD setup,
+`references/runtime-provenance.md` for verifying what a running system actually
+loaded, and `references/evidence-progression.md` for authorization, gate, and
+recovery evidence.
