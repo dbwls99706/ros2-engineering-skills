@@ -22,22 +22,21 @@ def test_plugin_hooks_use_repository_scripts():
     path = ROOT / 'hooks' / 'hooks.json'
     with path.open('r', encoding='utf-8') as handle:
         hooks = json.load(handle)['hooks']
-    commands = [
-        hook['command']
-        for groups in hooks.values()
-        for group in groups
-        for hook in group['hooks']
-    ]
-    assert any('skill_validate_hook.py' in command for command in commands)
-    assert any('skill_stop_hook.py' in command for command in commands)
+    for event, groups in hooks.items():
+        for group in groups:
+            for hook in group['hooks']:
+                assert hook['command'] == (
+                    'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event)
+    adapter = (ROOT / 'scripts/claude_hook.py').read_text(encoding='utf-8')
+    for script in ('skill_validate_hook.py', 'skill_stop_hook.py'):
+        assert script in adapter and (ROOT / 'scripts' / script).is_file()
 
 
 def test_ci_uses_standard_plugin_locations():
     github_dir = ROOT / '.github'
     if not github_dir.is_dir():
         pytest.skip('not a full checkout (.github absent)')
-    workflow = (github_dir / 'workflows' / 'test.yml').read_text(
-        encoding='utf-8')
+    workflow = (github_dir / 'workflows' / 'test.yml').read_text(encoding='utf-8')
     assert '.claude-plugin/plugin.json' in workflow
     assert 'hooks/hooks.json' in workflow
     assert '.claude/hooks/' not in workflow

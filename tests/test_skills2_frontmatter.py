@@ -155,7 +155,14 @@ class TestVersionConsistency:
                 'skill_validate_hook.py', tmp_path,
                 extra_args=('--command', 'ros2 topic list')),
         }
-        assert versions == {'1.3.0'}
+        assert versions == {'1.4.0'}
+        changelog = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
+        release = re.search(r'^## (\d+\.\d+\.\d+) - (\d{4}-\d{2}-\d{2})$',
+                            changelog, re.MULTILINE)
+        assert release is not None
+        assert release.group(1) == skill_version
+        assert f'Source version: **{skill_version}**' in (
+            ROOT / 'README.md').read_text(encoding='utf-8')
 
 
 class TestSkillSizeBudget:

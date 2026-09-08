@@ -1,0 +1,47 @@
+name: Offline ROS runtime bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['fix/ci-and-docs']
+    paths:
+      - '.github/workflows/runtime-bundle.yml'
+      - 'tests/Dockerfile.runtime-bundle'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  export-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and export the development environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          git rev-parse HEAD > export/revision.txt
+          docker pull ros:humble-ros-base-jammy
+          docker image inspect ros:humble-ros-base-jammy > export/base-image.json
+          docker build --pull=false -f tests/Dockerfile.runtime-bundle \
+            -t ros2-offline-runtime .
+          docker image inspect ros2-offline-runtime > export/built-image.json
+          cid=$(docker create ros2-offline-runtime)
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          docker export "$cid" | gzip -1 > export/rootfs.tar.gz
+          (cd export && sha256sum rootfs.tar.gz > SHA256SUMS)
+          du -h export/rootfs.tar.gz
+      - name: Retain transferable runtime and provenance
+        uses: actions/upload-artifact@v6
+        with:
+          name: offline-ros-humble-runtime
+          path: export/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1

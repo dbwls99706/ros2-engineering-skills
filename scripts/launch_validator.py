@@ -215,6 +215,12 @@ class LaunchFileVisitor(ast.NodeVisitor):
         ns_node = self._get_keyword_value(node, "namespace")
         output_node = self._get_keyword_value(node, "output")
 
+        # PushRosNamespace affects execution context; it does not supply this
+        # constructor's required keyword. **kwargs prevents a static conclusion.
+        if (func_name == "LifecycleNode" and ns_node is None
+                and not any(kw.arg is None for kw in node.keywords)):
+            self._add(node, "error", "LifecycleNode() missing required 'namespace' argument")
+
         if pkg_node is None:
             self._add(node, "error", f"{func_name}() missing required 'package' argument")
 

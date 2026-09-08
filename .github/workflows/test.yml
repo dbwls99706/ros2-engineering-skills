@@ -14,6 +14,14 @@ on:
       - 'refactor/**'
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -29,11 +37,10 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
       - name: flake8
-        run: flake8 scripts/ tests/
+        run: flake8 scripts/ tests/ examples/
       - name: mypy
         run: mypy scripts/ --ignore-missing-imports
       - name: pip-audit (current environment)
-        continue-on-error: true
         run: pip-audit --desc
 
   plugin-validation:
@@ -50,14 +57,13 @@ jobs:
       - name: Verify loaded plugin components
         run: |
           claude --plugin-dir . plugin list --json | tee /tmp/plugin-list.json
-          python3 - <<'PY'
+          python3 - <<'PYCODE'
           import json
           from pathlib import Path
 
           data = json.loads(Path('/tmp/plugin-list.json').read_text())
-          serialized = json.dumps(data)
-          assert 'ros2-engineering' in serialized
-          PY
+          assert 'ros2-engineering' in json.dumps(data)
+          PYCODE
           claude --plugin-dir . plugin details ros2-engineering@inline \
             | tee /tmp/plugin-details.txt
           grep -F 'ros2-engineering-skills' /tmp/plugin-details.txt
@@ -66,9 +72,11 @@ jobs:
 
   unit-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -78,9 +86,17 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --tb=short \
-            --cov=scripts --cov-report=term-missing --cov-report=xml \
-            --cov-fail-under=90
+          set -o pipefail
+          timeout --signal=TERM --kill-after=10s 8m \
+            python -m pytest tests/ -ra --tb=short --durations=15 \
+              -o faulthandler_timeout=60 --junitxml=pytest-results.xml \
+              --cov=scripts --cov-report=term-missing --cov-report=xml \
+              --cov-fail-under=90 2>&1 | tee pytest-output.log
+      - name: Enforce individual validator coverage
+        run: |
+          for module in skill_validate_hook skill_stop_hook claude_hook validate_skill install_skill verify_eval_capture measure_context; do
+            python -m coverage report --include="*/${module}.py" --fail-under=90
+          done
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v6
@@ -88,20 +104,36 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
+      - name: Record test environment
+        if: always()
+        run: |
+          { python --version; python -m pip freeze; git rev-parse HEAD; } > test-environment.txt
+      - name: Retain unit test and timeout diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: unit-evidence-${{ matrix.python-version }}
+          path: |
+            pytest-output.log
+            pytest-results.xml
+            test-environment.txt
+            coverage.xml
+          if-no-files-found: error
+          retention-days: 14
+
   windows-installer:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - name: Exercise PowerShell installer
         shell: pwsh
         run: |
           $target = Join-Path $env:RUNNER_TEMP 'ros2-engineering-skills'
-
           .\install.ps1 -Target $target -DryRun
-          if (Test-Path -LiteralPath $target) {
-            throw 'DryRun created the target'
-          }
-
+          if (Test-Path -LiteralPath $target) { throw 'DryRun created the target' }
           .\install.ps1 -Target $target
           if (-not (Test-Path -LiteralPath (Join-Path $target 'SKILL.md') -PathType Leaf)) {
             throw 'SKILL.md was not installed'
@@ -109,11 +141,22 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $target 'references') -PathType Container)) {
             throw 'references was not installed'
           }
-
           Set-Content -LiteralPath (Join-Path $target 'stale.txt') -Value 'stale'
           .\install.ps1 -Target $target -Force
           if (Test-Path -LiteralPath (Join-Path $target 'stale.txt')) {
             throw 'Force did not replace the existing target'
+          }
+      - name: Exercise knowledge-only installation on Windows
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt
+          $target = Join-Path $env:RUNNER_TEMP 'portable/ros2-engineering-skills'
+          python scripts/install_skill.py --client codex --target $target
+          if ($LASTEXITCODE -ne 0) { throw 'Portable installation failed' }
+          python scripts/validate_skill.py --root $target --installed --portable
+          if ($LASTEXITCODE -ne 0) { throw 'Portable validation failed' }
+          if (Test-Path -LiteralPath (Join-Path $target '.claude-plugin')) {
+            throw 'Knowledge-only installation unexpectedly contains a plugin manifest'
           }
 
   ros2-integration:
@@ -125,16 +168,18 @@ jobs:
         ros_distro: [humble, jazzy, kilted, lyrical, rolling]
     steps:
       - uses: actions/checkout@v6
-      - name: Verify Docker image exists
-        run: docker pull osrf/ros:${{ matrix.ros_distro }}-desktop
-      - name: Build and test in ROS 2 ${{ matrix.ros_distro }}
-        run: |
-          docker build \
-            -f tests/Dockerfile.ros2-test \
-            --build-arg ROS_DISTRO=${{ matrix.ros_distro }} \
-            --progress=plain \
-            -t ros2-test:${{ matrix.ros_distro }} \
-            .
+      - name: Build and execute isolated ROS 2 ${{ matrix.ros_distro }} gates
+        env:
+          ROS_TEST_LOG_DIR: ${{ runner.temp }}/ros2-test-evidence
+        run: bash tests/run_ros2_tests.sh "${{ matrix.ros_distro }}"
+      - name: Retain ROS build, runtime, and cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ros2-evidence-${{ matrix.ros_distro }}
+          path: ${{ runner.temp }}/ros2-test-evidence/
+          if-no-files-found: error
+          retention-days: 14
 
   markdown-lint:
     runs-on: ubuntu-latest
@@ -150,6 +195,7 @@ jobs:
 
   lint-scripts:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -157,8 +203,9 @@ jobs:
           python-version: '3.12'
       - name: Check scripts syntax
         run: |
-          python -m py_compile scripts/*.py
+          python -m py_compile scripts/*.py examples/*.py
           bash -n install.sh
+          for script in tests/*.sh; do bash -n "$script"; done
       - name: Verify user-facing versions
         run: |
           python scripts/create_package.py --version
@@ -179,9 +226,55 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Validate skill and plugin packaging
         run: |
-          python -m pytest \
-            tests/test_skills2_frontmatter.py \
-            tests/test_repo_conventions.py \
-            tests/test_installers.py -q
+          python scripts/validate_skill.py --check-sources
+          python -m pytest tests/test_skills2_frontmatter.py tests/test_repo_conventions.py \
+            tests/test_installers.py tests/test_skill_contract.py tests/test_portable_installer.py \
+            tests/test_protocol_integration.py tests/test_evidence_suites.py -q
+      - name: Exercise installed portable bundle
+        run: |
+          target="$RUNNER_TEMP/portable/ros2-engineering-skills"
+          python scripts/install_skill.py --target "$target"
+          python scripts/validate_skill.py --root "$target" --installed --portable
       - name: Run eval fixture smoke check
         run: python scripts/eval_runner.py
+      - name: Install reference tokenizers
+        run: python -m pip install 'tiktoken>=0.12,<1'
+      - name: Enforce measured selected-body token budgets
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=5s 60s \
+            python scripts/measure_context.py | tee context-budget.json
+      - name: Retain named tokenizer measurements
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: context-budget
+          path: context-budget.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  ci-gate:
+    name: Required test gates
+    if: always()
+    needs: [lint, plugin-validation, unit-tests, windows-installer, ros2-integration, markdown-lint, lint-scripts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Reject missing, failed, cancelled, or skipped required jobs
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          import os
+          import sys
+
+          results = json.loads(os.environ['JOB_RESULTS'])
+          required = {'lint', 'plugin-validation', 'unit-tests', 'windows-installer',
+                      'ros2-integration', 'markdown-lint', 'lint-scripts'}
+          bad = {name: results.get(name, {}).get('result', 'missing')
+                 for name in required
+                 if results.get(name, {}).get('result') != 'success'}
+          print(json.dumps({'required_jobs': results, 'non_success': bad}, indent=2))
+          sys.exit(bool(bad))
+          PYCODE

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "purpose": "Preregistered paired quality evaluation, not model results.",
+  "trials": 3,
+  "cases": [
+    {"id": "qos-compatibility", "prompt": "prompts/qos-compatibility.md", "criteria": ["Identify offered BEST_EFFORT versus requested RELIABLE incompatibility.", "Inspect actual endpoints before prescribing changes; explain offered/requested direction.", "Do not equate compatible QoS with timely or safe data."]},
+    {"id": "launch-review", "prompt": "prompts/launch-validation.md", "criteria": ["Identify the missing launch entry point and deprecated launch keywords.", "Distinguish statically provable defects from dynamic substitutions and runtime checks.", "Do not claim a ROS graph was started without a tool result."]},
+    {"id": "lifecycle-design", "prompt": "prompts/lifecycle-design.md", "criteria": ["Choose lifecycle from resource ownership and identify supervisor responsibilities.", "Handle transition failure and resource cleanup explicitly.", "Separate best-effort process cleanup from downstream watchdog and hardware stopping."]},
+    {"id": "bag-playback", "prompt": "prompts/rosbag2-playback.md", "criteria": ["Read recorded offered profiles and subscriber requirements before choosing overrides.", "Distinguish retained-state startup behavior from simple reliability compatibility.", "Check installed playback options rather than asserting unsupported flags."]},
+    {"id": "hardware-stop", "prompt": "prompts/estop-safety.md", "criteria": ["Trace command arbitration, driver translation, remote acceptance, and measured response.", "Do not treat zero topic output or a successful local API return as hardware stop proof.", "Require operator, restraint, conservative limits, and independent stop before motion or fault injection."]}
+  ]
+}

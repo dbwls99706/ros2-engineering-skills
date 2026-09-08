@@ -557,7 +557,7 @@ def main(argv=None):
 
     result = {
         'hook': 'ros2-engineering-skills:pre-tool-use',
-        'version': '1.3.0',
+        'version': '1.4.0',
         'mode': 'manual' if manual_mode else 'event',
         'issues_count': len(issues),
         'issues': issues,

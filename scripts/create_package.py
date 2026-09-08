@@ -19,6 +19,24 @@ from typing import Optional
 from xml.sax.saxutils import escape as _xml_escape, quoteattr as _xml_quoteattr
 
 
+def _package_path(name: str, dest: Path) -> Path:
+    """Preflight an existing package before any generator writes through it."""
+    if not re.fullmatch(r'[a-z][a-z0-9_]*', name):
+        raise ValueError('Package name must be lowercase snake_case')
+    pkg = Path(dest) / name
+    if pkg.is_symlink() or (pkg.is_dir() and any(p.is_symlink() for p in pkg.rglob('*'))):
+        raise ValueError('Refusing to write a package containing a symlink')
+    if pkg.exists() and not pkg.is_dir():
+        raise ValueError('Package destination is not a directory')
+    return pkg
+
+
+def _validate_maintainer_name(name: str) -> None:
+    # This value is also emitted into source comments, not only escaped XML.
+    if not name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError('Maintainer name must be nonempty and contain no control characters')
+
+
 def _write(path: Path, text: str) -> None:
     """Write text to a file with explicit UTF-8 encoding (Windows safe)."""
     path.write_text(text, encoding='utf-8')
@@ -59,11 +77,65 @@ _APACHE2_CPP = """// Copyright 2024 {maintainer}
 
 
 def _copyright_py(maintainer: str = "TODO") -> str:
+    _validate_maintainer_name(maintainer)
     return _APACHE2_PY.format(maintainer=maintainer)
 
 
 def _copyright_cpp(maintainer: str = "TODO") -> str:
+    _validate_maintainer_name(maintainer)
     return _APACHE2_CPP.format(maintainer=maintainer)
+
+
+# Emitted into each lifecycle launch so installed packages are self-contained.
+# GetState is authoritative even if the VOLATILE transition-event sample was lost.
+_LIFECYCLE_ACTIVATION = """async def _activate_when_configured(context, node, activate_event, timeout=15.0):
+    ros_node = get_ros_node(context)
+    client = ros_node.create_client(
+        lifecycle_msgs.srv.GetState, node.node_name + '/get_state')
+    deadline = time.monotonic() + timeout
+    requested = False
+    future = None
+    last_state = 'service unavailable'
+    try:
+        while not context.is_shutdown:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f'Lifecycle startup timed out for {node.node_name}: {last_state}')
+            if not client.service_is_ready():
+                await asyncio.sleep(0.05)
+                continue
+            if future is None:
+                future = client.call_async(lifecycle_msgs.srv.GetState.Request())
+            if not future.done():
+                await asyncio.sleep(0.05)
+                continue
+            response = future.result()
+            future = None
+            if response is None:
+                raise RuntimeError(f'No lifecycle state returned for {node.node_name}')
+            state = response.current_state
+            last_state = f'{state.label} ({state.id})'
+            if state.id == lifecycle_msgs.msg.State.PRIMARY_STATE_ACTIVE:
+                return
+            if state.id == lifecycle_msgs.msg.State.PRIMARY_STATE_FINALIZED:
+                raise RuntimeError(f'{node.node_name} finalized during startup')
+            if state.id == lifecycle_msgs.msg.State.PRIMARY_STATE_INACTIVE and not requested:
+                # Exactly one activation request; never reactivate operator-stopped nodes.
+                context.emit_event_sync(activate_event)
+                requested = True
+            await asyncio.sleep(0.05)
+    except asyncio.CancelledError:
+        if not context.is_shutdown:
+            raise
+    finally:
+        if future is not None and not future.done():
+            future.cancel()
+        # During launch shutdown the ROS adapter owns destruction of its clients.
+        if not context.is_shutdown:
+            ros_node.destroy_client(client)
+
+
+"""
 
 
 def _generate_launch_file(name: str, lifecycle: bool = False,
@@ -72,18 +144,22 @@ def _generate_launch_file(name: str, lifecycle: bool = False,
     header = _copyright_py(maintainer_name)
     if lifecycle:
         return header + f"""
+import asyncio
+import time
+
 from launch import LaunchDescription
-from launch.actions import EmitEvent, RegisterEventHandler
+from launch.actions import EmitEvent, OpaqueCoroutine
 from launch.events import matches_action
 from launch.substitutions import PathJoinSubstitution
 from launch_ros.actions import LifecycleNode
-from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
+from launch_ros.ros_adapters import get_ros_node
 from launch_ros.substitutions import FindPackageShare
 import lifecycle_msgs.msg
+import lifecycle_msgs.srv
 
 
-def generate_launch_description():
+{_LIFECYCLE_ACTIVATION}def generate_launch_description():
     config = PathJoinSubstitution([
         FindPackageShare('{name}'), 'config', 'params.yaml'
     ])
@@ -105,21 +181,14 @@ def generate_launch_description():
             transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
         )
     )
-    # Auto-activate after configure succeeds
-    activate_event = RegisterEventHandler(
-        OnStateTransition(
-            target_lifecycle_node=node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[
-                EmitEvent(event=ChangeState(
-                    lifecycle_node_matcher=matches_action(node),
-                    transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
-                )),
-            ],
-        )
+    # Query actual state: an early transition_event can precede DDS discovery.
+    activate_event = ChangeState(
+        lifecycle_node_matcher=matches_action(node),
+        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
     )
-    return LaunchDescription([node, configure_event, activate_event])
+    activate_action = OpaqueCoroutine(
+        coroutine=_activate_when_configured, args=[node, activate_event])
+    return LaunchDescription([node, configure_event, activate_action])
 """
     else:
         return header + f"""
@@ -166,7 +235,7 @@ See `config/params.yaml` for default parameters.
 def create_cpp_package(name: str, dest: Path, component: bool = False,
                        maintainer_name: str = "TODO",
                        maintainer_email: str = "todo@todo.com") -> None:
-    pkg = dest / name
+    pkg = _package_path(name, dest)
     dirs = [
         pkg / "include" / name,
         pkg / "src",
@@ -183,6 +252,8 @@ def create_cpp_package(name: str, dest: Path, component: bool = False,
     if component:
         component_cmake = f"""
 find_package(rclcpp_components REQUIRED)
+target_link_libraries(${{PROJECT_NAME}}_lib PUBLIC rclcpp_components::component)
+ament_export_dependencies(rclcpp_components)
 rclcpp_components_register_node(${{PROJECT_NAME}}_lib
   PLUGIN "{name}::{_class_name(name)}Node"
   EXECUTABLE ${{PROJECT_NAME}}_component_node
@@ -231,8 +302,12 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(std_msgs REQUIRED)
   ament_add_gtest(test_{name} test/test_{name}.cpp)
-  target_link_libraries(test_{name} ${{PROJECT_NAME}}_lib)
+  target_link_libraries(test_{name}
+    ${{PROJECT_NAME}}_lib
+    std_msgs::std_msgs__rosidl_typesupport_cpp
+  )
 endif()
 
 ament_export_targets(export_${{PROJECT_NAME}} HAS_LIBRARY_TARGET)
@@ -286,35 +361,36 @@ namespace {name}
 {class_name}Node::{class_name}Node(const rclcpp::NodeOptions & options)
 : LifecycleNode("{name}", options)
 {{
+  declare_parameter("publish_rate", 50.0);
   RCLCPP_INFO(get_logger(), "Node created");
 }}
 
 {class_name}Node::CallbackReturn
-{class_name}Node::on_configure(const rclcpp_lifecycle::State &)
+{class_name}Node::on_configure(const rclcpp_lifecycle::State & state)
 {{
   RCLCPP_INFO(get_logger(), "Configuring...");
-  return CallbackReturn::SUCCESS;
+  return LifecycleNode::on_configure(state);
 }}
 
 {class_name}Node::CallbackReturn
-{class_name}Node::on_activate(const rclcpp_lifecycle::State &)
+{class_name}Node::on_activate(const rclcpp_lifecycle::State & state)
 {{
   RCLCPP_INFO(get_logger(), "Activating...");
-  return CallbackReturn::SUCCESS;
+  return LifecycleNode::on_activate(state);
 }}
 
 {class_name}Node::CallbackReturn
-{class_name}Node::on_deactivate(const rclcpp_lifecycle::State &)
+{class_name}Node::on_deactivate(const rclcpp_lifecycle::State & state)
 {{
   RCLCPP_INFO(get_logger(), "Deactivating...");
-  return CallbackReturn::SUCCESS;
+  return LifecycleNode::on_deactivate(state);
 }}
 
 {class_name}Node::CallbackReturn
-{class_name}Node::on_cleanup(const rclcpp_lifecycle::State &)
+{class_name}Node::on_cleanup(const rclcpp_lifecycle::State & state)
 {{
   RCLCPP_INFO(get_logger(), "Cleaning up...");
-  return CallbackReturn::SUCCESS;
+  return LifecycleNode::on_cleanup(state);
 }}
 
 void {class_name}Node::on_offered_qos_incompatible(
@@ -363,6 +439,8 @@ int main(int argc, char ** argv)
     _write(pkg / "test" / f"test_{name}.cpp", cpp_header + f"""
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
+#include <std_msgs/msg/string.hpp>
 #include "{name}/{name}_node.hpp"
 
 class {class_name}Test : public ::testing::Test
@@ -383,6 +461,27 @@ TEST_F({class_name}Test, NodeCreation)
   auto node = std::make_shared<{name}::{class_name}Node>();
   ASSERT_NE(node, nullptr);
 }}
+
+TEST_F({class_name}Test, PublishRateOverride)
+{{
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({{rclcpp::Parameter("publish_rate", 17.0)}});
+  auto node = std::make_shared<{name}::{class_name}Node>(options);
+  EXPECT_DOUBLE_EQ(node->get_parameter("publish_rate").as_double(), 17.0);
+}}
+
+TEST_F({class_name}Test, ManagedPublisherTransitions)
+{{
+  auto node = std::make_shared<{name}::{class_name}Node>();
+  auto publisher = node->create_publisher<std_msgs::msg::String>("managed_probe", 10);
+  EXPECT_FALSE(publisher->is_activated());
+  ASSERT_EQ(node->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(node->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  EXPECT_TRUE(publisher->is_activated());
+  ASSERT_EQ(node->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  EXPECT_FALSE(publisher->is_activated());
+  ASSERT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+}}
 """)
 
     # Generate launch file (lifecycle=True since C++ template uses LifecycleNode)
@@ -400,7 +499,8 @@ TEST_F({class_name}Test, NodeCreation)
     _write_package_xml(pkg, name, "ament_cmake", deps,
                        maintainer_name=maintainer_name,
                        maintainer_email=maintainer_email,
-                       extra_exec=["launch", "launch_ros", "lifecycle_msgs"])
+                       extra_exec=["launch", "launch_ros", "lifecycle_msgs", "rclpy"],
+                       extra_test=["std_msgs"])
     print(f"Created C++ package: {pkg}")
 
 
@@ -409,7 +509,10 @@ def _generate_python_lifecycle_node(name: str, class_name: str,
     """Generate a Python LifecycleNode with proper callback hooks."""
     py_header = _copyright_py(maintainer_name)
     return py_header + f"""
+import math
+
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
 
@@ -417,32 +520,66 @@ class {class_name}Node(LifecycleNode):
 
     def __init__(self, **kwargs):
         super().__init__('{name}', **kwargs)
+        # Declare once: cleanup/reconfigure must not redeclare the parameter.
+        self.declare_parameter('publish_rate', 50.0)
+        self.timer = None
+        self._timer_period = None
         self.get_logger().info('Node created (inactive)')
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        self.declare_parameter('publish_rate', 50.0)
         rate = self.get_parameter('publish_rate').value
+        if type(rate) not in (int, float) or not math.isfinite(rate) or rate <= 0:
+            self.get_logger().error('publish_rate must be finite and positive')
+            return TransitionCallbackReturn.FAILURE
+        period = 1.0 / rate
+        # rcl timers use a signed 64-bit nanosecond duration; zero would busy-loop.
+        if not math.isfinite(period) or not 1.0 <= period * 1e9 < 2.0 ** 63:
+            self.get_logger().error('publish_rate is outside the timer duration range')
+            return TransitionCallbackReturn.FAILURE
         self.get_logger().info(f'Configuring with rate={{rate}} Hz')
-        self._timer_period = 1.0 / rate
-        return TransitionCallbackReturn.SUCCESS
+        self._timer_period = period
+        result = super().on_configure(state)
+        if result != TransitionCallbackReturn.SUCCESS:
+            self._timer_period = None
+        return result
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        if self._timer_period is None:
+            return TransitionCallbackReturn.FAILURE
+        result = super().on_activate(state)
+        if result != TransitionCallbackReturn.SUCCESS:
+            return result
         self.timer = self.create_timer(self._timer_period, self.timer_callback)
         self.get_logger().info('Activated')
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        self.destroy_timer(self.timer)
+        self._release_timer()
         self.get_logger().info('Deactivated')
-        return TransitionCallbackReturn.SUCCESS
+        return super().on_deactivate(state)
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._release_timer()
+        self._timer_period = None
         self.get_logger().info('Cleaning up')
-        return TransitionCallbackReturn.SUCCESS
+        return super().on_cleanup(state)
 
     def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._release_timer()
+        self._timer_period = None
         self.get_logger().info('Shutting down')
-        return TransitionCallbackReturn.SUCCESS
+        return super().on_shutdown(state)
+
+    def on_error(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._release_timer()
+        self._timer_period = None
+        return super().on_error(state)
+
+    def _release_timer(self):
+        # Ordinary timers are not disabled by lifecycle state changes themselves.
+        if self.timer is not None:
+            self.destroy_timer(self.timer)
+            self.timer = None
 
     def timer_callback(self):
         pass  # Implement your logic here
@@ -450,14 +587,19 @@ class {class_name}Node(LifecycleNode):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = {class_name}Node()
+    node = None
     try:
+        node = {class_name}Node()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            if node is not None:
+                node.destroy_node()
+        finally:
+            # A signal handler may already have shut down the context.
+            rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
@@ -469,7 +611,7 @@ def create_python_package(name: str, dest: Path,
                           maintainer_name: str = "TODO",
                           maintainer_email: str = "todo@todo.com",
                           lifecycle: bool = False) -> None:
-    pkg = dest / name
+    pkg = _package_path(name, dest)
     dirs = [
         pkg / name,
         pkg / "launch",
@@ -493,7 +635,10 @@ def create_python_package(name: str, dest: Path,
         _write(pkg / name / f"{name}_node.py", lifecycle_src)
     else:
         _write(pkg / name / f"{name}_node.py", py_header + f"""
+import math
+
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 
@@ -501,9 +646,19 @@ class {class_name}Node(Node):
 
     def __init__(self, **kwargs):
         super().__init__('{name}', **kwargs)
-        self.declare_parameter('publish_rate', 50.0)
-        rate = self.get_parameter('publish_rate').value
-        self.timer = self.create_timer(1.0 / rate, self.timer_callback)
+        try:
+            self.declare_parameter('publish_rate', 50.0)
+            rate = self.get_parameter('publish_rate').value
+            if type(rate) not in (int, float) or not math.isfinite(rate) or rate <= 0:
+                raise ValueError('publish_rate must be finite and positive')
+            period = 1.0 / rate
+            if not math.isfinite(period) or not 1.0 <= period * 1e9 < 2.0 ** 63:
+                raise ValueError('publish_rate is outside the timer duration range')
+            self.timer = self.create_timer(period, self.timer_callback)
+        except Exception:
+            # A failed constructor never reaches main()'s node assignment.
+            self.destroy_node()
+            raise
         self.get_logger().info('Node started')
 
     def timer_callback(self):
@@ -518,14 +673,19 @@ class {class_name}Node(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = {class_name}Node()
+    node = None
     try:
+        node = {class_name}Node()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            if node is not None:
+                node.destroy_node()
+        finally:
+            # A signal handler may already have shut down the context.
+            rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
@@ -533,6 +693,8 @@ if __name__ == '__main__':
 """)
 
     _write(pkg / "setup.py", py_header + f"""
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = '{name}'
@@ -544,7 +706,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/bringup.launch.py']),
+        ('share/' + package_name + '/launch', sorted(glob('launch/*.launch.py'))),
         ('share/' + package_name + '/config', ['config/params.yaml']),
     ],
     install_requires=['setuptools'],
@@ -687,7 +849,7 @@ def test_pep257():
 def create_interfaces_package(name: str, dest: Path,
                               maintainer_name: str = "TODO",
                               maintainer_email: str = "todo@todo.com") -> None:
-    pkg = dest / name
+    pkg = _package_path(name, dest)
     dirs = [pkg / "msg", pkg / "srv", pkg / "action"]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
@@ -746,7 +908,7 @@ def create_hardware_interface_package(
     maintainer_email: str = "todo@todo.com",
 ) -> None:
     """Generate a ros2_control hardware_interface package (C++)."""
-    pkg = dest / name
+    pkg = _package_path(name, dest)
     dirs = [
         pkg / "include" / name,
         pkg / "src",
@@ -883,6 +1045,8 @@ private:
     _write(pkg / "src" / f"{name}_hardware.cpp", cpp_header + f"""
 #include "{name}/{name}_hardware.hpp"
 
+#include <algorithm>
+
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
 #include <pluginlib/class_list_macros.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -931,9 +1095,10 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {{
   RCLCPP_INFO(rclcpp::get_logger("{name}"), "Deactivating...");
-  // SAFETY: Zero all commands to prevent the robot from holding
-  // the last commanded velocity/position on shutdown.
-  std::fill(hw_commands_.begin(), hw_commands_.end(), 0.0);
+  // These are position targets: zero would command a new position, not a stop.
+  // Retain measured positions for this simulated interface. Real hardware needs
+  // an explicit driver stop/disable and independent watchdog; this is not one.
+  std::copy(hw_positions_.begin(), hw_positions_.end(), hw_commands_.begin());
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
 
@@ -1106,45 +1271,67 @@ ros2 control load_controller joint_state_broadcaster --set-state active
 def _generate_fleet_launch(name: str, num_robots: int,
                            lifecycle: bool = False,
                            maintainer_name: str = "TODO") -> str:
-    """Generate a multi-robot fleet launch file with namespace isolation."""
+    """Generate isolated nodes with one-shot, observed-state lifecycle startup."""
     header = _copyright_py(maintainer_name)
     node_type = "LifecycleNode" if lifecycle else "Node"
-    imports = "from launch_ros.actions import Node" if not lifecycle else \
-        "from launch_ros.actions import LifecycleNode"
+    std_imports = "import asyncio\nimport time\n\n" if lifecycle else ""
+    imports = "from launch.actions import GroupAction\n"
+    if lifecycle:
+        imports = ("from launch.actions import EmitEvent, GroupAction, OpaqueCoroutine\n"
+                   "from launch.events import matches_action\n")
+    ros_imports = f"from launch_ros.actions import {node_type}, PushRosNamespace\n"
+    if lifecycle:
+        ros_imports += ("from launch_ros.events.lifecycle import ChangeState\n"
+                        "from launch_ros.ros_adapters import get_ros_node\n")
+    ros_imports += "from launch_ros.substitutions import FindPackageShare\n"
+    if lifecycle:
+        ros_imports += "import lifecycle_msgs.msg\nimport lifecycle_msgs.srv\n"
+    helper = _LIFECYCLE_ACTIVATION if lifecycle else ""
 
-    robot_blocks = []
+    definitions, groups = [], []
     for i in range(1, num_robots + 1):
-        robot_blocks.append(f"""
+        definitions.append(f"""
+    node_{i} = {node_type}(
+        package='{name}',
+        executable='{name}_node',
+        name='{name}_robot_{i}',
+        namespace='',
+        parameters=[config],
+        output='screen',
+    )
+""")
+        startup = ""
+        if lifecycle:
+            startup = f"""
+                EmitEvent(event=ChangeState(
+                    lifecycle_node_matcher=matches_action(node_{i}),
+                    transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
+                )),
+                OpaqueCoroutine(coroutine=_activate_when_configured, args=[
+                    node_{i}, ChangeState(
+                        lifecycle_node_matcher=matches_action(node_{i}),
+                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+                    ),
+                ]),"""
+        groups.append(f"""
         GroupAction(
             scoped=True,
             actions=[
                 PushRosNamespace('robot_{i}'),
-                {node_type}(
-                    package='{name}',
-                    executable='{name}_node',
-                    name='{name}_robot_{i}',
-                    parameters=[config],
-                    output='screen',
-                ),
+                node_{i},{startup}
             ],
         ),""")
-
-    robots_str = "".join(robot_blocks)
-
     return header + f"""
-from launch import LaunchDescription
-from launch.actions import GroupAction
-from launch.substitutions import PathJoinSubstitution
-from launch_ros.actions import PushRosNamespace
-{imports}
-from launch_ros.substitutions import FindPackageShare
+{std_imports}from launch import LaunchDescription
+{imports}from launch.substitutions import PathJoinSubstitution
+{ros_imports}
 
-
-def generate_launch_description():
+{helper}def generate_launch_description():
     config = PathJoinSubstitution([
         FindPackageShare('{name}'), 'config', 'params.yaml'
     ])
-    return LaunchDescription([{robots_str}
+{''.join(definitions)}
+    return LaunchDescription([{''.join(groups)}
     ])
 """
 
@@ -1221,7 +1408,7 @@ ros2 security create_keystore ~/sros2_keystore
 ros2 security create_enclave ~/sros2_keystore /{name}
 
 # Generate permissions from policies
-ros2 security create_permission ~/sros2_keystore /{name} \\
+ros2 security create_permission ~/sros2_keystore /{name} \
   security/policies.xml
 
 # Run with security enabled
@@ -1332,7 +1519,7 @@ def main():
     if args.robots < 0:
         parser.error(f"--robots must be >= 0 (got {args.robots})")
 
-    if not re.match(r'^[a-z][a-z0-9_]*$', args.name):
+    if not re.fullmatch(r'[a-z][a-z0-9_]*', args.name):
         print(f"Error: Package name '{args.name}' is invalid. "
               "Use snake_case (lowercase letters, digits, underscores; "
               "must start with a letter).", file=sys.stderr)
@@ -1342,13 +1529,18 @@ def main():
     # would still be problematic inside an XML attribute. We intentionally
     # allow internal addresses without a TLD (e.g. `dev@localhost`) and
     # leave full RFC 5322 validation out of scope.
-    if not re.match(r'^[^\s<>"\']+@[^\s<>"\']+$', args.maintainer_email):
+    if not re.fullmatch(r'[^\s<>"\']+@[^\s<>"\']+', args.maintainer_email):
         print(f"Error: Maintainer email '{args.maintainer_email}' appears "
               f"invalid (must contain '@' and no whitespace or quote chars).",
               file=sys.stderr)
         sys.exit(1)
 
     dest = Path(args.dest)
+    try:
+        _validate_maintainer_name(args.maintainer_name)
+        _package_path(args.name, dest)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not dest.exists():
         dest.mkdir(parents=True)
 
@@ -1381,6 +1573,11 @@ def main():
             maintainer_name=m_name)
         fleet_path = dest / args.name / "launch" / "fleet.launch.py"
         _write(fleet_path, fleet_content)
+        # This private config is passed explicitly to each generated fleet node.
+        # Their remapped names/namespaces cannot match the single-node YAML key.
+        config_path = dest / args.name / "config" / "params.yaml"
+        config = config_path.read_text(encoding='utf-8')
+        _write(config_path, config.replace(args.name + ':', '/**:', 1))
         print(f"  + fleet launch for {args.robots} robots: {fleet_path}")
 
     if args.sros2:

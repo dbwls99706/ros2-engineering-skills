@@ -1,8 +1,8 @@
 # Development and test dependencies for ros2-engineering-skills.
 #
 # Version policy: bounded major ranges, not exact pins. This manages the
-# compatibility window — each upper bound is the last major verified against
-# CI's Python 3.10-3.12 matrix — but it is NOT a fully reproducible lock.
+# compatibility window for CI's Python 3.10-3.14 targets, but it is NOT a
+# fully reproducible lock.
 # Raise an upper bound only after CI verifies the new major.
 flake8>=7,<8
 hypothesis>=6.100,<7
@@ -11,8 +11,10 @@ pip-audit>=2.7,<3
 # Lower bound is a security floor, not a preference: PYSEC-2026-1845
 # (predictable /tmp/pytest-of-<user> paths, local privilege escalation)
 # is fixed in 9.0.3, so the previous <9 ceiling could not be satisfied
-# safely. Verified against the 3.10-3.12 matrix.
+# safely. CI exercises the supported Python 3.10-3.14 targets.
 pytest>=9.0.3,<10
 pytest-cov>=5,<8
+# Generated setup.py metadata tests import setuptools; clean venvs omit it.
+setuptools>=84,<85
 PyYAML>=6,<7
 types-PyYAML>=6,<7

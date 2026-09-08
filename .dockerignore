@@ -1,5 +1,11 @@
 .git
-.github
+.venv
+venv
 .pytest_cache
 __pycache__
 *.pyc
+.hypothesis
+.mypy_cache
+.coverage
+coverage.xml
+htmlcov

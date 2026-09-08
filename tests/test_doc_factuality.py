@@ -23,7 +23,8 @@ import re
 ROOT = os.path.join(os.path.dirname(__file__), '..')
 NAVIGATION_MD = os.path.join(ROOT, 'references', 'navigation.md')
 TESTING_MD = os.path.join(ROOT, 'references', 'testing.md')
-SKILL_MD = os.path.join(ROOT, 'SKILL.md')
+# Detailed tables moved intact out of the selected body; retain all regressions.
+PRINCIPLES_MD = os.path.join(ROOT, 'references', 'engineering-principles.md')
 NAV2_EXPECTED = os.path.join(ROOT, 'evals', 'expected',
                              'nav2-configuration.md')
 
@@ -76,9 +77,9 @@ class TestNav2RecoveryNaming:
         self._assert_legacy_context_only(
             NAVIGATION_MD, ('recoveries_server', 'nav2_recoveries'))
 
-    def test_skill_md(self):
+    def test_detailed_principles(self):
         self._assert_legacy_context_only(
-            SKILL_MD, ('recoveries_server', 'nav2_recoveries'))
+            PRINCIPLES_MD, ('recoveries_server', 'nav2_recoveries'))
 
     def test_nav2_expected_has_no_legacy_recovery_naming(self):
         content = _read(NAV2_EXPECTED)
@@ -146,7 +147,7 @@ class TestBtNavigatorParameter:
 
     def test_old_param_only_in_pre_galactic_context(self):
         marker = re.compile(r'pre-Galactic|Foxy', re.IGNORECASE)
-        for path in (NAVIGATION_MD, SKILL_MD, NAV2_EXPECTED):
+        for path in (NAVIGATION_MD, PRINCIPLES_MD, NAV2_EXPECTED):
             for lineno, line in enumerate(_lines(path), start=1):
                 if 'default_bt_xml_filename' in line:
                     assert marker.search(line), (
@@ -224,7 +225,7 @@ HARDWARE_MD = os.path.join(ROOT, 'references', 'hardware-interface.md')
 
 
 class TestDistroMatrix:
-    """Row-scoped checks on the SKILL.md distro table.
+    """Row-scoped checks on the engineering-principles.md distro table.
 
     Deliberately anchored to specific table cells (not global string
     absence) so that changelog prose mentioning an old value never trips
@@ -235,7 +236,7 @@ class TestDistroMatrix:
     """
 
     def _distro_table(self):
-        lines = _lines(SKILL_MD)
+        lines = _lines(PRINCIPLES_MD)
         header_idx = next(
             i for i, line in enumerate(lines)
             if line.startswith('| Feature') and 'Humble' in line)
@@ -252,7 +253,7 @@ class TestDistroMatrix:
     def test_table_has_lyrical_column(self):
         rows = self._distro_table()
         assert 'Lyrical (LTS)' in rows['EOL'], (
-            'SKILL.md distro table must carry a Lyrical (LTS) column')
+            'engineering-principles.md distro table must carry a Lyrical (LTS) column')
 
     def test_kilted_eol_cell_is_dec_2026(self):
         assert self._distro_table()['EOL']['Kilted (non-LTS)'] == 'Dec 2026'
@@ -277,7 +278,7 @@ class TestDistroMatrix:
         content = _read(HARDWARE_MD)
         assert re.search(r'Kilted \(5\.x\)', content), (
             'hardware-interface.md distro comparison must keep Kilted at '
-            '5.x, matching the SKILL.md table')
+            '5.x, matching the engineering-principles.md table')
 
 
 class TestCallbackGroupRule:
@@ -288,11 +289,11 @@ class TestCallbackGroupRule:
     surgery where none was needed."""
 
     def _skill_table_row(self, needle):
-        for line in _lines(SKILL_MD):
+        for line in _lines(PRINCIPLES_MD):
             if line.startswith('|') and needle in line:
                 return line
         raise AssertionError(
-            f'no SKILL.md table row containing {needle!r}')
+            f'no engineering-principles.md table row containing {needle!r}')
 
     def test_service_future_row_states_async_is_safe(self):
         row = self._skill_table_row('service future')
@@ -300,7 +301,7 @@ class TestCallbackGroupRule:
         assert 'Deadlocks even with async' not in row
 
     def test_principle_bullet_distinguishes_sync_wait(self):
-        lines = _lines(SKILL_MD)
+        lines = _lines(PRINCIPLES_MD)
         start = next(i for i, line in enumerate(lines)
                      if 'Calling a service from a callback' in line)
         end = next((i for i in range(start + 1, len(lines))
@@ -358,13 +359,13 @@ class TestDefaultRmwVendor:
 class TestZeroCopyClaims:
     """Copy avoidance is conditional, split across three mechanisms
     (rclcpp intra-process, loaned messages/SHM, separate-process DDS).
-    Pinned error: SKILL.md called separate-process intra-host DDS
+    Pinned error: engineering-principles.md called separate-process intra-host DDS
     'zero-overhead' and presented intra-process transfer as unconditionally
     zero-copy."""
 
-    def test_skill_md_only_negates_zero_overhead(self):
+    def test_detailed_principles_only_negates_zero_overhead(self):
         """'zero-overhead' may appear only in its negation."""
-        for lineno, line in enumerate(_lines(SKILL_MD), start=1):
+        for lineno, line in enumerate(_lines(PRINCIPLES_MD), start=1):
             plain = line.replace('**', '')
             idx = 0
             while True:
@@ -372,13 +373,13 @@ class TestZeroCopyClaims:
                 if idx == -1:
                     break
                 assert plain[max(0, idx - 4):idx] == 'not ', (
-                    f'SKILL.md:{lineno} asserts zero-overhead positively: '
+                    f'engineering-principles.md:{lineno} asserts zero-overhead positively: '
                     f'{line.strip()!r}'
                 )
                 idx += 1
 
-    def test_skill_md_states_dds_is_not_zero_overhead(self):
-        assert 'not zero-overhead' in _read(SKILL_MD).replace('**', '')
+    def test_detailed_principles_states_dds_is_not_zero_overhead(self):
+        assert 'not zero-overhead' in _read(PRINCIPLES_MD).replace('**', '')
 
     def test_nodes_executors_lists_three_mechanisms(self):
         content = _read(os.path.join(ROOT, 'references',
@@ -391,7 +392,7 @@ class TestZeroCopyClaims:
         """Vendor SHM/PSMX and loaned messages CAN avoid copies across
         processes when their preconditions hold — the docs must not claim
         inter-process is 'never' zero-copy (pinned overcorrection)."""
-        for path in (SKILL_MD,
+        for path in (PRINCIPLES_MD,
                      os.path.join(ROOT, 'references', 'nodes-executors.md')):
             content = _read(path)
             assert 'never zero-overhead' not in content, path
@@ -407,10 +408,10 @@ class TestCrashSafetyFraming:
     hardware-interface.md called the destructor a crash safety net."""
 
     def _skill_row(self, needle):
-        for line in _lines(SKILL_MD):
+        for line in _lines(PRINCIPLES_MD):
             if line.startswith('|') and needle in line:
                 return line
-        raise AssertionError(f'no SKILL.md table row containing {needle!r}')
+        raise AssertionError(f'no engineering-principles.md table row containing {needle!r}')
 
     def test_pitfall_8_requires_downstream_failsafes(self):
         row = self._skill_row('Treating process-side cleanup')
@@ -438,7 +439,7 @@ class TestBlockingWaitSemantics:
     does not block; it immediately returns whatever result is stored."""
 
     def _callback_bullet(self):
-        lines = _lines(SKILL_MD)
+        lines = _lines(PRINCIPLES_MD)
         start = next(i for i, line in enumerate(lines)
                      if 'Calling a service from a callback' in line)
         end = next((i for i in range(start + 1, len(lines))
@@ -536,17 +537,17 @@ def _flat(text):
 
 
 def _skill_row(needle):
-    """The single SKILL.md table row containing `needle`.
+    """The single engineering-principles.md table row containing `needle`.
 
     Row-scoped rather than whole-file: a global ban on a corrected phrase
     would also outlaw the migration note or test docstring that explains
     why the phrase was wrong.
     """
-    rows = [line for line in _lines(SKILL_MD)
+    rows = [line for line in _lines(PRINCIPLES_MD)
             if line.startswith('|') and needle in line]
-    assert rows, f'no SKILL.md table row containing {needle!r}'
+    assert rows, f'no engineering-principles.md table row containing {needle!r}'
     assert len(rows) == 1, (
-        f'{needle!r} matches {len(rows)} SKILL.md rows; tighten the needle')
+        f'{needle!r} matches {len(rows)} engineering-principles.md rows; tighten the needle')
     return rows[0]
 
 
@@ -599,7 +600,7 @@ class TestConstructorPublishQualified:
 class TestCiCacheInvalidation:
     """build/ and install/ caches can serve artifacts whose sources were
     deleted, so CI links and tests code that no longer exists. Pinned
-    errors: both SKILL.md Principle 10 and testing.md's CI section
+    errors: both engineering-principles.md Principle 10 and testing.md's CI section
     recommended caching build/ and install/ with no invalidation
     conditions; a first correction then called ccache and apt layers safe
     'unconditionally', which they are not.
@@ -608,7 +609,7 @@ class TestCiCacheInvalidation:
     search would pass on an unrelated mention elsewhere in the file."""
 
     def _principle_10_block(self):
-        lines = _lines(SKILL_MD)
+        lines = _lines(PRINCIPLES_MD)
         start = next(i for i, line in enumerate(lines)
                      if line.startswith('### ') and 'Build and CI hygiene'
                      in line)
@@ -660,20 +661,20 @@ class TestVerificationLevels:
     presence: a shuffled or duplicated ladder stops being a ladder."""
 
     def _skill_ladder_rows(self):
-        section = _md_section(SKILL_MD, 'Verification levels')
+        section = _md_section(PRINCIPLES_MD, 'Verification levels')
         return re.findall(r'^\| (L\d) \|', section, re.M)
 
-    def test_skill_md_ladder_is_ordered_and_unique(self):
+    def test_detailed_principles_ladder_is_ordered_and_unique(self):
         rows = self._skill_ladder_rows()
         expected = [f'L{i}' for i in range(7)]
         assert rows == expected, (
-            f'SKILL.md verification ladder must be L0..L6 in order, got '
+            f'engineering-principles.md verification ladder must be L0..L6 in order, got '
             f'{rows}')
 
-    def test_skill_md_forbids_level_inflation(self):
-        section = _md_section(SKILL_MD, 'Verification levels')
+    def test_detailed_principles_forbids_level_inflation(self):
+        section = _md_section(PRINCIPLES_MD, 'Verification levels')
         assert 'may not share a sentence' in section, (
-            'SKILL.md must forbid reporting static results as hardware '
+            'engineering-principles.md must forbid reporting static results as hardware '
             'verification')
 
     def test_testing_md_expands_every_level_in_order(self):
@@ -774,20 +775,20 @@ class TestEndToEndStopVerification:
         assert 'point-in-time' in section, (
             'publisher-count observation must be marked point-in-time')
 
-    def test_skill_md_pitfall_covers_the_topic_level_illusion(self):
+    def test_detailed_principles_pitfall_covers_the_topic_level_illusion(self):
         row = _skill_row('the robot stopped')
         assert 'safety-estop' in row
 
-    def test_skill_md_summary_matches_the_detailed_chain(self):
+    def test_detailed_principles_summary_matches_the_detailed_chain(self):
         """The always-loaded summary must not re-merge what the reference
         file separates. Pinned error: Principle 12 and pitfall 15 said the
         vendor "call returns success" / "call succeeded", equating a local
         return with remote acceptance in exactly the sentence most readers
         will see."""
-        content = _flat(_read(SKILL_MD))
+        content = _flat(_read(PRINCIPLES_MD))
         for merged in ('that call returns success', 'call succeeded'):
             assert merged not in content, (
-                f'SKILL.md still equates a local return with acceptance: '
+                f'engineering-principles.md still equates a local return with acceptance: '
                 f'{merged!r}')
         assert 'local submission plus any available remote-acceptance' in (
             content), 'Principle 12 must carry the split summary'
@@ -963,7 +964,7 @@ class TestDistroDetectionOrder:
     the workspace's build pin answer different questions."""
 
     def _principle_1_block(self):
-        lines = _lines(SKILL_MD)
+        lines = _lines(PRINCIPLES_MD)
         start = next(i for i, line in enumerate(lines)
                      if line.startswith('### ') and 'Distro awareness' in line)
         end = next((i for i in range(start + 1, len(lines))
@@ -996,7 +997,7 @@ class TestQosDefaultsAreStartingPoints:
     whether the delivered data is timely or safe to act on."""
 
     def _principle_6_block(self):
-        lines = _lines(SKILL_MD)
+        lines = _lines(PRINCIPLES_MD)
         start = next(i for i, line in enumerate(lines)
                      if line.startswith('### ') and 'Quality of Service' in
                      line)
@@ -1024,7 +1025,7 @@ class TestLifecycleDefaultHasExceptions:
     a cost — a manager plus new transition-failure states."""
 
     def _principle_9_block(self):
-        lines = _lines(SKILL_MD)
+        lines = _lines(PRINCIPLES_MD)
         start = next(i for i, line in enumerate(lines)
                      if line.startswith('### ') and 'Lifecycle-first' in line)
         end = next((i for i in range(start + 1, len(lines))
@@ -1049,14 +1050,14 @@ class TestAiPitfallTableGrowth:
     append-only and numbered sequentially. This pins the field-review batch
     (15-22) so a future edit cannot quietly drop them.
 
-    Counted inside the AI-pitfalls section only — other tables in SKILL.md
+    Counted inside the AI-pitfalls section only — other tables in engineering-principles.md
     also start rows with a digit, and a whole-file count would drift with
     any of them."""
 
     _EXPECTED_MINIMUM = 22
 
     def _pitfall_section(self):
-        return _md_section(SKILL_MD, 'AI pitfalls')
+        return _md_section(PRINCIPLES_MD, 'AI pitfalls')
 
     def _pitfall_numbers(self):
         return [int(n) for n in
@@ -1082,7 +1083,7 @@ class TestAiPitfallTableGrowth:
                        "open-loop smoother's feedback path",
                        'stale daemon cache'):
             assert needle in section, (
-                f'SKILL.md pitfall table missing: {needle!r}')
+                f'engineering-principles.md pitfall table missing: {needle!r}')
 
 
 REALTIME_MD = os.path.join(ROOT, 'references', 'realtime.md')

@@ -2,11 +2,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|Bash",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|pwsh|cmd",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/skill_validate_hook.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" PreToolUse",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/skill_stop_hook.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" Stop",
             "timeout": 15
           }
         ]

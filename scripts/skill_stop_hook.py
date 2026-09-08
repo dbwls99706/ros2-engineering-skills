@@ -603,7 +603,7 @@ def main():
 
     result = {
         'hook': 'ros2-engineering-skills:stop',
-        'version': '1.3.0',
+        'version': '1.4.0',
         'issues_count': len(all_issues),
         'issues': all_issues,
         'checks_skipped': checks_skipped,

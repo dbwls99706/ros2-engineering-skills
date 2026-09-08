@@ -114,8 +114,12 @@ auto future = client->async_send_request(request,
   });
 ```
 
-**Never call services synchronously from a callback** — it deadlocks the executor.
-Always use `async_send_request` with a callback or a separate thread.
+**Prefer an asynchronous request and return from the callback.** Waiting inside a
+mutually exclusive callback group can prevent the response callback from running,
+even with a multithreaded executor. A synchronous wait is not universally a
+deadlock: separate callback groups and enough workers can allow progress. Verify
+the actual groups, worker count, timeout, and cleanup rather than assuming either
+that every wait deadlocks or that adding threads alone fixes it.
 
 ## 4. Actions
 
@@ -919,7 +923,7 @@ For high-bandwidth data (images, point clouds):
 |---|---|---|
 | Publisher sends, subscriber receives nothing | QoS mismatch | Check with `ros2 topic info -v`, align reliability/durability |
 | Subscriber gets messages but with huge delay | Large message + RELIABLE + small buffer | Increase depth or switch to BEST_EFFORT for sensor data |
-| Service call hangs forever | Synchronous call in executor callback | Use `async_send_request`, never synchronous in callbacks |
+| Service call hangs forever | A wait blocks the response callback group or all workers | Prefer async request + callback return; verify group separation and available workers |
 | Action feedback not arriving | Client not spinning | Ensure client node is being spun (e.g., in MultiThreadedExecutor) |
 | "Failed to find type support" at runtime | Interface package not sourced | `source install/setup.bash` and verify with `ros2 interface show` |
 | Messages arrive out of order | BEST_EFFORT over lossy network | Use RELIABLE for ordering guarantees, or handle reordering in logic |
