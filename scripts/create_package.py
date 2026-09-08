@@ -86,24 +86,80 @@ def _copyright_cpp(maintainer: str = "TODO") -> str:
     return _APACHE2_CPP.format(maintainer=maintainer)
 
 
+# Emitted into each lifecycle launch so installed packages are self-contained.
+# GetState is authoritative even if the VOLATILE transition-event sample was lost.
+_LIFECYCLE_ACTIVATION = """async def _activate_when_configured(context, node, activate_event, timeout=15.0):
+    ros_node = get_ros_node(context)
+    client = ros_node.create_client(
+        lifecycle_msgs.srv.GetState, node.node_name + '/get_state')
+    deadline = time.monotonic() + timeout
+    requested = False
+    future = None
+    last_state = 'service unavailable'
+    try:
+        while not context.is_shutdown:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f'Lifecycle startup timed out for {node.node_name}: {last_state}')
+            if not client.service_is_ready():
+                await asyncio.sleep(0.05)
+                continue
+            if future is None:
+                future = client.call_async(lifecycle_msgs.srv.GetState.Request())
+            if not future.done():
+                await asyncio.sleep(0.05)
+                continue
+            response = future.result()
+            future = None
+            if response is None:
+                raise RuntimeError(f'No lifecycle state returned for {node.node_name}')
+            state = response.current_state
+            last_state = f'{state.label} ({state.id})'
+            if state.id == lifecycle_msgs.msg.State.PRIMARY_STATE_ACTIVE:
+                return
+            if state.id == lifecycle_msgs.msg.State.PRIMARY_STATE_FINALIZED:
+                raise RuntimeError(f'{node.node_name} finalized during startup')
+            if state.id == lifecycle_msgs.msg.State.PRIMARY_STATE_INACTIVE and not requested:
+                # Exactly one activation request; never reactivate operator-stopped nodes.
+                context.emit_event_sync(activate_event)
+                requested = True
+            await asyncio.sleep(0.05)
+    except asyncio.CancelledError:
+        if not context.is_shutdown:
+            raise
+    finally:
+        if future is not None and not future.done():
+            future.cancel()
+        # During launch shutdown the ROS adapter owns destruction of its clients.
+        if not context.is_shutdown:
+            ros_node.destroy_client(client)
+
+
+"""
+
+
 def _generate_launch_file(name: str, lifecycle: bool = False,
                           maintainer_name: str = "TODO") -> str:
     """Generate a basic bringup.launch.py file for the package."""
     header = _copyright_py(maintainer_name)
     if lifecycle:
         return header + f"""
+import asyncio
+import time
+
 from launch import LaunchDescription
-from launch.actions import EmitEvent, RegisterEventHandler
+from launch.actions import EmitEvent, OpaqueCoroutine
 from launch.events import matches_action
 from launch.substitutions import PathJoinSubstitution
 from launch_ros.actions import LifecycleNode
-from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
+from launch_ros.ros_adapters import get_ros_node
 from launch_ros.substitutions import FindPackageShare
 import lifecycle_msgs.msg
+import lifecycle_msgs.srv
 
 
-def generate_launch_description():
+{_LIFECYCLE_ACTIVATION}def generate_launch_description():
     config = PathJoinSubstitution([
         FindPackageShare('{name}'), 'config', 'params.yaml'
     ])
@@ -125,21 +181,14 @@ def generate_launch_description():
             transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
         )
     )
-    # Auto-activate after configure succeeds
-    activate_event = RegisterEventHandler(
-        OnStateTransition(
-            target_lifecycle_node=node,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[
-                EmitEvent(event=ChangeState(
-                    lifecycle_node_matcher=matches_action(node),
-                    transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
-                )),
-            ],
-        )
+    # Query actual state: an early transition_event can precede DDS discovery.
+    activate_event = ChangeState(
+        lifecycle_node_matcher=matches_action(node),
+        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
     )
-    return LaunchDescription([node, configure_event, activate_event])
+    activate_action = OpaqueCoroutine(
+        coroutine=_activate_when_configured, args=[node, activate_event])
+    return LaunchDescription([node, configure_event, activate_action])
 """
     else:
         return header + f"""
@@ -450,7 +499,7 @@ TEST_F({class_name}Test, ManagedPublisherTransitions)
     _write_package_xml(pkg, name, "ament_cmake", deps,
                        maintainer_name=maintainer_name,
                        maintainer_email=maintainer_email,
-                       extra_exec=["launch", "launch_ros", "lifecycle_msgs"],
+                       extra_exec=["launch", "launch_ros", "lifecycle_msgs", "rclpy"],
                        extra_test=["std_msgs"])
     print(f"Created C++ package: {pkg}")
 
@@ -1222,20 +1271,22 @@ ros2 control load_controller joint_state_broadcaster --set-state active
 def _generate_fleet_launch(name: str, num_robots: int,
                            lifecycle: bool = False,
                            maintainer_name: str = "TODO") -> str:
-    """Generate isolated nodes and target lifecycle transitions by action identity."""
+    """Generate isolated nodes with one-shot, observed-state lifecycle startup."""
     header = _copyright_py(maintainer_name)
     node_type = "LifecycleNode" if lifecycle else "Node"
+    std_imports = "import asyncio\nimport time\n\n" if lifecycle else ""
     imports = "from launch.actions import GroupAction\n"
     if lifecycle:
-        imports = ("from launch.actions import EmitEvent, GroupAction, RegisterEventHandler\n"
+        imports = ("from launch.actions import EmitEvent, GroupAction, OpaqueCoroutine\n"
                    "from launch.events import matches_action\n")
     ros_imports = f"from launch_ros.actions import {node_type}, PushRosNamespace\n"
     if lifecycle:
-        ros_imports += ("from launch_ros.event_handlers import OnStateTransition\n"
-                        "from launch_ros.events.lifecycle import ChangeState\n")
+        ros_imports += ("from launch_ros.events.lifecycle import ChangeState\n"
+                        "from launch_ros.ros_adapters import get_ros_node\n")
     ros_imports += "from launch_ros.substitutions import FindPackageShare\n"
     if lifecycle:
-        ros_imports += "import lifecycle_msgs.msg\n"
+        ros_imports += "import lifecycle_msgs.msg\nimport lifecycle_msgs.srv\n"
+    helper = _LIFECYCLE_ACTIVATION if lifecycle else ""
 
     definitions, groups = [], []
     for i in range(1, num_robots + 1):
@@ -1249,37 +1300,33 @@ def _generate_fleet_launch(name: str, num_robots: int,
         output='screen',
     )
 """)
-        activate = configure = ""
+        startup = ""
         if lifecycle:
-            activate = f"""
-                RegisterEventHandler(OnStateTransition(
-                    target_lifecycle_node=node_{i},
-                    start_state='configuring',
-                    goal_state='inactive',
-                    entities=[EmitEvent(event=ChangeState(
-                        lifecycle_node_matcher=matches_action(node_{i}),
-                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
-                    ))],
-                )),"""
-            configure = f"""
+            startup = f"""
                 EmitEvent(event=ChangeState(
                     lifecycle_node_matcher=matches_action(node_{i}),
                     transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
-                )),"""
+                )),
+                OpaqueCoroutine(coroutine=_activate_when_configured, args=[
+                    node_{i}, ChangeState(
+                        lifecycle_node_matcher=matches_action(node_{i}),
+                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+                    ),
+                ]),"""
         groups.append(f"""
         GroupAction(
             scoped=True,
             actions=[
-                PushRosNamespace('robot_{i}'),{activate}
-                node_{i},{configure}
+                PushRosNamespace('robot_{i}'),
+                node_{i},{startup}
             ],
         ),""")
     return header + f"""
-from launch import LaunchDescription
+{std_imports}from launch import LaunchDescription
 {imports}from launch.substitutions import PathJoinSubstitution
 {ros_imports}
 
-def generate_launch_description():
+{helper}def generate_launch_description():
     config = PathJoinSubstitution([
         FindPackageShare('{name}'), 'config', 'params.yaml'
     ])

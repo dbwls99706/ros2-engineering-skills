@@ -4,6 +4,20 @@ All notable changes are documented here.
 
 ## Unreleased
 
+## 1.4.0 - 2026-09-08
+
+- Make generated lifecycle startup independent of transition-event delivery: query
+  the named node's actual state, request activation once after configuration, and
+  fail with its last observed state if startup cannot complete within the deadline.
+  Apply the same behavior to single-node and multi-robot launch files. See the
+  [startup regression](docs/LIFECYCLE_STARTUP.md).
+- Exercise real fleet startup with transition-event callbacks deliberately
+  discarded, while retaining service, parameter, sibling-isolation, and child-exit
+  assertions. Keep the original runtime checks and time limits.
+- Align skill, plugin, marketplace, eval configuration, and manual report versions
+  at 1.4.0. Standalone tool-interface versions and newly scaffolded user package
+  versions retain their separate version schemes.
+
 - Repair Python fleet launch installation, required lifecycle namespaces, scoped
   startup transitions, and parameter-file matching after fleet remapping.
 - Declare the generated C++ configuration parameter and delegate generated
@@ -87,6 +101,16 @@ All notable changes are documented here.
 - Preserve existing ROS distro builds and explicitly retain Rolling runtime limits.
 - Add isolated live Codex/Gemini discovery probes with pinned versions, negative
   controls, resolved installation paths, and retained CI evidence.
+
+### Known limitations
+
+- One local Cyclone DDS immediate-shutdown attempt timed out and was not
+  reproduced in subsequent diagnostic trials. This is separate from the repaired
+  startup path; its root cause remains unconfirmed. See [local evidence](docs/LOCAL_RUNTIME.md).
+- Rolling's documented runtime exclusions remain in place; successful build jobs
+  do not establish the excluded runtime behavior.
+- Client discovery and isolated ROS software tests are not authenticated
+  multi-client quality benchmarks or physical robot safety certification.
 
 ## 1.3.0
 

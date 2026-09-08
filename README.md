@@ -1,5 +1,8 @@
 # ros2-engineering-skills
 
+Source version: **1.4.0**. See [release notes](CHANGELOG.md#140---2026-09-08) and
+[release procedure](docs/RELEASING.md).
+
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/dbwls99706/ros2-engineering-skills?style=social)](https://github.com/dbwls99706/ros2-engineering-skills/stargazers)

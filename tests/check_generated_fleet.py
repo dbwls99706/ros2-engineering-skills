@@ -38,10 +38,33 @@ def validate_child_exits(events, expected=2):
     return [{'pid': pid, 'returncode': code} for pid, code in sorted(exited.items())]
 
 
-def run_launch(work, package, discover):
+def run_launch(work, package, discover, drop_transition_events=False):
     from smoke_test_nodes import terminate_group
 
     events = work / (package + '-events.jsonl')
+    dropped = work / (package + '-dropped-events.jsonl')
+    # Repeated attempts need fresh evidence, not earlier successful child exits.
+    events.unlink(missing_ok=True)
+    dropped.unlink(missing_ok=True)
+    fault = ''
+    if drop_transition_events:
+        fault = f'''# Fault injection in the observer process only; generated nodes are unchanged.
+try:
+    from launch_ros.utilities.lifecycle_event_manager import LifecycleEventManager as EventOwner
+except ImportError:
+    from launch_ros.actions import LifecycleNode as EventOwner
+
+
+def discard_transition(self, context, message):
+    with open({str(dropped)!r}, 'a', encoding='utf-8') as output:
+        output.write(json.dumps({{'node': self.node_name, 'goal': message.goal_state.id}}) + '\\n')
+
+
+EventOwner._on_transition_event = discard_transition
+
+
+'''
+
     wrapper = work / (package + '-observer.launch.py')
     installed_launch = work / 'install' / package / 'share' / package / 'launch/fleet.launch.py'
     # This adds process telemetry around the unmodified installed fleet launch.
@@ -53,7 +76,7 @@ from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
-def record(kind, event):
+{fault}def record(kind, event):
     row = {{'event': kind, 'pid': event.pid}}
     if kind == 'exit':
         row['returncode'] = event.returncode
@@ -81,13 +104,16 @@ def generate_launch_description():
                 if discover():
                     break
                 if time.monotonic() >= deadline:
-                    raise RuntimeError('Fleet parameters/lifecycle did not become ready')
+                    raise RuntimeError('Fleet parameters/lifecycle did not become ready: ' +
+                                       json.dumps(discover.last_observation, sort_keys=True))
             # Signal the supervisor only: launch forwards SIGINT to its children.
             # Signalling the group too would interrupt Python cleanup a second time.
             process.send_signal(signal.SIGINT)
             process.wait(timeout=10.0)
             if process.returncode != 0:
                 raise RuntimeError('Fleet launch did not exit cleanly')
+            if drop_transition_events and (not dropped.exists() or not dropped.read_text().strip()):
+                raise RuntimeError('Fault injection did not observe any transition events')
             return validate_child_exits([
                 json.loads(line) for line in events.read_text(encoding='utf-8').splitlines()])
         finally:
@@ -99,7 +125,7 @@ def generate_launch_description():
                 print(output.read().decode('utf-8', errors='replace'), flush=True)
 
 
-def verify_fleet(work, package, lifecycle):
+def verify_fleet(work, package, lifecycle, drop_transition_events=False):
     import rclpy
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
@@ -140,10 +166,15 @@ def verify_fleet(work, package, lifecycle):
 
         def discover():
             executor.spin_once(timeout_sec=0.05)
-            if not all(c.service_is_ready() for c in clients):
+            missing = [c.srv_name for c in clients if not c.service_is_ready()]
+            discover.last_observation = {'missing_services': missing}
+            if missing:
                 return set()
-            if states and any(call(c, GetState.Request()).current_state.id !=
-                              State.PRIMARY_STATE_ACTIVE for c in states):
+            observed = [call(c, GetState.Request()).current_state for c in states]
+            discover.last_observation['states'] = {
+                name: {'id': state.id, 'label': state.label}
+                for name, state in zip(names, observed)}
+            if any(state.id != State.PRIMARY_STATE_ACTIVE for state in observed):
                 return set()
             for c in parameters:
                 values = call(c, GetParameters.Request(names=['publish_rate'])).values
@@ -162,9 +193,11 @@ def verify_fleet(work, package, lifecycle):
                     raise RuntimeError('Could not reactivate first fleet node')
             return {verified}
 
-        children = run_launch(work, package, discover)
+        discover.last_observation = {}
+        children = run_launch(work, package, discover, drop_transition_events)
         return {'package': package, 'nodes': names, 'publish_rate': 17.0,
                 'lifecycle': lifecycle, 'sibling_isolation': lifecycle,
+                'transition_events_discarded': drop_transition_events,
                 'children': children, 'status': 'pass'}
     finally:
         try:
@@ -203,6 +236,9 @@ def main():
             if not launch.is_file():
                 raise RuntimeError('Fleet launch missing from installed package: ' + package)
             records.append(verify_fleet(work, package, lifecycle))
+            if lifecycle:
+                # A deterministic negative control for the former event-only startup.
+                records.append(verify_fleet(work, package, lifecycle, drop_transition_events=True))
     print(json.dumps({'status': 'pass', 'scope': 'Actual generated ROS fleet behavior',
                       'results': records}, indent=2))
     return 0
