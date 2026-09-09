@@ -6,6 +6,13 @@ All notable changes are documented here.
 
 ## 1.5.0 - 2026-09-08
 
+- Fail fleet verification on completed service errors, cancelled/empty/late
+  replies, and exhausted readiness budgets; retry only unanswered read requests
+  and retire their pending futures on all exit paths.
+- Keep Claude invocation/tool-approval controls separate from Codex metadata;
+  document model-upgrade comparisons without adding portable permission grants,
+  forced model choices, or unconditional skill routing.
+
 - Retire unanswered lifecycle state reads within the existing startup deadline
   and retry only the idempotent query; activation remains one-shot. Preserve
   lost-response and persistent-failure regression cases.

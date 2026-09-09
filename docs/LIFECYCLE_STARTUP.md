@@ -89,3 +89,14 @@ dump before bounded process-group cleanup. Exiting after the diagnostic signal o
 forced cleanup never converts the timed-out trial into a pass. The older Humble
 run `34308316459` did not retain such a stack, so its exact internal blocking call
 is not established by the child-exit messages printed during final cleanup.
+
+### Probe failures and deadlines
+
+The observer's own service probes retry only unanswered read requests. Completed
+service exceptions, cancellations, empty responses, and late responses fail the
+trial immediately; a later response cannot erase that failure. Every request is
+removed from the client's pending table, including on executor failure. The
+20-second readiness deadline is shared by all probes and checked after discovery
+as well: a slow callback cannot turn an over-budget verification into a pass.
+These checks do not change the generated node's transition policy or extend the
+ten-second supervisor shutdown deadline.

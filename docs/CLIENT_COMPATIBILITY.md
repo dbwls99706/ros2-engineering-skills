@@ -87,6 +87,34 @@ and automatic selection must be evaluated separately. This repository does not
 ship a Codex hook adapter: use the portable validators manually. Do not rename
 Claude's hook JSON and assume that another client's event protocol is identical.
 
+## Model upgrades: share intent, not client settings
+
+The invocation and permission comparison here was reviewed on 2026-09-09 against
+[Codex skills](https://learn.chatgpt.com/docs/build-skills) and
+[Claude Code skills](https://code.claude.com/docs/en/skills). It is not a claim that
+any new model has passed this bundle's behavioral scenarios.
+
+| Concern | Claude Code | Codex | This bundle's choice |
+|---|---|---|---|
+| Automatic selection | `disable-model-invocation: true` disables automatic loading | `policy.allow_implicit_invocation: false` in `agents/openai.yaml` disables implicit use | Keep domain-based discovery enabled; invocation is not permission to actuate |
+| Tool approval | `allowed-tools` pre-approves listed tools; it is not a sandbox or a denylist | Invocation policy does not configure sandbox or approval settings | No tool pre-approval in shared frontmatter; retain the active client's permissions |
+| Model and execution context | `model`, `effort`, and `context: fork` are client-specific controls | Do not translate those fields into Codex settings by name | Inherit the user's selected model/context; no forced subagent or effort override |
+
+Keep portable ROS constraints in `SKILL.md`; client-specific integration belongs
+in that client's metadata and adapters. Do not copy Claude permission grants,
+hook payloads, or fork controls into Codex, or treat Codex's invocation policy as
+Claude configuration. A model upgrade does not authorize changing `AGENTS.md`,
+`CLAUDE.md`, global settings, CI gates, or physical execution permissions.
+
+Keep the ROS use case first in the description. Codex can shorten descriptions
+in a crowded discovery list; Claude also limits listing text. Neither behavior
+justifies an unconditional "always use this skill" rule or preloading every
+reference. Use fresh positive, negative, and explicit-invocation sessions with
+the exact client/model and competing skills. Compare task completion, incorrect
+claims, unnecessary reads/tool calls, and available cost data with the skill off
+and with the prior revision. Follow [EVIDENCE_CAPTURE.md](EVIDENCE_CAPTURE.md);
+lexical fixtures and discovery checks are not model-quality measurements.
+
 ## Acceptance procedure
 
 For each exact client version, test a fresh positive implicit prompt, a fresh

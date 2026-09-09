@@ -17,6 +17,63 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class FleetServiceTimeout(RuntimeError):
+    """Only an unanswered request is eligible for a read-only retry."""
+
+
+def call_service(endpoint, request, executor, *, timeout=5.0, deadline=None):
+    """Issue once and retire the pending request on every exit path."""
+    now = time.monotonic()
+    if deadline is not None and now >= deadline:
+        raise RuntimeError('Fleet readiness deadline expired before request: ' + endpoint.srv_name)
+    request_deadline = now + timeout
+    if deadline is not None:
+        request_deadline = min(request_deadline, deadline)
+    future = endpoint.call_async(request)
+    try:
+        while not future.done() and not future.cancelled():
+            remaining = request_deadline - time.monotonic()
+            if remaining <= 0:
+                raise FleetServiceTimeout('Fleet service did not respond: ' + endpoint.srv_name)
+            executor.spin_once(timeout_sec=min(0.05, remaining))
+        if future.cancelled():
+            raise RuntimeError('Fleet service request was cancelled: ' + endpoint.srv_name)
+        try:
+            response = future.result()
+        except Exception as exc:
+            raise RuntimeError('Fleet service failed: ' + endpoint.srv_name) from exc
+        if response is None:
+            raise RuntimeError('Fleet service returned no response: ' + endpoint.srv_name)
+        # A callback can overrun spin_once's wait duration. A late success is not
+        # evidence that readiness was reached within the advertised deadline.
+        if time.monotonic() >= request_deadline:
+            raise RuntimeError('Fleet service response arrived after deadline: ' + endpoint.srv_name)
+        return response
+    finally:
+        try:
+            if not future.done() and not future.cancelled():
+                future.cancel()
+        finally:
+            endpoint.remove_pending_request(future)
+
+
+def read_service(endpoint, request, executor, *, deadline=None):
+    """Retry missing read responses, not completed errors or state transitions."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            return call_service(endpoint, request, executor, timeout=2.0, deadline=deadline)
+        except FleetServiceTimeout as exc:
+            last_error = exc
+            if attempt < 2:
+                pause = 0.1 if deadline is None else min(0.1, deadline - time.monotonic())
+                if pause > 0:
+                    executor.spin_once(timeout_sec=pause)
+    raise FleetServiceTimeout(
+        'Fleet read service did not respond after 3 attempts: ' + endpoint.srv_name
+    ) from last_error
+
+
 def validate_child_exits(events, expected=2):
     """Require a successful exit for every distinct process that actually started."""
     started, exited = set(), {}
@@ -154,6 +211,7 @@ def generate_launch_description():
                                    stderr=subprocess.STDOUT, start_new_session=True)
         try:
             deadline = time.monotonic() + 20.0
+            discover.deadline = deadline
             while True:
                 if process.poll() is not None:
                     raise RuntimeError('Fleet launch exited before verification')
@@ -162,8 +220,7 @@ def generate_launch_description():
                     raise RuntimeError('Unexpected number of lifecycle startup helpers')
                 # Active is a node state, not proof that launch-side startup/cleanup ended.
                 # Do not race sibling transitions against the unfinished startup helper.
-                if completed >= expected_startups and discover():
-                    break
+                ready = completed >= expected_startups and discover()
                 if completed < expected_startups:
                     time.sleep(0.01)
                 if time.monotonic() >= deadline:
@@ -171,6 +228,8 @@ def generate_launch_description():
                                        json.dumps({'startup_helpers_completed': completed,
                                                    'observation': discover.last_observation},
                                                   sort_keys=True))
+                if ready:
+                    break
             # Signal the supervisor only: launch forwards SIGINT to its children.
             # Signalling the group too would interrupt Python cleanup a second time.
             print(f'Fleet supervisor {process.pid}: requesting SIGINT shutdown', flush=True)
@@ -220,34 +279,11 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False, rapid_s
         changes = [client(ChangeState, n + '/change_state') for n in names] if lifecycle else []
 
         def call(endpoint, request, *, timeout=5.0):
-            future = endpoint.call_async(request)
-            deadline = time.monotonic() + timeout
-            while not future.done() and time.monotonic() < deadline:
-                executor.spin_once(timeout_sec=0.05)
-            if not future.done():
-                future.cancel()
-                raise RuntimeError('Fleet service did not respond: ' + endpoint.srv_name)
-            try:
-                response = future.result()
-            except Exception as exc:
-                raise RuntimeError('Fleet service failed: ' + endpoint.srv_name) from exc
-            if response is None:
-                raise RuntimeError('Fleet service did not respond: ' + endpoint.srv_name)
-            return response
+            return call_service(endpoint, request, executor, timeout=timeout,
+                                deadline=discover.deadline)
 
         def read_call(endpoint, request):
-            """Retry idempotent reads only; never replay state-changing requests."""
-            last_error = None
-            for attempt in range(3):
-                try:
-                    return call(endpoint, request, timeout=2.0)
-                except RuntimeError as exc:
-                    last_error = exc
-                    if attempt < 2:
-                        executor.spin_once(timeout_sec=0.1)
-            raise RuntimeError(
-                'Fleet read service did not respond after 3 attempts: ' + endpoint.srv_name
-            ) from last_error
+            return read_service(endpoint, request, executor, deadline=discover.deadline)
 
         verified = package + ': fleet verified'
 
@@ -296,6 +332,7 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False, rapid_s
             return {verified}
 
         discover.last_observation = {}
+        discover.deadline = None
         discover.active_since = None
         children = run_launch(work, package, discover, drop_transition_events,
                               expected_startups=2 if lifecycle and not rapid_shutdown else 0)

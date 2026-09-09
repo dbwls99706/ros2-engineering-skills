@@ -64,3 +64,21 @@ def test_routing_cases_include_shorthand_and_context_only_negatives():
         assert cases[name]['should_trigger'] is True
     for name in ('generic-in-ros-repo', 'ros-mentioned-css'):
         assert cases[name]['should_trigger'] is False
+
+
+def test_portable_bundle_does_not_inherit_client_permission_or_model_overrides():
+    text = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+    metadata = yaml.safe_load(text.split('---', 2)[1])
+    client_controls = {
+        'allowed-tools', 'disallowed-tools', 'disable-model-invocation',
+        'user-invocable', 'model', 'effort', 'context', 'agent', 'hooks',
+    }
+    assert not client_controls.intersection(metadata)
+    codex = yaml.safe_load((ROOT / 'agents/openai.yaml').read_text(encoding='utf-8'))
+    assert set(codex['policy']) == {'allow_implicit_invocation'}
+    doc = flat('docs/CLIENT_COMPATIBILITY.md')
+    assert 'share intent, not client settings' in doc
+    assert 'invocation is not permission to actuate' in doc
+    assert 'not a sandbox or a denylist' in doc
+    assert "Inherit the user's selected model/context" in doc
+    assert 'A model upgrade does not authorize changing' in doc
