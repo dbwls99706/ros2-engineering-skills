@@ -1,7 +1,8 @@
 # Releasing the skill bundle
 
-The current source bundle version is **1.5.0**. A source version or changelog
-heading is not proof that a Git tag or GitHub Release has already been published.
+Read the source bundle version from `SKILL.md` metadata and verify all surfaces
+below. A source version or changelog heading is not proof that a Git tag or GitHub
+Release has already been published. `X.Y.Z` below means that verified version.
 
 ## Version surfaces
 
@@ -20,13 +21,15 @@ start at 0.1.0. Third-party versions must never be changed as part of a bundle b
 
 1. Verify the exact release-branch head. Require successful Test and Client
    discovery workflows on that SHA; earlier runs are not substitutes. If a release
-   claim depends on model behavior, also capture and review the named eval scenarios
-   rather than treating structural fixture checks as model evidence.
+   claim depends on model behavior, capture each named scenario in the actual
+   client/model, run judge mode with `--require-complete`, and manually review each
+   critical criterion. Keep traces and first failures. Lexical PASS, hash integrity,
+   and client discovery are not semantic quality or physical safety evidence.
 2. Merge only after review. For a squash merge, use a one-line release title such as
-   `chore: release v1.5.0` and avoid carrying intermediate commit bodies or footers
+   `chore: release vX.Y.Z` and avoid carrying intermediate commit bodies or footers
    into the mainline history.
 3. Resolve the new commit on `main` and check its workflows before creating tag
-   `v1.5.0` on that exact commit. Use the corresponding changelog section as the
+   `vX.Y.Z` on that exact commit. Use the corresponding changelog section as the
    release notes, including known limitations. Publishing is a separate action.
 4. Start later work from updated `main`, not from an already-squashed release branch.
 

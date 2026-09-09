@@ -62,6 +62,12 @@ or model that motivated the change, and regression cases that fail when the new
 criterion is violated. Keep the old result in the record; changing the criterion
 does not retroactively make an earlier run a pass.
 
+An unknown or disputed gate remains enforced while its provenance is reviewed.
+Review is not permission to bypass an interlock or enable motion. Use read-only
+inspection, simulation, isolated measurements, or the authorized change process.
+Freeze revised acceptance criteria before collecting confirmation data; retain the
+failed run and test the revised rule on new data rather than fitting it to that run.
+
 ## 2. Authorization and readiness are separate
 
 Do not compress all of the following into one `approved` Boolean:
@@ -71,7 +77,8 @@ Authorization:
   Has the user/operator authorized this specific action or test?
 
 Authorization validity:
-  What session/time window does the approval cover, and has it been revoked?
+  What session/time window and attempt/retry budget does the approval cover?
+  Has it expired, been revoked, or been consumed?
 
 Authorized envelope:
   Location, motion extent, speed/torque limit, duration, operator presence,
@@ -97,7 +104,19 @@ action is safe, successful, or field-ready, and it does not override execution
 policy. Authorization remains valid only for its stated session/time window and
 until revoked. Expired, revoked, or materially changed authorization requires
 renewal. Conversely, once an unchanged, unexpired, and unrevoked envelope is
-established, do not repeatedly ask for the same permission.
+established, do not repeatedly ask for the same permission. Track the allowed
+attempt count too: a one-test approval is consumed when the physical test command
+is issued. A read-only preflight that blocks before any command is issued does not
+consume that attempt. Failure, abort, or an ambiguous command outcome is not a free
+retry. Reconcile the command outcome and use only an explicitly approved remaining
+retry budget; otherwise renew authorization for a new attempt. Never expand one
+authorized test into an unlimited loop.
+
+Unknown execution authority means no actuation until that boundary is resolved.
+Recheck technical preconditions immediately before execution and monitor the
+stated abort conditions throughout. A valid approval can coexist with lost
+readiness; operator departure, stale observations, or a changed stop path blocks
+the attempt without implying that the original approval never existed.
 
 If a product, client, site, safety policy, or tool-permission boundary reserves
 physical actuation to an operator, preserve the authorization state and provide
@@ -154,8 +173,11 @@ robot position, body attitude, target geometry, range, viewing angle, time,
 sensor generation/session, and environmental conditions according to the failure
 hypothesis.
 
-Do not require arbitrary novelty either. Independence means the new observation
-can falsify a relevant failure mode that the previous observation could not.
+Distinguish statistical independence from coverage of failure modes. Repeated
+measurements at a fixed pose can estimate repeatability when their correlation is
+accounted for, but do not remove a common calibration bias or establish global
+accuracy. Vary geometry or use an independent reference when the hypothesis needs
+it. Do not demand arbitrary novelty or count adjacent frames as independent proof.
 
 ## 4. Current observation vs latched failure
 

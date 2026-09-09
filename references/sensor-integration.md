@@ -470,3 +470,6 @@ not on "the driver process exists."
 | `CameraInfo` all zeros downstream | `camera_info_url` missing or file not found (driver logs a warning once, then runs) | Point `camera_info_url` at the calibration YAML; alarm on zeroed K in a sanity check |
 | Point clouds arrive at 2 Hz instead of 10 Hz over Wi-Fi | Cloud size × RELIABLE retransmit over lossy link | BEST_EFFORT for live viewing, record on-robot; DDS fragment tuning in `communication.md` |
 | `static_transform_publisher` args rejected | Old positional syntax removed | Use flag syntax `--x … --frame-id …` (Humble+ supports it; Jazzy+ requires it) |
+
+For disputed calibration thresholds, independent observations, and metrics that
+must not be substituted, see `references/evidence-progression.md` section 6.

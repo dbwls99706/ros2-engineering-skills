@@ -287,7 +287,7 @@ it did not reach.
 | L2 | Build + launch smoke | It compiles, nodes start, plugins/params load |
 | L3 | Runtime, robot disconnected | Graph, QoS, TF and rates on sim or mock hardware |
 | L4 | Hardware powered, no actuation | Real provenance, params, TF and driver state — motors disabled/isolated |
-| L5 | Bench motion / fault injection | Commanded motion and failsafes on a restrained platform, operator present |
+| L5 | Controlled motion / fault injection | Bounded commissioning tests with appropriate containment, operator present; high-risk faults require restraint |
 | L6 | Supervised field operation | The behavior in its real duty cycle |
 
 Never write an L0–L2 result in L4+ language. "Tests pass" and "safe to

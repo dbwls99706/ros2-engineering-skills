@@ -8,6 +8,7 @@ These tests ensure:
 5. Eval runner CLI works correctly
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -37,6 +38,7 @@ from eval_runner import (
     _print_parity_report,
     print_report,
     main as eval_runner_main,
+    __version__ as EVAL_RUNNER_VERSION,
 )
 
 
@@ -402,7 +404,7 @@ class TestEvalRunnerCLI:
             capture_output=True, text=True,
         )
         assert result.returncode == 0
-        assert '1.0.0' in result.stdout
+        assert EVAL_RUNNER_VERSION in result.stdout
 
     def test_cli_nonexistent_eval_dir(self, tmp_path):
         result = subprocess.run(
@@ -727,15 +729,13 @@ class TestWeightActivation:
         pairs = _extract_criteria_with_weights(['X', 'Y'])
         assert pairs == [('X', 1.0), ('Y', 1.0)]
 
-    def test_extract_weights_negative_clamped_to_zero(self):
-        pairs = _extract_criteria_with_weights(
-            [{'description': 'A', 'weight': -1.0}])
-        assert pairs == [('A', 0.0)]
+    def test_extract_weights_negative_is_rejected(self):
+        with pytest.raises(ValueError, match='weight'):
+            _extract_criteria_with_weights([{'description': 'A', 'weight': -1.0}])
 
-    def test_extract_weights_non_numeric_defaults_to_one(self):
-        pairs = _extract_criteria_with_weights(
-            [{'description': 'A', 'weight': 'high'}])
-        assert pairs == [('A', 1.0)]
+    def test_extract_weights_non_numeric_is_rejected(self):
+        with pytest.raises(ValueError, match='weight'):
+            _extract_criteria_with_weights([{'description': 'A', 'weight': 'high'}])
 
     def test_weighted_pass_rate_high_weight_fail_dominates(self, tmp_path):
         """A weight=10 criterion that fails should drop pass rate below
@@ -750,8 +750,8 @@ class TestWeightActivation:
             encoding='utf-8')
         entry = {
             'name': 'weight_test',
-            'prompt': str(prompt),
-            'expected': str(expected),
+            'prompt': prompt.name,
+            'expected': expected.name,
             'criteria': [
                 {'description': 'must address small priority topic words',
                  'weight': 1.0},
@@ -1188,6 +1188,11 @@ class TestDeprecationStreak:
         with open(path, 'w', encoding='utf-8') as fh:
             for ts, met in results:
                 fh.write(json.dumps({
+                    'history_schema': 2, 'scope_sha256': 'fixture-scope',
+                    'capture_sha256': hashlib.sha256(ts.encode()).hexdigest(),
+                    'data_status': 'complete', 'avg_delta': 10.0 if met else 0.0,
+                    'threshold': 5.0, 'scored_evals': 1, 'total_evals': 1,
+                    'skipped_evals': 0, 'error_evals': 0,
                     'timestamp_utc': ts,
                     'threshold_met': met,
                 }) + '\n')
@@ -1198,7 +1203,7 @@ class TestDeprecationStreak:
             ('2026-05-08T00:00:00Z', False),
             ('2026-05-15T00:00:00Z', False),
         ])
-        assert _check_deprecation_streak(str(tmp_path), 5.0, 3) is True
+        assert _check_deprecation_streak(str(tmp_path), 5.0, 3, 'fixture-scope') is True
 
     def test_recent_pass_breaks_streak(self, tmp_path):
         self._write_history(str(tmp_path), [
@@ -1206,17 +1211,17 @@ class TestDeprecationStreak:
             ('2026-05-08T00:00:00Z', False),
             ('2026-05-15T00:00:00Z', True),
         ])
-        assert _check_deprecation_streak(str(tmp_path), 5.0, 3) is False
+        assert _check_deprecation_streak(str(tmp_path), 5.0, 3, 'fixture-scope') is False
 
     def test_insufficient_history_does_not_flag(self, tmp_path):
         self._write_history(str(tmp_path), [
             ('2026-05-15T00:00:00Z', False),
         ])
         # Only 1 entry, need 3 -> not enough data to declare deprecation.
-        assert _check_deprecation_streak(str(tmp_path), 5.0, 3) is False
+        assert _check_deprecation_streak(str(tmp_path), 5.0, 3, 'fixture-scope') is False
 
     def test_empty_history_does_not_flag(self, tmp_path):
-        assert _check_deprecation_streak(str(tmp_path), 5.0, 3) is False
+        assert _check_deprecation_streak(str(tmp_path), 5.0, 3, 'fixture-scope') is False
 
     def test_uses_most_recent_by_timestamp(self, tmp_path):
         # File order may not match timestamp order; check_deprecation_streak
@@ -1227,7 +1232,7 @@ class TestDeprecationStreak:
             ('2026-04-08T00:00:00Z', False),
             ('2026-04-01T00:00:00Z', False),
         ])
-        assert _check_deprecation_streak(str(tmp_path), 5.0, 3) is False
+        assert _check_deprecation_streak(str(tmp_path), 5.0, 3, 'fixture-scope') is False
 
 
 class TestPrintReportText:

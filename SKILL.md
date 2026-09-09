@@ -70,7 +70,9 @@ root. Load only the reference section needed for the next decision.
    is separate: user authorization does not override product, client, site, or
    safety policy or client tool permissions. If physical actuation is reserved to
    an operator, state that once and provide the operator-ready bounded next action
-   instead of pretending authorization is missing.
+   instead of pretending authorization is missing. Track the approved attempt
+   budget; a failed or uncertain command is not permission for an unbounded retry.
+   Recheck technical readiness immediately before execution.
 8. **Finish at the requested boundary.** Report evidence, affected files, actual
    commands and exit/results, verification level, and remaining limits. Stop when
    the requested scope is complete. Do not turn a review into deployment or a
@@ -158,7 +160,7 @@ it did not reach.
 | L2 | Build + launch smoke | It compiles, nodes start, plugins/params load |
 | L3 | Runtime, robot disconnected | Graph, QoS, TF and rates on sim or mock hardware |
 | L4 | Hardware powered, no actuation | Real provenance, params, TF and driver state — motors disabled/isolated |
-| L5 | Bench motion / fault injection | Commanded motion and failsafes on a restrained platform, operator present |
+| L5 | Controlled motion / fault injection | Bounded commissioning tests with appropriate containment, operator present; high-risk faults require restraint |
 | L6 | Supervised field operation | The behavior in its real duty cycle |
 
 Never write an L0–L2 result in L4+ language. "Tests pass" and "safe to

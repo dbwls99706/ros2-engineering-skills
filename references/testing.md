@@ -593,19 +593,13 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ros:jazzy
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
           path: src/my_robot
-
-      # Cache rosdep and build artifacts
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            /opt/ros/jazzy
-            ~/.cache/ccache
-          key: ros-jazzy-${{ hashFiles('src/my_robot/**/package.xml') }}
 
       - name: Install dependencies
         run: |
@@ -785,7 +779,7 @@ reached, which is how "the tests pass" becomes "it is safe to drive."
 | **L2** Build + launch smoke | colcon build; nodes start; configure-only validation (section 4) | It compiles; plugins resolve; YAML parses; params load | That the system does anything useful once active | Build log, pluginlib "Created ..." lines |
 | **L3** Runtime, robot disconnected | Full graph on sim or mock hardware (section 5, `references/simulation.md`) | Topic/QoS matching, TF chain, rates, node interaction | Real timing, real sensor noise, real actuator response | `ros2 topic info -v`, `hz` output, bag of the run |
 | **L4** Hardware powered, no actuation | Real robot, motors disabled or mechanically isolated | Provenance, real parameters, real sensor and driver state, TF from real hardware | Any motion behavior | Provenance checklist (`references/runtime-provenance.md`), driver diagnostics |
-| **L5** Bench motion / fault injection | Commanded motion and failsafe tests on a restrained platform, operator present | Motion response, stop-path behavior under injected faults | Behavior over a full duty cycle, in the real environment | Stop-path acceptance criteria (`references/safety-estop.md` §3), with the physical safety conditions in §6; measured stopping distance |
+| **L5** Controlled motion / fault injection | Bounded commissioning motion in an approved contained test area or restrained rig; high-risk faults only on a restrained platform, operator present | Motion response, stop-path behavior under injected faults | Behavior over a full duty cycle, in the real environment | Stop-path acceptance criteria (`references/safety-estop.md` §3), with the physical safety conditions in §6; measured stopping distance |
 | **L6** Supervised field operation | The real task, supervised, with recording on | Behavior in its actual environment and duty cycle | That untested edge cases are handled | Bag recordings, incident log, operator sign-off |
 
 Rules for using the ladder:
@@ -801,7 +795,10 @@ Rules for using the ladder:
   and physical restraint/containment appropriate to the failure mode. The
   high-risk physical fault-injection checks in `references/safety-estop.md` §6
   and the failsafe kill test in `references/hardware-interface.md` are
-  operator-executed only.
+  operator-executed only. A software geofence alone is not equivalent to physical
+  restraint: containment must address the failure being tested, including loss of
+  control or stopping. An ordinary controlled motion trial is not field-duty-cycle
+  evidence, and a test area is not a substitute for a restrained fault-injection rig.
 - **L6 preconditions are field-specific.** Require the applicable site/product
   procedure, supervised operation, an operator stop path, and recorded evidence
   for the actual duty cycle. L6 is never an unattended CI step.

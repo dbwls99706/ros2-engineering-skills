@@ -1,6 +1,7 @@
 """Regression checks for evidence-driven progression rules."""
 
 from pathlib import Path
+import re
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,13 +109,14 @@ def test_high_risk_fault_injection_stays_operator_executed():
 
 
 def test_numbered_principle_references_point_to_engineering_reference():
-    stale = '`SKILL.md`' + ' Principle'
-    paths = [
-        *sorted((ROOT / 'references').glob('*.md')),
-        *sorted((ROOT / 'scripts').glob('*.py')),
-        *sorted((ROOT / 'tests').glob('*.py')),
-    ]
-    offenders = [str(path.relative_to(ROOT)) for path in paths if stale in read(path)]
+    stale = re.compile(
+        r'`?SKILL\.md`?\s+Principle\s+\d+'
+        r'|pitfall\s+\d+\s+in\s+`?SKILL\.md`?', re.IGNORECASE)
+    paths = [ROOT / 'README.md', ROOT / 'SKILL.md']
+    for directory in ('references', 'docs', 'scripts', 'tests'):
+        paths.extend(path for path in (ROOT / directory).rglob('*')
+                     if path.suffix in ('.md', '.py'))
+    offenders = [str(path.relative_to(ROOT)) for path in paths if stale.search(read(path))]
     assert offenders == [], f'Stale numbered-principle references: {offenders}'
 
 
@@ -168,3 +170,42 @@ def test_existing_estop_contract_keeps_fresh_command_semantics():
     expected = flat(ESTOP_EXPECTED)
     assert 'Reset restores permission, not motion' in expected
     assert 'no replay of the pre-stop command' in expected
+
+
+def test_gate_review_does_not_authorize_bypassing_unknown_interlocks():
+    text = flat(PROGRESSION)
+    assert 'unknown or disputed gate remains enforced' in text
+    assert 'not permission to bypass an interlock or enable motion' in text
+    assert 'Freeze revised acceptance criteria before collecting confirmation data' in text
+
+
+def test_authorization_attempts_and_readiness_are_not_permanent():
+    text = flat(PROGRESSION)
+    assert 'one-test approval is consumed when the physical test command is issued' in text
+    assert 'read-only preflight that blocks before any command is issued does not consume' in text
+    assert 'Unknown execution authority means no actuation' in text
+    assert 'Recheck technical preconditions immediately before execution' in text
+    assert 'unlimited loop' in text
+
+
+def test_repeatability_is_not_confused_with_independent_accuracy():
+    text = flat(PROGRESSION)
+    assert 'Distinguish statistical independence from coverage' in text
+    assert 'correlation is accounted for' in text
+    assert 'do not remove a common calibration bias' in text
+
+
+def test_l5_description_covers_controlled_trials_without_reclassifying_all_as_field_use():
+    for path in (SKILL, ROOT / 'references/engineering-principles.md', TESTING):
+        assert 'Controlled motion / fault injection' in read(path)
+    assert 'software geofence alone is not equivalent to physical restraint' in flat(TESTING)
+
+
+def test_container_ci_example_selects_bash_without_restoring_ros_install_prefix():
+    text = read(TESTING)
+    example = text.split('# .github/workflows/ci.yaml\n', 1)[1].split('```', 1)[0]
+    job = yaml.safe_load(example)['jobs']['build-and-test']
+    assert job['defaults']['run']['shell'] == 'bash'
+    for step in job['steps']:
+        if 'actions/cache' in step.get('uses', ''):
+            assert '/opt/ros' not in step['with']['path']

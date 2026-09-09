@@ -1,146 +1,130 @@
 # Eval Workflow
 
-`scripts/eval_runner.py` supports three operating modes. This document explains
-each, the data files they read, and how to wire them into a manual or CI workflow.
+`scripts/eval_runner.py` performs lexical checks, not model inference or semantic
+judging. Structural fixtures, real captured outputs, and paired comparisons are
+separate evidence sources. None establishes robot safety.
 
-## TL;DR
+## Modes
 
-| Mode | What it scores | When to run | Cost |
-|------|----------------|-------------|------|
-| `structural` (default) | Expected-answer fixtures vs criteria keywords | Every CI run | 0 model calls |
-| `--mode=judge` | `evals/outputs/*.md` real model captures | After capturing model output | 0 model calls (you bring the output) |
-| `--parity` | Skill-on captures vs skill-off baselines | Periodically | 0 model calls (you bring both outputs) |
+| Mode | Input | Meaning |
+|---|---|---|
+| `structural` (default) | Configured expected-answer fixtures | Fixture smoke check; no model is invoked |
+| `--mode=judge` | Recorded model responses | Lexical coverage only; manually review critical criteria |
+| `--parity` | Skill-on and skill-off captures | Difference between valid paired lexical scores |
 
-All three share the same morphology-tolerant keyword matcher (see
-`scripts/eval_runner.py::_term_matches`); they differ only in which file backs the
-comparison.
+All modes use the morphology-tolerant keyword matcher. It cannot reliably detect
+negation, fabricated facts, unsafe advice, or whether a tool actually executed.
+A criterion marked `critical: true` must pass even when the weighted total passes;
+that flag does not turn the matcher into a semantic safety checker.
 
-## Directory layout and path rules
+## Files and validation
 
 ```text
 evals/
-  eval.yaml                     # eval definitions, criteria, weights, parity config
+  eval.yaml                     # manifest: names, paths, criteria, weights
   prompts/...                   # common prompt fixtures
   expected/...                  # common expected-answer fixtures
-  progression/prompts/...       # nested prompt fixtures are allowed
-  progression/expected/...      # nested expected fixtures are allowed
-  outputs/<eval-name>.md         # USER FILL: real model output with skill loaded
-  outputs_baseline/<eval-name>.md # USER FILL: output WITHOUT skill loaded
-  history/<YYYY-MM>.jsonl        # parity history, gitignored
+  progression/prompts/...       # nested fixtures are supported
+  progression/expected/...
+  outputs/<eval-name>.md         # real skill-on capture
+  outputs_baseline/<eval-name>.md # real skill-off capture
+  history/<YYYY-MM>.jsonl        # append-only parity records
 ```
 
-The `prompt` and `expected` fields in `eval.yaml` are paths relative to `evals/`.
-They may use nested directories. `eval_runner.py` resolves them inside the eval
-root and rejects path escapes. Judge and parity captures stay flat and use the
-eval `name`, so a nested prompt still maps to `outputs/<eval-name>.md`.
+Manifest `prompt` and `expected` paths are relative to `evals/`. Nested paths are
+supported, but absolute paths, Windows paths, and symlink escapes are rejected.
+Capture names are unique portable filenames: letters, digits, `.`, `_`, `-`, with
+no separators, trailing dot, or Windows device names. Case-only duplicates are
+rejected too. Empty suites, duplicate YAML keys, malformed criteria, and nonfinite
+or negative weights are errors, not passing empty evaluations.
 
-`outputs/`, `outputs_baseline/`, and `history/` are created on first run. Only
-captured outputs should be committed when sharing real baselines with collaborators.
+Inputs must be regular UTF-8 text files no larger than 20 MiB. These are snapshot
+checks, not a sandbox against concurrent hostile filesystem changes. Create capture
+directories when collecting responses. Only deliberately shared, sanitized captures
+should be committed; their existence or hashes do not authenticate them.
 
-## Mode 1 - structural
+## Structural smoke check
 
 ```bash
 python3 scripts/eval_runner.py
+python3 scripts/eval_runner.py --min-coverage 0.5 --min-pass-rate 90
 ```
 
-Scores each configured expected-answer fixture against its eval criteria. This is
-a structural smoke check: it catches missing fixtures, accidentally emptied
-expected files, or criteria that no longer have matching content. It does **not**
-invoke a model and does not score model behavior.
+The defaults are 0.30 per-criterion keyword coverage and 80% weighted pass rate.
+They catch absent or empty fixtures and rubric drift; they do not measure model
+behavior. An empty or unreadable fixture is an error.
 
-The default thresholds (per-criterion coverage 0.30, overall pass rate 80%) are
-deliberately permissive.
+## Captured-output review
 
-### When it fails
-
-- Expected file deleted or emptied: `Empty expected file`.
-- Criteria reworded with too little keyword overlap: coverage drops below 0.30.
-- Adjust strictness with `--min-coverage 0.5 --min-pass-rate 90`.
-
-## Mode 2 - judge (real model output)
+Run each manifest-declared prompt in the actual client/model with the skill loaded.
+Save the full response at `outputs/<eval-name>.md`. Keep the client/model version,
+source revision, prompt, transcript, tool permissions, and first failed attempts.
 
 ```bash
-# 1. Read the eval entry in evals/eval.yaml.
-# 2. Open an agent WITH the skill loaded.
-# 3. Run the prompt path declared by that entry.
-# 4. Save the full response as evals/outputs/<eval-name>.md.
-# 5. Score it:
+# Exploratory review permits incomplete collection, but reports it distinctly.
 python3 scripts/eval_runner.py --mode=judge
+
+# Release checks require every selected capture.
+python3 scripts/eval_runner.py --mode=judge --require-complete
+python3 scripts/eval_runner.py --mode=judge --require-complete --eval-name gate-policy-review
 ```
 
-This scores captured model output. It answers whether the model response addressed
-the declared lexical criteria, but lexical scoring still is not semantic proof.
-For release review, inspect critical safety/workflow criteria manually as well.
+Absent captures are `[SKIP]`. No captured cases produce `[NODATA]`; a passing subset
+with missing cases produces `[PARTIAL]`, never `[PASS]`. Exploratory missing-data
+states retain exit 0. A damaged, empty, or non-UTF-8 file is an error, not a scored
+zero; errors take precedence over missing data. `--require-complete` exits 1 for
+any missing selected capture.
 
-Missing capture files surface as `[SKIP]`, not `[FAIL]`. The overall status reports
-`[NODATA]` if nothing was captured; the exit code stays 0 so judge mode can be
-present without fabricating results.
+A genuine empty model response needs an explicit execution record. A zero-byte
+file alone cannot distinguish that outcome from a damaged capture. The separate
+capture protocol (`verify_eval_capture.py`) can retain empty responses and failed
+attempts without inventing output. Require that protocol for comparative claims,
+and manually inspect each critical safety/workflow criterion even after lexical
+PASS. Completeness and integrity checks do not authenticate a model session.
 
-## Mode 3 - parity (skill ON vs OFF)
+## Paired comparisons and history
+
+Capture the same selected prompts in fresh isolated sessions with the skill off
+and on. Save both sets before running:
 
 ```bash
-# 1. Capture each selected eval in a fresh session WITHOUT the skill.
-# 2. Save it as evals/outputs_baseline/<eval-name>.md.
-# 3. Capture the same eval in a fresh session WITH the skill.
-# 4. Save it as evals/outputs/<eval-name>.md.
-# 5. Run:
 python3 scripts/eval_runner.py --parity
+python3 scripts/eval_runner.py --parity --require-complete --json
 ```
 
-Parity reports `delta = on_pass_rate - off_pass_rate`. The aggregate average delta
-is compared with `parity_test.threshold` in `eval.yaml`.
+Parity runs the configured suite; `--eval-name` is not supported with `--parity`.
+Only pairs with valid scored files on both sides contribute to
+`delta = on_pass_rate - off_pass_rate`. A broken baseline is not 0%.
+`data_status` is `complete`, `partial`, `no_data`, or `error`. With no scored pairs,
+`avg_delta` is `null`, not an invented zero. Errors exit 1; strict completeness
+also rejects partial or absent pairs.
 
-Every run appends one JSON-lines entry to `evals/history/<YYYY-MM>.jsonl`. If the
-most recent `consecutive_failures_for_deprecation` runs all sit below threshold,
-the report marks the skill as a deprecation candidate.
+Every attempt appends a history-schema-2 record when storage succeeds. Storage
+failures are reported and exit 1. A deprecation review signal requires complete,
+distinct capture sets in the same manifest, fixtures, bundle version, runner
+version, and scoring-threshold scope. Unscoped legacy history is not evidence.
+Rerunning unchanged files cannot manufacture trials or move old failures ahead of
+a newer success: first observations determine the ordering.
 
-### Why parity matters
+This is a lexical review signal, not proof of independent experiments or model
+quality. Distinct hashes can reflect formatting changes, not distinct sessions;
+identical valid responses can also occur in independent sessions. Use traceable
+captures and human review rather than treating this conservative deduplication as
+a statistical independence test.
 
-Models change. A skill can become redundant or regress even while its static tests
-remain green. Parity is an early-warning signal; it is not a substitute for
-semantic review or real ROS execution.
+## Exit codes
 
-## CLI cheat sheet
+| Code | Meaning |
+|---|---|
+| 0 | No scored failure; inspect status because exploratory missing data is not PASS |
+| 1 | Scored failure, invalid input, history-write failure, or required capture missing |
+| 2 | Configuration/CLI error, or lexical deprecation review signal in parity mode |
 
-```bash
-# Structural smoke check
-eval_runner.py
-eval_runner.py --min-coverage 0.5 --min-pass-rate 90
+## Recommended use
 
-# Score captured model output
-eval_runner.py --mode=judge
-eval_runner.py --mode=judge --eval-name gate-policy-review
-
-# Skill ON vs OFF
-eval_runner.py --parity
-
-# Common
-eval_runner.py --json
-eval_runner.py --verbose
-```
-
-## Recommended cadence
-
-| Trigger | Run |
-|---------|-----|
-| Every PR/push gate | `eval_runner.py` structural smoke |
-| Each release candidate | Refresh the critical `outputs/` captures and run `--mode=judge` |
-| Periodically | Refresh selected ON/OFF captures and run `--parity` |
-
-The structural gate is cheap and catches fixture rot. Judge and parity require
-real captures and should never be described as having run when the files are absent.
-
-## FAQ
-
-**Q: Do I have to capture every configured output to run parity?**  
-No. Capture the cases relevant to the experiment. Missing outputs are `[SKIP]` and
-excluded from the aggregate delta. For a release claim about a specific scenario,
-that scenario must have a real capture; structural fixture success is not enough.
-
-**Q: How do I add an LLM-as-judge?**  
-Out of scope for the current runner. The built-in matcher is deliberately a cheap
-lexical check. A semantic judge would require a separate model call and its own
-reproducibility/cost policy.
-
-**Q: Why JSON-lines for history?**  
-Append-only records parse incrementally and survive partial writes.
+Run structural checks on every push. For release claims about model behavior,
+collect the required real captures, use `--require-complete`, and manually review
+the critical criteria. Periodically refresh paired captures for regression review.
+Do not report that judge/parity validation ran successfully when its captures were
+absent. Changes to the evidence workflow do not themselves establish that a model
+has passed the new behavioral scenarios.

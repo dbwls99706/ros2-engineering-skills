@@ -6,6 +6,19 @@ All notable changes are documented here.
 
 ## 1.5.0 - 2026-09-08
 
+- Keep missing, partial, and damaged model captures separate from scored results;
+  require valid ON/OFF pairs before reporting a parity delta. Confine evaluation
+  inputs and history to their declared directories and reject malformed manifests.
+- Scope parity history to the runner, suite, fixtures, version, and scoring rules;
+  do not count absent data or repeated captures as new deprecation evidence.
+  Add explicit capture-completeness gates and critical lexical criteria while
+  retaining the requirement for independent semantic review.
+- Bound physical-test approval by its attempt budget as well as its session and
+  envelope. Recheck readiness before execution; a failed or ambiguous command is
+  not an automatic retry, and reviewing a gate does not authorize bypassing it.
+- Align controlled-motion verification levels and clarify independent measurements;
+  fix the container CI example's shell and remove its stale ROS-prefix cache.
+
 - Add evidence-driven progression rules for acceptance gates: review threshold
   provenance, measured quantity, uncertainty, error-budget relevance, and clearing
   conditions instead of treating existing code as automatic authority or tuning
