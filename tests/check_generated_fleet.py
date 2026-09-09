@@ -38,6 +38,23 @@ def validate_child_exits(events, expected=2):
     return [{'pid': pid, 'returncode': code} for pid, code in sorted(exited.items())]
 
 
+def wait_for_launch_exit(process, timeout=10.0, diagnostic_after=3.0):
+    """Keep the shutdown deadline while capturing a stalled supervisor's threads."""
+    deadline = time.monotonic() + timeout
+    try:
+        process.wait(timeout=min(diagnostic_after, timeout))
+    except subprocess.TimeoutExpired:
+        print(f'Fleet supervisor {process.pid}: shutdown still pending; requesting stacks',
+              flush=True)
+        # The observer wrapper registers this with faulthandler before launching.
+        # This signal only captures evidence; it must not complete the shutdown.
+        try:
+            process.send_signal(signal.SIGUSR1)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+
+
 def run_launch(work, package, discover, drop_transition_events=False):
     from smoke_test_nodes import terminate_group
 
@@ -69,11 +86,16 @@ EventOwner._on_transition_event = discard_transition
     installed_launch = work / 'install' / package / 'share' / package / 'launch/fleet.launch.py'
     # This adds process telemetry around the unmodified installed fleet launch.
     # Child exits are events from launch, not inferred from the supervisor's code.
-    wrapper.write_text(f"""import json
+    wrapper.write_text(f"""import faulthandler
+import json
+import signal
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, RegisterEventHandler
 from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+
+faulthandler.register(signal.SIGUSR1, all_threads=True)
 
 
 {fault}def record(kind, event):
@@ -108,8 +130,9 @@ def generate_launch_description():
                                        json.dumps(discover.last_observation, sort_keys=True))
             # Signal the supervisor only: launch forwards SIGINT to its children.
             # Signalling the group too would interrupt Python cleanup a second time.
+            print(f'Fleet supervisor {process.pid}: requesting SIGINT shutdown', flush=True)
             process.send_signal(signal.SIGINT)
-            process.wait(timeout=10.0)
+            wait_for_launch_exit(process)
             if process.returncode != 0:
                 raise RuntimeError('Fleet launch did not exit cleanly')
             if drop_transition_events and (not dropped.exists() or not dropped.read_text().strip()):
@@ -269,14 +292,19 @@ def main():
                         '-DBUILD_TESTING=OFF', '-DCMAKE_BUILD_TYPE=Release'],
                        cwd=work, check=True, timeout=180)
         records = []
-        for package, _, lifecycle in variants:
-            launch = work / 'install' / package / 'share' / package / 'launch/fleet.launch.py'
-            if not launch.is_file():
-                raise RuntimeError('Fleet launch missing from installed package: ' + package)
-            records.append(verify_fleet(work, package, lifecycle))
-            if lifecycle:
-                # A deterministic negative control for the former event-only startup.
-                records.append(verify_fleet(work, package, lifecycle, drop_transition_events=True))
+        # Fresh launches expose startup/shutdown races; any failed trial stops the gate.
+        # This is not retry-until-pass: every recorded trial must succeed.
+        for trial in range(3):
+            for package, _, lifecycle in variants:
+                launch = work / 'install' / package / 'share' / package / 'launch/fleet.launch.py'
+                if not launch.is_file():
+                    raise RuntimeError('Fleet launch missing from installed package: ' + package)
+                result = verify_fleet(work, package, lifecycle)
+                records.append({**result, 'trial': trial + 1})
+                if lifecycle:
+                    # A deterministic negative control for the former event-only startup.
+                    result = verify_fleet(work, package, lifecycle, drop_transition_events=True)
+                    records.append({**result, 'trial': trial + 1})
     print(json.dumps({'status': 'pass', 'scope': 'Actual generated ROS fleet behavior',
                       'results': records}, indent=2))
     return 0
