@@ -6,6 +6,10 @@ All notable changes are documented here.
 
 ## 1.5.0 - 2026-09-08
 
+- Retire unanswered lifecycle state reads within the existing startup deadline
+  and retry only the idempotent query; activation remains one-shot. Preserve
+  lost-response and persistent-failure regression cases.
+
 - Make environment discovery, reference reading, and local validation proportional
   to the task while retaining mandatory CI and physical-safety boundaries. Verify
   remote branch state before claiming an authorized commit/push is complete.
