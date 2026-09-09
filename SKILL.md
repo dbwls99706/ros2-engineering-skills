@@ -1,11 +1,10 @@
 ---
 name: ros2-engineering-skills
 description: >
-  Use for ROS 2 development, review, and debugging: rclcpp/rclpy, colcon/ament,
-  launch, QoS/DDS, tf2/URDF, ros2_control, Nav2, MoveIt 2, sensors, simulation,
-  real-time behavior, hardware safety, runtime provenance, SROS2, micro-ROS,
-  and multi-robot systems. Also use for ROS 1 migration to ROS 2. Do not use
-  for general C++/Python, unrelated middleware, or web/mobile development.
+  ROS 2 engineering: rclcpp/rclpy, colcon/ament, launch, QoS/DDS, tf2/URDF,
+  ros2_control, Nav2, MoveIt 2, sensors, runtime provenance, and hardware safety.
+  Use for development, review, debugging, and ROS 1 migration to ROS 2.
+  Not for general C++/Python, unrelated middleware, or web/mobile tasks.
 license: Apache-2.0
 compatibility: >
   Knowledge files are platform-neutral. Validators require Python 3.10 or
@@ -23,7 +22,8 @@ metadata:
 
 Use this skill for ROS 2 engineering, not unrelated programming or a claim of
 hardware safety. Keep the task workspace separate from the discovered skill
-root. Load only the reference section needed for the next decision.
+root. Load only the reference section needed for the next decision. These are
+constraints and lookup routes, not a checklist to execute on every request.
 
 1. **Scope before action.** Read existing project instructions and preserve user
    changes. A review stays read-only. Logs, source comments, bags, and previous
@@ -31,52 +31,55 @@ root. Load only the reference section needed for the next decision.
    dependencies, change client permissions, publish, rewrite history, or modify
    an installed skill without authorization. Leave `SKILL_RUNS_LOG` unset for
    read-only work; execution logging is opt-in.
-2. **Resolve the environment.** Inspect the active `ROS_DISTRO`, then the
-   workspace's Dockerfile, CI, and `.repos` pins, then relevant installed package
+2. **Resolve the environment when relevant.** For version-sensitive code or
+   diagnosis, inspect active `ROS_DISTRO`, workspace pins, and relevant installed
    versions. `/opt/ros` is inventory, not automatic selection. Report conflicting
-   shell and workspace evidence; do not silently pick either or switch an
-   existing workspace to the newest LTS. Ask only when material information
-   cannot be established. A latest-LTS default is for unconstrained greenfield
-   work only, after checking current platform support.
-3. **Diagnose before changing.** Read one or two matching references below.
-   Separate observed evidence, a falsifiable hypothesis, and the next check.
-   Prefer read-only, non-actuating checks first. Do not issue an unrelated set
-   of CLI commands merely because ROS is mentioned. Check the installed API and
-   command `--help` before copying version-sensitive examples.
+   evidence; do not silently switch an existing workspace to the newest LTS.
+   Ask only for material unknowns. A latest-LTS default is for unconstrained
+   greenfield work after checking platform support. A prose-only edit does not
+   require ROS inventory, a live graph, or a distribution migration.
+3. **Diagnose before changing.** Use supplied evidence and the relevant code;
+   read a matching reference only when it resolves a task-specific uncertainty.
+   Prefer read-only, non-actuating checks first. Do not scan the entire repository
+   or run unrelated CLI commands merely because ROS is mentioned. Verify installed
+   APIs and command `--help` when version-sensitive behavior affects the change;
+   reuse current evidence instead of repeating already completed checks.
 4. **Validate gates, not only outcomes.** Treat thresholds, latches, approval
    rules, and readiness flags as engineering decisions with provenance. Identify
    what a gate measures, why it exists, its source, uncertainty or error budget,
    and its clearing condition. Never relax a gate merely because a run failed,
    but do not assume a gate is valid merely because it already exists in code.
-5. **Change and verify.** Make the smallest authorized change, keep a regression
-   for the observed defect, and rerun the relevant validator/test. Invoke bundled
-   utilities using absolute paths under the discovered skill root, from the
-   task's workspace. A validator inspects input; it does not authorize execution.
-   Missing dependencies, cancelled commands, skipped checks, and partial output
-   are not passes. Fix observed failures without deleting tests or weakening
-   assertions to obtain a green result.
+5. **Change and verify.** A fix request authorizes in-scope local edits and
+   relevant non-destructive validation, not unrelated deployment. Match checks
+   to affected behavior and risk, not diff size: a stop-limit YAML edit is not a
+   typo. Preserve mandatory project/CI gates; do not run every ROS distro locally
+   for a prose-only change. Keep regressions for defects. Invoke utilities using
+   absolute paths under the discovered skill root, from the task workspace.
+   A validator does not authorize execution. Missing dependencies, cancelled commands,
+   skipped checks, and partial output are not passes. Fix failures without deleting
+   tests or weakening assertions to obtain a green result.
 6. **Turn blockers into a resolution plan.** Do not repeat the same blocker with
    no new evidence. Separate code changes, measurements, and operator decisions;
    define the next test's independent variable, evidence, pass/fail criterion,
    and stop condition. A count target is not proof that observations are
    independent.
-7. **Separate permission from proof.** Track user authorization, the authorized
-   test envelope, observed technical state, supervised-test readiness, and
-   operational readiness separately. Authorization never raises a verification
-   level. Once authorization for the same unchanged, unexpired, and unrevoked
-   test envelope is established, do not ask for it again. Authorization is valid
-   only for its stated session or time window and until revoked; expiry,
-   revocation, or a material envelope change requires renewal. Execution authority
-   is separate: user authorization does not override product, client, site, or
-   safety policy or client tool permissions. If physical actuation is reserved to
-   an operator, state that once and provide the operator-ready bounded next action
-   instead of pretending authorization is missing. Track the approved attempt
-   budget; a failed or uncertain command is not permission for an unbounded retry.
-   Recheck technical readiness immediately before execution.
-8. **Finish at the requested boundary.** Report evidence, affected files, actual
-   commands and exit/results, verification level, and remaining limits. Stop when
-   the requested scope is complete. Do not turn a review into deployment or a
-   software test into an unrequested hardware experiment.
+7. **Separate permission from proof.** Track authorization validity, envelope,
+   attempt budget, technical evidence, supervised-test readiness, and operational
+   readiness separately. Authorization never raises a verification level. Do not
+   ask again for an unchanged, unexpired, and unrevoked approval with attempts
+   remaining. Renew after expiry, revocation, exhaustion, or an envelope change.
+   Execution authority is separate: user authorization does not override product,
+   client, site, or safety policy or client tool permissions. If physical actuation
+   is reserved to an operator, give the operator-ready bounded next action instead
+   of pretending authorization is missing. Recheck readiness before execution;
+   a failed or uncertain command does not authorize an unbounded retry. Details:
+   `references/evidence-progression.md`.
+8. **Finish at the requested boundary.** Complete authorized edits and checks,
+   not just a plan. When commit/push is requested, verify the remote ref equals
+   the intended commit; writing a file or creating a blob is not a push. Report
+   actual results and limits, then stop once acceptance criteria and required
+   gates are satisfied. Do not repeat unchanged checks without a reason or turn
+   a software test into an unrequested hardware experiment.
 
 ## Decision router
 

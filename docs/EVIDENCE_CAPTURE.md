@@ -31,6 +31,34 @@ not a model's statement that it used a tool. Keep sensitive raw transcripts loca
 publish only with authorization. Redaction changes artifact bytes: document it,
 rehash the published copy, and retain the original securely for verification.
 
+## Re-evaluate on model or instruction upgrades
+
+Use the installed model/client identifiers, not a claimed capability from a release
+announcement. Preregister a comparison before editing instructions. In addition to
+skill-on/off pairs, compare the previous and candidate skill revisions under the
+same model and workspace; keep their manifests separate. A keyword score or a
+smaller prompt alone is not evidence that the candidate helps.
+
+The benchmark suite includes a prose-only edit, a one-line watchdog-limit change,
+and an authorized commit/push task. They distinguish unnecessary ritual from
+necessary ROS-specific investigation and completed work. Run the existing safety,
+QoS, lifecycle, and provenance cases as well; speed gains do not excuse regressions.
+For progression changes, also capture the four named progression scenarios in
+`evals/eval.yaml` and manually inspect their critical criteria.
+
+For routing, exercise `evals/trigger_cases.json` in fresh sessions with the normal
+installed skill inventory, including competing skills. Record names/descriptions
+actually exposed by the host, whether they were shortened, selected skill paths,
+and traces of loaded references. Do not force activation when measuring implicit
+routing. Explicit invocation, discovery, and correct task completion are separate.
+
+Retain security, irreversible-action boundaries, stable project facts and mandatory
+CI. Re-evaluate blanket repository scans, repeated permission requests, forced
+reference reads and repeated full test runs. Compare task success, safety errors,
+files read, tools/tests executed, latency and measured tokens/cost. An unavailable
+metric is unknown, not zero. Stop once the preregistered criteria and required gates
+are met; the purpose is measurable task value, not making the skill unavoidable.
+
 ## Manifest format
 
 New experiments should use schema 2 below. Schema 1 remains readable for existing
@@ -82,7 +110,10 @@ python3 scripts/verify_eval_capture.py /path/to/capture.json --suite evals/bench
 
 The command returns nonzero for missing pairs, absent data, duplicate/reused
 sessions or artifacts, wrong prompt hashes, changed output bytes, invalid dates,
-and escaping paths. It does not invoke a model, validate transcript authenticity,
+and escaping paths. Manifest, suite and artifact reads reject non-regular files
+and are byte-bounded; artifact hashes and text checks use the same read snapshot.
+These are input checks, not a sandbox against hostile concurrent filesystem edits.
+It does not invoke a model, validate transcript authenticity,
 verify that `skill_loaded` is true in the real client, or grade an answer.
 Hashes protect integrity relative to a declared record; they do not establish
 who produced that record. A reviewer must inspect the traces.
@@ -137,4 +168,9 @@ There is no honest 100% conformance claim across untested future client versions
 
 Sources: [trigger evaluation](https://agentskills.io/skill-creation/optimizing-descriptions),
 [skill iteration](https://agentskills.io/skill-creation/best-practices), and
-[Claude skill evaluation](https://code.claude.com/docs/en/skills#evaluate-and-iterate-on-a-skill).
+[Claude skill evaluation](https://code.claude.com/docs/en/skills#evaluate-and-iterate-on-a-skill),
+[OpenAI skill routing](https://developers.openai.com/codex/skills/),
+[OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model),
+and [Claude skill authoring](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices).
+The model-upgrade guidance above was reviewed against these official authoring
+pages on 2026-09-09; it makes no model-specific performance claim.

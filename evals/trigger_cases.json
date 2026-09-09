@@ -26,6 +26,10 @@
     {"id":"explicit-claude","mode":"explicit","client":"claude","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."},
     {"id":"explicit-codex","mode":"explicit","client":"codex","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."},
     {"id":"explicit-cursor","mode":"explicit","client":"cursor","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."},
-    {"id":"explicit-gemini","mode":"explicit","client":"gemini","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."}
+    {"id":"explicit-gemini","mode":"explicit","client":"gemini","should_trigger":true,"prompt":"Invoke ros2-engineering-skills to review the ROS 2 workspace; report the resolved skill path and files read."},
+    {"id": "nav2-shorthand", "mode": "implicit", "should_trigger": true, "prompt": "Our Nav2 controller_server loads a different FollowPath plugin after an overlay rebuild. Find the active configuration."},
+    {"id": "control-shorthand", "mode": "implicit", "should_trigger": true, "prompt": "The ros2_control controller_manager spawner times out during lifecycle activation; inspect the installed interface."},
+    {"id": "generic-in-ros-repo", "mode": "implicit", "should_trigger": false, "prompt": "In a ROS 2 repository, fix a typo in a plain license heading. No ROS code, commands, configuration or behavior is involved."},
+    {"id": "ros-mentioned-css", "mode": "implicit", "should_trigger": false, "prompt": "Our website mentions ROS 2. Fix the CSS padding of its login button, without touching the robot integration."}
   ]
 }

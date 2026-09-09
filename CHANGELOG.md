@@ -6,6 +6,13 @@ All notable changes are documented here.
 
 ## 1.5.0 - 2026-09-08
 
+- Make environment discovery, reference reading, and local validation proportional
+  to the task while retaining mandatory CI and physical-safety boundaries. Verify
+  remote branch state before claiming an authorized commit/push is complete.
+- Add task-scope and completion cases to the paired capture suite, expand routing
+  negatives, and document controlled model/skill-upgrade comparisons.
+- Reject FIFOs and other non-regular capture inputs without blocking; bound reads
+  and verify artifact hashes and text from one snapshot.
 - Keep missing, partial, and damaged model captures separate from scored results;
   require valid ON/OFF pairs before reporting a parity delta. Confine evaluation
   inputs and history to their declared directories and reject malformed manifests.

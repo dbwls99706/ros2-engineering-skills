@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
+import stat
 from pathlib import Path, PurePosixPath
 import re
 import sys
@@ -25,20 +27,40 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def load_object(path):
+def read_regular_bytes(path):
+    """Read one bounded snapshot, rejecting FIFOs/devices before reading.
+
+    O_NONBLOCK prevents a POSIX FIFO open from waiting for a writer. This is
+    input validation, not a sandbox against hostile concurrent filesystem edits.
+    """
+    flags = os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        require(stat.S_ISREG(info.st_mode), 'Input must be a regular file: ' + str(path))
+        require(info.st_size <= MAX_FILE_BYTES, 'Input file exceeds 20 MiB')
+        data = handle.read(MAX_FILE_BYTES + 1)
+        require(len(data) <= MAX_FILE_BYTES, 'Input file exceeds 20 MiB')
+    return data
+
+
+def parse_object(data):
     def unique(pairs):
         out = {}
         for key, value in pairs:
             require(key not in out, 'Duplicate JSON key: ' + key)
             out[key] = value
         return out
-    require(path.stat().st_size <= MAX_FILE_BYTES, 'JSON file exceeds 20 MiB')
 
     def constant(value):
         raise ValueError('Nonstandard JSON value: ' + value)
-    result = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=unique, parse_constant=constant)
+    result = json.loads(data.decode('utf-8'), object_pairs_hook=unique, parse_constant=constant)
     require(isinstance(result, dict), 'JSON root must be an object')
     return result
+
+
+def load_object(path):
+    return parse_object(read_regular_bytes(path))
 
 
 def local_file(root, relative, allow_empty=False):
@@ -56,7 +78,7 @@ def local_file(root, relative, allow_empty=False):
 
 
 def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(read_regular_bytes(path)).hexdigest()
 
 
 def artifact(root, spec, allow_empty=False):
@@ -64,8 +86,9 @@ def artifact(root, spec, allow_empty=False):
     sha = spec.get('sha256')
     require(isinstance(sha, str) and SHA256.fullmatch(sha), 'Invalid artifact SHA-256')
     path = local_file(root, spec.get('path'), allow_empty=allow_empty)
-    require(digest(path) == sha, 'Artifact hash mismatch: ' + spec['path'])
-    text = path.read_text(encoding='utf-8')
+    data = read_regular_bytes(path)
+    require(hashlib.sha256(data).hexdigest() == sha, 'Artifact hash mismatch: ' + spec['path'])
+    text = data.decode('utf-8')
     require(allow_empty or bool(text.strip()), 'Blank text artifact')
     return path
 
@@ -107,7 +130,9 @@ def validate(manifest_path, suite_path, now=None):
     unknown_loading = 0
     try:
         manifest_path, suite_path = Path(manifest_path), Path(suite_path)
-        manifest, suite = load_object(manifest_path), load_object(suite_path)
+        manifest = load_object(manifest_path)
+        suite_data = read_regular_bytes(suite_path)
+        suite = parse_object(suite_data)
         require(type(manifest.get('schema_version')) is int
                 and manifest['schema_version'] in (1, 2), 'Unsupported capture schema')
         schema = manifest['schema_version']
@@ -116,7 +141,8 @@ def validate(manifest_path, suite_path, now=None):
         revision = manifest.get('skill_revision')
         require(isinstance(revision, str) and REVISION.fullmatch(revision),
                 'skill_revision must be a full commit SHA')
-        require(manifest.get('suite_sha256') == digest(suite_path), 'Suite hash mismatch')
+        require(manifest.get('suite_sha256') == hashlib.sha256(suite_data).hexdigest(),
+                'Suite hash mismatch')
         for field in ('model', 'client', 'client_version'):
             nonempty(manifest.get(field), field)
         environment = manifest.get('environment')
