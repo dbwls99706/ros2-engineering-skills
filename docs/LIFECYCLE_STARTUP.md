@@ -66,3 +66,26 @@ remove Rolling runtime exclusions, or certify physical robot safety.
 
 Sources: [Kilted lifecycle event manager](https://github.com/ros2/launch_ros/blob/kilted/launch_ros/launch_ros/utilities/lifecycle_event_manager.py)
 and [OpaqueCoroutine](https://docs.ros.org/en/ros2_packages/kilted/api/launch/launch.actions.opaque_coroutine.html).
+
+## Fleet startup and shutdown observation
+
+The fleet observer waits for successful `OpaqueCoroutine` completion events before
+running the ordinary sibling-isolation test. An Active service response alone does
+not establish that the launch-side startup coroutine has finished its request and
+client cleanup; a fixed 200 ms dwell is not an acknowledgement of that completion.
+Missing, cancelled, failed, duplicate, or incomplete completion records cannot
+satisfy the barrier. Installed launch files remain unmodified by the observer.
+
+Separate rapid-shutdown trials intentionally do not wait for that barrier or run
+sibling transitions: they signal the supervisor after observing the nodes Active
+and checking the parameters. This retains coverage of shutdown while startup may
+still be finishing, rather than hiding it behind a readiness delay. Every trial
+requires a normal supervisor exit and successful start/exit evidence for both
+children. Three fresh repetitions stop on the first failure, not retry until pass.
+
+A stalled supervisor still fails the unchanged ten-second shutdown deadline.
+Only after that failure is decided does the observer request an all-thread stack
+dump before bounded process-group cleanup. Exiting after the diagnostic signal or
+forced cleanup never converts the timed-out trial into a pass. The older Humble
+run `34308316459` did not retain such a stack, so its exact internal blocking call
+is not established by the child-exit messages printed during final cleanup.

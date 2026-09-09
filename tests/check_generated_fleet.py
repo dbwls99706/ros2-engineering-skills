@@ -38,31 +38,51 @@ def validate_child_exits(events, expected=2):
     return [{'pid': pid, 'returncode': code} for pid, code in sorted(exited.items())]
 
 
-def wait_for_launch_exit(process, timeout=10.0, diagnostic_after=3.0):
-    """Keep the shutdown deadline while capturing a stalled supervisor's threads."""
-    deadline = time.monotonic() + timeout
+def wait_for_launch_exit(process, timeout=10.0):
+    """Capture timeout evidence, but never turn diagnostic-assisted exit into PASS."""
     try:
-        process.wait(timeout=min(diagnostic_after, timeout))
+        process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        print(f'Fleet supervisor {process.pid}: shutdown still pending; requesting stacks',
+        print(f'Fleet supervisor {process.pid}: shutdown deadline expired; requesting stacks',
               flush=True)
-        # The observer wrapper registers this with faulthandler before launching.
-        # This signal only captures evidence; it must not complete the shutdown.
         try:
             process.send_signal(signal.SIGUSR1)
         except ProcessLookupError:
             pass
-        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        # Let faulthandler write before final cleanup. Acceptance has already failed:
+        # even if this diagnostic signal wakes the process, preserve the timeout.
+        time.sleep(0.1)
+        raise
 
 
-def run_launch(work, package, discover, drop_transition_events=False):
+def startup_complete_count(path):
+    """Only complete, unique success records satisfy the startup barrier."""
+    if not path.exists():
+        return 0
+    text = path.read_text(encoding='utf-8')
+    # A concurrent append may not have written the trailing newline yet.
+    lines = text.split('\n')[:-1]
+    actions = set()
+    for line in lines:
+        row = json.loads(line)
+        action = row.get('action') if isinstance(row, dict) else None
+        if (type(action) is not int or action <= 0 or action in actions
+                or row.get('event') != 'startup_complete'):
+            raise RuntimeError('Malformed or duplicate startup completion evidence')
+        actions.add(action)
+    return len(actions)
+
+
+def run_launch(work, package, discover, drop_transition_events=False, expected_startups=0):
     from smoke_test_nodes import terminate_group
 
     events = work / (package + '-events.jsonl')
     dropped = work / (package + '-dropped-events.jsonl')
+    startup = work / (package + '-startup.jsonl')
     # Repeated attempts need fresh evidence, not earlier successful child exits.
     events.unlink(missing_ok=True)
     dropped.unlink(missing_ok=True)
+    startup.unlink(missing_ok=True)
     fault = ''
     if drop_transition_events:
         fault = f'''# Fault injection in the observer process only; generated nodes are unchanged.
@@ -90,8 +110,8 @@ EventOwner._on_transition_event = discard_transition
 import json
 import signal
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, RegisterEventHandler
-from launch.event_handlers import OnProcessExit, OnProcessStart
+from launch.actions import IncludeLaunchDescription, OpaqueCoroutine, RegisterEventHandler
+from launch.event_handlers import OnExecutionComplete, OnProcessExit, OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
@@ -106,8 +126,22 @@ faulthandler.register(signal.SIGUSR1, all_threads=True)
         output.write(json.dumps(row) + '\\n')
 
 
+def record_startup(event, context):
+    future = event.action.get_asyncio_future()
+    if future is None or not future.done() or future.cancelled():
+        raise RuntimeError('Startup completion event has no successful future')
+    if future.exception() is not None:
+        raise future.exception()
+    with open({str(startup)!r}, 'a', encoding='utf-8') as output:
+        output.write(json.dumps({{'event': 'startup_complete',
+                                 'action': id(event.action)}}) + '\\n')
+
+
 def generate_launch_description():
     return LaunchDescription([
+        RegisterEventHandler(OnExecutionComplete(
+            target_action=lambda action: isinstance(action, OpaqueCoroutine),
+            on_completion=record_startup)),
         RegisterEventHandler(OnProcessStart(on_start=lambda event, context: record('start', event))),
         RegisterEventHandler(OnProcessExit(on_exit=lambda event, context: record('exit', event))),
         IncludeLaunchDescription(PythonLaunchDescriptionSource({str(installed_launch)!r})),
@@ -123,11 +157,20 @@ def generate_launch_description():
             while True:
                 if process.poll() is not None:
                     raise RuntimeError('Fleet launch exited before verification')
-                if discover():
+                completed = startup_complete_count(startup)
+                if expected_startups and completed > expected_startups:
+                    raise RuntimeError('Unexpected number of lifecycle startup helpers')
+                # Active is a node state, not proof that launch-side startup/cleanup ended.
+                # Do not race sibling transitions against the unfinished startup helper.
+                if completed >= expected_startups and discover():
                     break
+                if completed < expected_startups:
+                    time.sleep(0.01)
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Fleet parameters/lifecycle did not become ready: ' +
-                                       json.dumps(discover.last_observation, sort_keys=True))
+                                       json.dumps({'startup_helpers_completed': completed,
+                                                   'observation': discover.last_observation},
+                                                  sort_keys=True))
             # Signal the supervisor only: launch forwards SIGINT to its children.
             # Signalling the group too would interrupt Python cleanup a second time.
             print(f'Fleet supervisor {process.pid}: requesting SIGINT shutdown', flush=True)
@@ -148,7 +191,7 @@ def generate_launch_description():
                 print(output.read().decode('utf-8', errors='replace'), flush=True)
 
 
-def verify_fleet(work, package, lifecycle, drop_transition_events=False):
+def verify_fleet(work, package, lifecycle, drop_transition_events=False, rapid_shutdown=False):
     import rclpy
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
@@ -223,19 +266,19 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False):
                 discover.active_since = None
                 return set()
             now = time.monotonic()
-            if discover.active_since is None:
+            if not rapid_shutdown and discover.active_since is None:
                 discover.active_since = now
                 discover.last_observation['stable_active_for'] = 0.0
                 return set()
-            stable_for = now - discover.active_since
+            stable_for = now - (discover.active_since or now)
             discover.last_observation['stable_active_for'] = stable_for
-            if stable_for < 0.2:
+            if not rapid_shutdown and stable_for < 0.2:
                 return set()
             for c in parameters:
                 values = read_call(c, GetParameters.Request(names=['publish_rate'])).values
                 if len(values) != 1 or values[0].type != 3 or values[0].double_value != 17.0:
                     raise RuntimeError('Namespaced fleet did not load the nondefault YAML value')
-            if lifecycle and not drop_transition_events:
+            if lifecycle and not drop_transition_events and not rapid_shutdown:
                 request = ChangeState.Request()
                 request.transition.id = Transition.TRANSITION_DEACTIVATE
                 if not call(changes[0], request).success:
@@ -254,10 +297,13 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False):
 
         discover.last_observation = {}
         discover.active_since = None
-        children = run_launch(work, package, discover, drop_transition_events)
+        children = run_launch(work, package, discover, drop_transition_events,
+                              expected_startups=2 if lifecycle and not rapid_shutdown else 0)
         return {'package': package, 'nodes': names, 'publish_rate': 17.0,
                 'lifecycle': lifecycle,
-                'sibling_isolation': lifecycle and not drop_transition_events,
+                'sibling_isolation': lifecycle and not drop_transition_events and not rapid_shutdown,
+                'startup_completion_required': lifecycle and not rapid_shutdown,
+                'rapid_shutdown_after_active': rapid_shutdown,
                 'transition_events_discarded': drop_transition_events,
                 'children': children, 'status': 'pass'}
     finally:
@@ -304,6 +350,9 @@ def main():
                 if lifecycle:
                     # A deterministic negative control for the former event-only startup.
                     result = verify_fleet(work, package, lifecycle, drop_transition_events=True)
+                    records.append({**result, 'trial': trial + 1})
+                    # Keep abrupt shutdown coverage separate from settled sibling isolation.
+                    result = verify_fleet(work, package, lifecycle, rapid_shutdown=True)
                     records.append({**result, 'trial': trial + 1})
     print(json.dumps({'status': 'pass', 'scope': 'Actual generated ROS fleet behavior',
                       'results': records}, indent=2))
