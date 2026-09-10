@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scope": "Only the claims in the named files; not a full audit of all ROS references.",
+  "scope": "Only the named files and, when present, listed claims; not a full audit of all ROS references.",
   "sources": [
     {"id":"agent-skills","url":"https://agentskills.io/specification","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/SKILL_CONTRACT.md","scripts/validate_skill.py"]},
     {"id":"skill-practices","url":"https://agentskills.io/skill-creation/best-practices","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/EVIDENCE_CAPTURE.md","SKILL.md","docs/CONTEXT_BUDGET.md"]},
@@ -12,6 +12,10 @@
     {"id":"gemini-skills","url":"https://geminicli.com/docs/cli/skills/","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
     {"id":"ros-qos","url":"https://docs.ros.org/en/humble/Concepts/Intermediate/About-Quality-of-Service-Settings.html","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/QOS_CASE_STUDY.md"]},
     {"id":"codex-app-server","url":"https://learn.chatgpt.com/docs/app-server","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
-    {"id":"gemini-list-source","url":"https://github.com/google-gemini/gemini-cli/blob/v0.58.0/packages/cli/src/commands/skills/list.ts","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]}
+    {"id":"gemini-list-source","url":"https://github.com/google-gemini/gemini-cli/blob/v0.58.0/packages/cli/src/commands/skills/list.ts","reviewed_on":"2026-09-07","review_after":"2026-12-06","covers":["docs/CLIENT_COMPATIBILITY.md"]},
+    {"id":"humble-imu-covariance","url":"https://github.com/ros2/common_interfaces/blob/humble/sensor_msgs/msg/Imu.msg","reviewed_on":"2026-09-10","review_after":"2026-12-09","covers":["references/message-types.md"],"claims":["All-zero IMU covariance means unknown uncertainty; first element -1 means unavailable measurement."]},
+    {"id":"humble-pose-covariance","url":"https://github.com/ros2/common_interfaces/blob/humble/geometry_msgs/msg/PoseWithCovariance.msg","reviewed_on":"2026-09-10","review_after":"2026-12-09","covers":["references/message-types.md"],"claims":["PoseWithCovariance defines the 6x6 layout without the IMU sentinel conventions."]},
+    {"id":"humble-quaternion-default","url":"https://github.com/ros2/common_interfaces/blob/humble/geometry_msgs/msg/Quaternion.msg","reviewed_on":"2026-09-10","review_after":"2026-12-09","covers":["references/message-types.md"],"claims":["The Humble message defaults to identity in x,y,z,w order."]},
+    {"id":"python-quaternion-product","url":"https://github.com/DLu/tf_transformations/blob/main/tf_transformations/__init__.py","reviewed_on":"2026-09-10","review_after":"2026-12-09","covers":["references/message-types.md"],"claims":["quaternion_multiply performs a product without normalization."]}
   ]
 }

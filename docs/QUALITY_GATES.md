@@ -31,9 +31,9 @@ its discovery and explicit invocation in each supported client before advertisin
 end-to-end support. When authentic captures are available, validate the full
 preregistered paired suite and review semantic outcomes, including failures.
 
-Choose a version only after deciding the release scope. Update skill, plugin,
-marketplace, eval configuration, manual report versions, version assertions,
-and changelog together. Tag the reviewed commit; never tag a moving branch name
+Choose a version only after deciding the release scope. Update the bundle surfaces
+listed in [RELEASING.md](RELEASING.md) together; hook reports and standalone tools
+retain their independent interface versions. Tag the reviewed commit; never tag a moving branch name
 without resolving its commit. Creating a branch or passing CI is not a release.
 No workflow in this repository should automatically publish a release or change
 the user's source tree as a side effect of a validator run.

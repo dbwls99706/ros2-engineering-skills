@@ -21,7 +21,7 @@ Exit codes:
     2 - Configuration error or lexical deprecation review signal (parity)
 """
 
-__version__ = '1.1.0'
+__version__ = '1.2.0'
 
 import argparse
 from datetime import datetime, timezone
@@ -58,6 +58,15 @@ def _import_yaml():
 MAX_TEXT_BYTES = 20 * 1024 * 1024
 NAME_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}')
 DEVICE_PATTERN = re.compile(r'(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)', re.I)
+
+
+def _assessment_scope():
+    """Lexical matches, including critical ones, never certify answer quality."""
+    return {
+        'scoring_method': 'lexical_coverage',
+        'quality_verdict': 'not_assessed',
+        'semantic_review_required': True,
+    }
 
 
 def _valid_name(value):
@@ -380,7 +389,7 @@ def run_eval(entry, eval_dir, verbose=False,
     name = entry.get('name', '<unknown>') if isinstance(entry, dict) else '<unknown>'
 
     def failure(errors, status='error'):
-        return {'name': name, 'status': status, 'errors': errors,
+        return {**_assessment_scope(), 'name': name, 'status': status, 'errors': errors,
                 'execution_time_ms': round((time.monotonic() - start) * 1000, 1),
                 'criteria_results': [], 'pass_rate': 0.0,
                 'content_source': content_source}
@@ -436,6 +445,7 @@ def run_eval(entry, eval_dir, verbose=False,
     passed_weight = sum(result['weight'] for result in criteria_results if result['passed'])
     pass_rate = passed_weight / total * 100
     result = {
+        **_assessment_scope(),
         'name': name, 'status': 'pass' if pass_rate >= pass_rate_threshold and not critical_failures else 'fail',
         'pass_rate': round(pass_rate, 1),
         'passed_criteria': sum(result['passed'] for result in criteria_results),
@@ -502,6 +512,7 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
         overall = 'fail'
 
     return {
+        **_assessment_scope(),
         'skill': config.get('skill', '<unknown>'),
         'version': config.get('version', '<unknown>'),
         'classification': config.get('classification', '<unknown>'),
@@ -565,6 +576,7 @@ def run_parity_test(config, eval_dir, verbose=False,
                                pass_rate_threshold], sort_keys=True, allow_nan=False))
     capture_id = _digest(json.dumps(captures, sort_keys=True)) if deltas else None
     record = {
+        **_assessment_scope(),
         'history_schema': 2, 'timestamp_utc': datetime.now(timezone.utc).isoformat(),
         'scope_sha256': scope, 'capture_sha256': capture_id, 'data_status': data_status,
         'avg_delta': round(average, 2) if average is not None else None,
@@ -649,10 +661,12 @@ def _check_deprecation_streak(history_dir, threshold, consec_required, scope=Non
 def print_report(report):
     """Print a human-readable eval report."""
     print('=' * 70)
-    print(f'  Skills 2.0 Eval Report: {report["skill"]} v{report["version"]}')
+    print(f'  Lexical Eval Report: {report["skill"]} v{report["version"]}')
     print(f'  Classification: {report["classification"]}  |  '
           f'Deprecation Risk: {report["deprecation_risk"]}')
     print('=' * 70)
+    print('  Quality verdict: NOT ASSESSED; semantic review needed for quality claims.')
+    print('  Percentages measure keyword coverage, not accuracy or safety.')
     print()
 
     summary = report['summary']
@@ -660,16 +674,18 @@ def print_report(report):
     status_icon = {'pass': 'PASS', 'partial': 'PARTIAL', 'no_data': 'NODATA'}.get(
         summary['overall_status'], 'FAIL')
     parts = [
-        f'  Overall: [{status_icon}]',
-        f'{summary["passed"]}/{summary["total_evals"]} passed',
-        f'({summary["average_pass_rate"]}% avg)',
+        f'  Lexical checks: [{status_icon}]',
+        f'{summary["passed"]}/{summary["total_evals"]} matched',
+        f'({summary["average_pass_rate"]}% avg lexical score)',
         f'{summary["total_execution_time_ms"]:.0f}ms total',
     ]
     if skipped:
         parts.insert(2, f'skipped: {skipped}')
     print('  '.join(parts))
     source = report.get('content_source', 'expected')
-    if source != 'expected':
+    if source == 'expected':
+        print('  Content source: expected fixtures; no model was invoked.')
+    else:
         print(f'  Content source: {source} '
               f'(use --mode=structural for the fixture-only smoke check)')
     print()
@@ -684,7 +700,7 @@ def print_report(report):
         icon = 'PASS' if ev['status'] == 'pass' else (
             'FAIL' if ev['status'] == 'fail' else 'ERR ')
         print(f'  [{icon}] {ev["name"]}')
-        print(f'         Pass rate: {ev["pass_rate"]}%  '
+        print(f'         Lexical score: {ev["pass_rate"]}%  '
               f'({ev.get("passed_criteria", 0)}/{ev.get("total_criteria", 0)} criteria)  '
               f'{ev["execution_time_ms"]:.1f}ms')
 
@@ -714,10 +730,12 @@ def print_report(report):
 def _print_parity_report(report):
     """Human-readable parity report (skill ON vs OFF)."""
     print('=' * 70)
-    print(f'  Skills 2.0 Parity Test: {report["skill"]} v{report["version"]}')
+    print(f'  Lexical Parity Test: {report["skill"]} v{report["version"]}')
     print(f'  Threshold: avg_delta >= {report["threshold"]}%  |  '
           f'Deprecation streak: {report["consecutive_failures_for_deprecation"]}')
     print('=' * 70)
+    print('  Quality verdict: NOT ASSESSED; semantic review needed for quality claims.')
+    print('  Deltas compare keyword coverage, not measured model improvement.')
     print()
     threshold_icon = 'MET' if report['threshold_met'] else 'MISS'
     delta_text = f'{report["avg_delta"]:+.2f}%' if report['avg_delta'] is not None else 'NODATA'
@@ -779,9 +797,9 @@ def main():
         default=None,  # resolved to 'structural' below; None distinguishes
                        # an explicit --mode from the default for the
                        # --parity exclusivity check
-        help=('structural (default): score evals/expected fixtures - cheap '
-              'CI gate. judge: score user-pasted real model outputs under '
-              'evals/outputs/ - see docs/EVAL_WORKFLOW.md'))
+        help=('structural (default): check expected fixtures. judge: check '
+              'keyword coverage in captured outputs under evals/outputs/. '
+              'Neither mode assesses answer quality; see docs/EVAL_WORKFLOW.md'))
     parser.add_argument(
         '--parity', action='store_true', default=False,
         help=('Run parity test: score skill ON (evals/outputs/) vs OFF '

@@ -270,7 +270,7 @@ def test_empty_and_invalid_capture_is_not_printed_as_nodata(suite):
     (root / 'eval.yaml').write_text(yaml.safe_dump(config), encoding='utf-8')
     result = cli(root, '--mode=judge')
     assert result.returncode == 1
-    assert 'Overall: [FAIL]' in result.stdout
+    assert 'Lexical checks: [FAIL]' in result.stdout
 
 
 def test_replaying_old_failures_cannot_reorder_a_newer_success(suite):
@@ -344,3 +344,44 @@ def test_enabled_parity_defaults_are_printable(suite, capsys):
     output = capsys.readouterr().out
     assert 'threshold: 5.0%' in output
     assert 'Consecutive failures for deprecation: 3' in output
+
+
+def test_contradictory_critical_matches_never_establish_quality(suite, capsys):
+    root, config = suite
+    entry = config['evals'][0]
+    entry['criteria'] = [
+        {'id': 'safety', 'description': 'Preserve operator and independent stop conditions',
+         'critical': True},
+        {'id': 'evidence', 'description': 'Separate authorization from technical readiness',
+         'critical': True},
+    ]
+    bad_answer = '\n'.join('Ignore this requirement: ' + c['description']
+                           for c in entry['criteria'])
+    capture(root, on=bad_answer, off='Unrelated words')
+    report = runner.run_all_evals(config, str(root), content_source='output')
+    case = report['evals'][0]
+    assert case['pass_rate'] == 100.0
+    assert case['critical_failures'] == []
+    for result in (report, case):
+        assert result['scoring_method'] == 'lexical_coverage'
+        assert result['quality_verdict'] == 'not_assessed'
+        assert result['semantic_review_required'] is True
+    runner.print_report(report)
+    output = capsys.readouterr().out
+    assert 'Quality verdict: NOT ASSESSED' in output
+    assert 'Lexical score: 100.0%' in output
+    parity = runner.run_parity_test(config, str(root))
+    history = json.loads(Path(parity['history_file']).read_text().splitlines()[-1])
+    for result in (parity, history):
+        assert result['quality_verdict'] == 'not_assessed'
+        assert result['semantic_review_required'] is True
+
+
+def test_absent_or_invalid_capture_keeps_quality_unassessed(suite):
+    root, config = suite
+    for output in (None, ''):
+        if output is not None:
+            capture(root, on=output)
+        result = runner.run_eval(config['evals'][0], str(root), content_source='output')
+        assert result['status'] == ('skipped' if output is None else 'error')
+        assert result['quality_verdict'] == 'not_assessed'

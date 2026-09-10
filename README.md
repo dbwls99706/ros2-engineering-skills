@@ -272,10 +272,10 @@ The default `eval_runner.py` checks whether expected-answer fixtures cover their
 declared criteria. It is not a model benchmark. Lexical coverage is not semantic
 correctness, and a fixture cannot substitute for an unmodified model capture.
 
-`evals/trigger_cases.json` defines 24 activation cases: 10 implicit positives,
-10 implicit negatives, and explicit invocation for four clients.
-`evals/benchmark_suite.json` defines five quality cases with three trials and
-paired skill-on/off runs: 15 pairs, 30 fresh sessions per experiment.
+`evals/trigger_cases.json` defines 28 activation cases: 12 implicit positives,
+12 implicit negatives, and explicit invocation for four clients.
+`evals/benchmark_suite.json` defines eight quality cases with three trials and
+paired skill-on/off runs: 24 pairs, 48 fresh sessions per experiment.
 No fabricated captures or improvement percentages are included.
 
 ```bash

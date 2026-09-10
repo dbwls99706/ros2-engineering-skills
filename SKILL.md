@@ -66,8 +66,7 @@ constraints and lookup routes, not a checklist to execute on every request.
 7. **Separate permission from proof.** For physical tests, track authorization
    validity, envelope, attempt budget, technical evidence, supervised-test readiness,
    and operational readiness separately. Authorization never raises a verification
-   level. Do not
-   ask again for an unchanged, unexpired, and unrevoked approval with attempts
+   level. Do not ask again for an unchanged, unexpired, and unrevoked approval with attempts
    remaining. Renew after expiry, revocation, exhaustion, or an envelope change.
    Execution authority is separate: user authorization does not override product,
    client, site, or safety policy or client tool permissions. If physical actuation

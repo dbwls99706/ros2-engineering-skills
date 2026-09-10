@@ -17,6 +17,18 @@ negation, fabricated facts, unsafe advice, or whether a tool actually executed.
 A criterion marked `critical: true` must pass even when the weighted total passes;
 that flag does not turn the matcher into a semantic safety checker.
 
+Every JSON report, case result, and parity-history record exposes
+`scoring_method: lexical_coverage`, `quality_verdict: not_assessed`, and
+`semantic_review_required: true`. The review requirement applies to model-quality
+claims, not to completing packaging checks or ordinary code changes.
+Existing `status`, `pass_rate`, and delta
+fields retain their lexical meaning. Even 100% coverage is not a quality pass:
+an answer can negate or quote every criterion and still match all its words.
+Text reports label this scope before showing scores. Exit 0 and
+`--require-complete` establish neither semantic correctness nor model improvement.
+Keep independently reviewed semantic outcomes alongside the authenticated captures
+described in [EVIDENCE_CAPTURE.md](EVIDENCE_CAPTURE.md).
+
 ## Files and validation
 
 ```text

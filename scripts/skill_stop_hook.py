@@ -40,6 +40,7 @@ import os
 import subprocess
 import sys
 import ast
+from pathlib import Path
 
 
 # Maximum directory depth to walk (relative to workspace root).
@@ -535,16 +536,21 @@ def _resolve_workspace():
 
 
 def _git_touched_paths(workspace):
-    """Return real paths of git-modified/untracked files, or None.
+    """Return absolute paths of git-modified/untracked files, or None.
 
     None means the modification set is unknown (not a git repository, git
     missing, or git failed) — the caller then validates everything found,
     preserving the pre-git behaviour.
     """
     try:
+        root = subprocess.run(
+            ['git', '-C', workspace, 'rev-parse', '--show-toplevel'],
+            capture_output=True, text=True, timeout=10)
+        if root.returncode != 0:
+            return None
         proc = subprocess.run(
             ['git', '-C', workspace, 'status', '--porcelain', '-z',
-             '--untracked-files=all', '--no-renames'],
+             '--untracked-files=all', '--no-renames', '--', '.'],
             capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -562,28 +568,49 @@ def _git_touched_paths(workspace):
         # Porcelain v1: two status chars, a space, then the path.
         p = record[3:]
         if p:
-            paths.add(os.path.realpath(os.path.join(workspace, p)))
+            # Porcelain paths are relative to the Git root, even when cwd is
+            # a package subdirectory. Keep the lexical filename for filtering;
+            # resolving a symlink here would lose its extension and location.
+            paths.add(os.path.abspath(os.path.join(root.stdout.rstrip('\n'), p)))
     return paths
+
+
+def _validation_files(workspace):
+    """Select changed candidates without a walk; scan once when Git is unknown."""
+    workspace = os.path.realpath(workspace)
+    touched = _git_touched_paths(workspace)
+    if touched is None:
+        candidates = []
+        for root, dirs, files in os.walk(workspace):
+            dirs[:] = [d for d in dirs
+                       if not _should_skip(os.path.join(root, d), workspace)]
+            candidates.extend(os.path.join(root, name) for name in files)
+    else:
+        candidates = sorted(touched)
+
+    launch_files, package_xmls, yaml_files = [], [], []
+    for path in candidates:
+        # Preserve the scan's directory/depth exclusions for direct Git paths.
+        # A deleted file, directory, FIFO, or escaping link is not a candidate.
+        if (_should_skip(os.path.dirname(path), workspace)
+                or not os.path.isfile(path)
+                or not Path(os.path.realpath(path)).is_relative_to(workspace)):
+            continue
+        name = os.path.basename(path)
+        if name.endswith(('.launch.py', '_launch.py')):
+            launch_files.append(path)
+        elif name == 'package.xml':
+            package_xmls.append(path)
+        elif name.endswith(('.yaml', '.yml')):
+            yaml_files.append(path)
+    return launch_files, package_xmls, yaml_files
 
 
 def main():
     workspace = _resolve_workspace()
     all_issues = []
 
-    launch_files = find_generated_launch_files(workspace)
-    package_xmls = find_package_xmls(workspace)
-    yaml_files = find_yaml_files(workspace)
-
-    # Scope validation to files this session plausibly touched (see module
-    # docstring). Unknown modification set -> validate everything.
-    touched = _git_touched_paths(workspace)
-    if touched is not None:
-        launch_files = [f for f in launch_files
-                        if os.path.realpath(f) in touched]
-        package_xmls = [f for f in package_xmls
-                        if os.path.realpath(f) in touched]
-        yaml_files = [f for f in yaml_files
-                      if os.path.realpath(f) in touched]
+    launch_files, package_xmls, yaml_files = _validation_files(workspace)
 
     for lf in launch_files:
         all_issues.extend(validate_launch_file_syntax(lf))

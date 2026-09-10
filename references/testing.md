@@ -768,9 +768,10 @@ are not interchangeable. `references/engineering-principles.md` Principle 13
 defines the ladder; this section is the working detail — what each level proves,
 what it explicitly does not, and what to cite as evidence.
 
-State the level with every claim. The failure this prevents is not a wrong
-result; it is a *correct* result described in the language of a level it never
-reached, which is how "the tests pass" becomes "it is safe to drive."
+State the level for claims about ROS behavior or hardware readiness. Report
+unperformed checks when they limit the requested claim or are required by the
+project. Prose-only edits need only relevant checks. A correct software result
+does not establish powered-hardware or field behavior.
 
 | Level | What ran | Proves | Does NOT prove | Evidence to cite |
 |---|---|---|---|---|

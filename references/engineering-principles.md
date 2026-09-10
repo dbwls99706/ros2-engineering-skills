@@ -21,8 +21,8 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 > `NEXT_REVIEW` comments above.
 
 Detect the distro before generating code — do not ask first, and do not
-assume the newest release. Work down this ladder and stop at the first
-answer:
+assume the newest release. Compare the applicable evidence below before selecting
+a target; a sourced shell alone does not establish the workspace's intended distro:
 
 1. **Active shell:** `echo $ROS_DISTRO` — the distro currently sourced.
    `ls /opt/ros/` is *inventory evidence* (what is installed), never an

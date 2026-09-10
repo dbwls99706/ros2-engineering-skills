@@ -604,25 +604,32 @@ Diagonal (variances): indices 0, 4, 8
 
 ### Covariance rules
 
-- **Never use exact `0.0` on the diagonal.** This tells EKF/SLAM nodes the
-  measurement has zero uncertainty (infinite confidence), which causes
-  matrix inversion errors and filter divergence.
-  Use very small values instead: `1e-6`.
-- **Unknown covariance:** Set the entire matrix to zeros and document that
-  covariance is unknown. Some nodes treat all-zeros as "use default covariance."
-- **IMU "data unavailable" signal:** Set `covariance[0] = -1.0` to indicate
-  the sensor does not provide this measurement (see section 3).
+- **Known uncertainty:** Use measured or specified variances in the correct
+  units (for example, m² and rad²). Do not replace unknown uncertainty with an
+  arbitrary small positive number: that can give unreliable data excessive weight.
+- **IMU covariance unknown:** In `sensor_msgs/msg/Imu`, an all-zero matrix means
+  the measurement's covariance is unknown. The consumer must obtain or assume a
+  covariance before using that measurement; it does not mean perfect accuracy.
+- **IMU measurement unavailable:** Set the associated `covariance[0]` to `-1.0`
+  when that measurement is not provided. The consumer should disregard it.
+- **Other messages and filters:** `PoseWithCovariance` does not define the IMU
+  sentinel conventions. Check the installed consumer's handling of zero or
+  singular covariance. A zero variance may express an exact constraint or require
+  special handling; neither a crash nor a default substitution is universal.
 
 ```python
-# BAD — zero variance causes EKF to explode
-msg.pose.covariance[0] = 0.0   # "I know x with infinite precision"
+# Measurement exists, but its covariance is unknown (IMU convention only).
+msg.orientation_covariance = [0.0] * 9
 
-# GOOD — small but nonzero
-msg.pose.covariance[0] = 1e-6  # Very confident but numerically stable
+# No orientation estimate is provided by this IMU.
+msg.orientation_covariance[0] = -1.0
 
-# GOOD — realistic uncertainty from sensor specs
-msg.pose.covariance[0] = 0.01  # 0.1m standard deviation → 0.01 variance
+# Separate pose-message example: a measured 0.1 m standard deviation.
+pose_msg.pose.covariance[0] = 0.1 ** 2
 ```
+
+Sources: [Humble Imu definition](https://github.com/ros2/common_interfaces/blob/humble/sensor_msgs/msg/Imu.msg)
+and [Humble PoseWithCovariance definition](https://github.com/ros2/common_interfaces/blob/humble/geometry_msgs/msg/PoseWithCovariance.msg).
 
 ## 12. Standard units (REP-103)
 
@@ -662,23 +669,44 @@ Quaternions (`geometry_msgs/msg/Quaternion`) must always satisfy:
 
 $$x^2 + y^2 + z^2 + w^2 = 1$$
 
-- **Default `(0,0,0,0)` is INVALID** — crashes tf2.
-- **Identity (no rotation) is `(0,0,0,1)`** — always initialize `w = 1.0`.
-- Use `tf2::Quaternion::normalize()` (C++) or
-  `tf_transformations.quaternion_multiply` (Python) to ensure normalization
-  after manual construction.
+- **`(0,0,0,0)` is invalid:** reject it; normalization cannot recover an orientation.
+- **Identity (no rotation) is `(0,0,0,1)`.** The Humble message definition defaults
+  to this value; explicitly initialize it when constructing an identity rotation.
+- In C++, use `tf2::Quaternion::normalize()` only after checking that the
+  components and norm are finite and the norm is nonzero. In Python, divide by
+  the norm after the same checks:
+
+```python
+import math
+
+
+def normalize_xyzw(values):
+    x, y, z, w = (float(value) for value in values)
+    norm = math.hypot(x, y, z, w)
+    if not math.isfinite(norm) or norm == 0.0:
+        raise ValueError("Quaternion must have a finite, nonzero norm")
+    return tuple(value / norm for value in (x, y, z, w))
+```
+
+`tf_transformations.quaternion_multiply` composes quaternions; it does not
+normalize them. Multiplying `(0,0,0,2)` by the identity still has norm 2.
+Normalization fixes magnitude, not an incorrect frame, rotation order, or sensor
+calibration.
+
+Sources: [Humble Quaternion definition](https://github.com/ros2/common_interfaces/blob/humble/geometry_msgs/msg/Quaternion.msg)
+and [tf_transformations implementation](https://github.com/DLu/tf_transformations/blob/main/tf_transformations/__init__.py).
 
 ## 13. Common failures and anti-patterns
 
 | Anti-pattern | Why it fails | Fix |
 |---|---|---|
 | Using `0.0` for missing LiDAR data | Looks like an obstacle at zero distance | Use `Infinity` or `NaN` (or value outside `[range_min, range_max]`) |
-| Leaving Quaternion uninitialized (Foxy) | Crashes tf2 ("Quaternion has length close to zero") | Humble+ defaults to `w=1.0`; still explicit-init for safety |
+| Passing a zero or nonfinite Quaternion | Invalid orientation; the consumer may reject the transform | Reject invalid values; use `(0,0,0,1)` for an intended identity |
 | Image published in `camera_link` | Point clouds and detections rotated 90° | Publish in `camera_optical_frame` |
-| Setting IMU covariance to all `0.0` when no data | EKF treats it as "perfectly accurate" → filter diverges | Set `covariance[0] = -1.0` to signal "data unavailable" |
+| Using all-zero IMU covariance for a missing measurement | Signals unknown uncertainty for an existing measurement, not missing data | Set `covariance[0] = -1.0` for the unavailable measurement |
 | Using `time.time()` for `header.stamp` | Fails during rosbag playback or Gazebo simulation | Use `node.get_clock().now()` (C++) or `.to_msg()` (Python) |
 | Assuming JointState index order | Different publishers may order joints differently | Look up joint by `name`, never assume position by index |
-| Zero diagonal in covariance matrix | Matrix inversion fails in EKF/SLAM → NaN propagation | Use `1e-6` minimum on diagonal |
+| Replacing unknown covariance with an arbitrary `1e-6` | Implies unjustified confidence and can overweight the measurement | Use measured uncertainty or the message and consumer's explicit unknown-data handling |
 | Manually iterating PointCloud2 `data[]` | Byte offset errors, endianness bugs | Use `pcl::fromROSMsg()` or `PointCloud2Iterator` |
 | Not publishing CameraInfo with Image | 3D perception nodes silently fail | Always pair Image + CameraInfo on synchronized topics |
 | Putting images in action feedback | Feedback published at high rate → bandwidth explosion | Use topics for streaming data, feedback for progress status only |

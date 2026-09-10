@@ -1,12 +1,9 @@
 ---
 # Skills 2.0 Evaluation Configuration
-# Defines test cases for automated quality verification of ros2-engineering-skills
-#
-# Each eval runs a prompt through the skill and compares the output
-# against expected criteria. Results include:
-#   - pass_rate: percentage of criteria met
-#   - execution_time_ms: wall-clock time
-#   - token_count: approximate tokens consumed
+# Defines fixtures and lexical criteria, not an automatic model-quality benchmark.
+# The runner does not invoke a model. pass_rate is lexical criterion coverage;
+# execution_time_ms measures local checking, not model latency. token_estimate
+# is a character-based approximation, not observed model token usage.
 
 skill: ros2-engineering-skills
 version: 1.5.0

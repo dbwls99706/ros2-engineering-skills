@@ -4,6 +4,15 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Correct quaternion normalization and IMU covariance guidance against upstream
+  definitions; execute the normalization example in regression tests.
+- Label evaluation reports and history as lexical coverage with answer quality
+  unassessed, including perfect matches and critical-criterion matches.
+- Select Stop-hook candidates from Git before scanning, handle package subdirectory
+  workspaces, and use one bounded scan when the Git change set is unavailable.
+- Align detailed reporting guidance, source-review scope, release-version policy,
+  and the README's evaluation inventory with the current contracts.
+
 - Scope verification-level reporting to ROS behavior and hardware-readiness
   claims, and physical-test authorization tracking to physical tests. Keep
   prose-only reports proportional without weakening required checks or stop proof.

@@ -366,7 +366,7 @@ class TestEvalRunnerCLI:
             [sys.executable, EVAL_RUNNER, '--eval-dir', EVALS_DIR],
             capture_output=True, text=True,
         )
-        assert 'Skills 2.0 Eval Report' in result.stdout
+        assert 'Lexical Eval Report' in result.stdout
         assert 'ros2-engineering-skills' in result.stdout
 
     def test_cli_json_output(self):
@@ -1437,7 +1437,7 @@ class TestMainDirectInvocation:
             eval_runner_main()
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert 'Skills 2.0 Eval Report' in out
+        assert 'Lexical Eval Report' in out
         assert '[PASS]' in out
 
     def test_main_parity_with_temp_eval_dir(self, monkeypatch, capsys, tmp_path):
