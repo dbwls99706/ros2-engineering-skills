@@ -575,8 +575,8 @@ General launch_testing setup is in
 Physical stop-path and spoofing checks require a bounded plan naming the approved
 operator, physical restraint/containment, conservative speed and torque limits,
 independent physical stop, and measured success and abort criteria. State these
-conditions in the physical test handoff. Execution belongs to the operator;
-user authorization does not delegate that execution authority. An agent may
+conditions in the physical test handoff. This reference reserves their execution
+to the operator; user authorization does not delegate that execution authority. An agent may
 prepare the procedure and evaluate evidence, but must not execute these physical
 fault injections itself.
 

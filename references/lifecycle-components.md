@@ -265,6 +265,14 @@ timeout/watchdog and independent stop path required by the ownership design;
 stop claims require remote acceptance evidence and measured response. Process
 cleanup is best effort and cannot replace those mechanisms after a crash.
 
+Inspect destructors as well as explicit cleanup calls. In the linked Jazzy
+implementation, `GenericTimer` calls `cancel()` again in its destructor. If
+cancellation keeps failing, the last shared-pointer release can terminate the
+process instead of reaching an outer `catch`. Finish required stop/close attempts
+and retain their failure status before releasing the timer; an interrupted
+lifecycle transition must not be reported as completed cleanup. Check the
+installed implementation when evaluating this failure path.
+
 ## 3. Implementing lifecycle transitions (rclpy)
 
 ```python
