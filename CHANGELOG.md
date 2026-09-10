@@ -13,6 +13,8 @@ Pending release; date records the latest source update.
   criteria; require the threat model to permit disclosure before using `SIGN`.
 - Preserve the previous SIGINT handler atomically during launch-supervisor
   teardown and cover a real signal arriving inside the restoration boundary.
+- Separate orderly lifecycle finalization from the active-state SIGINT probe so
+  Humble shutdown behavior cannot race lifecycle-node destruction in the fleet gate.
 - Centralize verification levels in the testing reference and keep authorization
   details in evidence progression. Remove repository-connector incidents and the
   unrelated Git completion benchmark from the domain skill.

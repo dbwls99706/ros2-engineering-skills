@@ -333,6 +333,17 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False, rapid_s
                 if ids != [State.PRIMARY_STATE_ACTIVE, State.PRIMARY_STATE_ACTIVE]:
                     raise RuntimeError(
                         'Fleet did not return to active after sibling test: ' + str(ids))
+                # Keep orderly lifecycle shutdown separate from the abrupt active-state
+                # SIGINT exercised by rapid_shutdown. Some Humble rclcpp releases can
+                # fault when a LifecycleNode is destroyed before it reaches Finalized.
+                for change in changes:
+                    request = ChangeState.Request()
+                    request.transition.id = Transition.TRANSITION_ACTIVE_SHUTDOWN
+                    if not call(change, request).success:
+                        raise RuntimeError('Could not finalize fleet node before shutdown')
+                ids = [read_call(c, GetState.Request()).current_state.id for c in states]
+                if ids != [State.PRIMARY_STATE_FINALIZED, State.PRIMARY_STATE_FINALIZED]:
+                    raise RuntimeError('Fleet did not reach finalized before shutdown: ' + str(ids))
             return {verified}
 
         discover.last_observation = {}
@@ -343,6 +354,8 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False, rapid_s
         return {'package': package, 'nodes': names, 'publish_rate': 17.0,
                 'lifecycle': lifecycle,
                 'sibling_isolation': lifecycle and not drop_transition_events and not rapid_shutdown,
+                'orderly_lifecycle_shutdown': (
+                    lifecycle and not drop_transition_events and not rapid_shutdown),
                 'startup_completion_required': lifecycle and not rapid_shutdown,
                 'rapid_shutdown_after_active': rapid_shutdown,
                 'transition_events_discarded': drop_transition_events,
