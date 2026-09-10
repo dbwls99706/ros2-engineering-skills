@@ -532,9 +532,9 @@ across delayed callbacks, reconnects and restarts:
    prerequisites have been verified. A missing or old acknowledgement keeps it
    revoked. Recovering health alone cannot rearm it.
 3. The gate remains stopped until the later **gate reset** request, authorized for
-   the current incident, validates the
-   current supervisor session/generation, its own current incident, fresh permit
-   and measured stationary state. Reject a reset from a prior incident. A plain
+   the current incident, validates the supervisor session/generation, gate boot
+   session and incident, fresh permit and measured stationary state.
+   Reject a reset from a prior incident. A plain
    `std_srvs/Trigger` carries no incident identifier; use a versioned reset request
    or an equally explicit stale-request exclusion protocol. Serialize reset and
    new stop events so a concurrent fault wins.
@@ -544,8 +544,10 @@ across delayed callbacks, reconnects and restarts:
    A bare Twist has no intent-generation field; use a typed command envelope or
    an authenticated source-enable protocol that excludes old goals and queued data.
 
-An interrupted handshake leaves the gate stopped. Do not require a positive
-motion permit before acknowledging the revoked state; that creates a reset
+Each gate restart creates a new session identity, so an incident counter reused
+after restart cannot make an old reset valid. An interrupted handshake leaves
+the gate stopped. Do not require a positive motion permit before acknowledging
+the revoked state; that creates a reset
 deadlock. Protect acknowledgement, permit and reset identities with the actual
 security policy, not caller-supplied names alone.
 
@@ -570,11 +572,13 @@ not establish its behavior. Test the *failure* behaviors as well as the happy pa
 General launch_testing setup is in
 `references/testing.md`; these are the safety-specific cases.
 
-Physical stop-path and spoofing checks in this section are deliberately high-risk
-fault-injection tests. User authorization is necessary but does not delegate execution
-authority: on physical hardware this reference reserves their execution to the
-operator. An agent may prepare the exact bounded procedure and evaluate the evidence,
-but it must not execute these physical fault injections itself.
+Physical stop-path and spoofing checks require a bounded plan naming the approved
+operator, physical restraint/containment, conservative speed and torque limits,
+independent physical stop, and measured success and abort criteria. State these
+conditions in the physical test handoff. Execution belongs to the operator;
+user authorization does not delegate that execution authority. An agent may
+prepare the procedure and evaluate evidence, but must not execute these physical
+fault injections itself.
 
 ### Fault-injection integration test
 
