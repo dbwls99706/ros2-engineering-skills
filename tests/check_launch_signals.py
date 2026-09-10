@@ -11,12 +11,53 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
+import tempfile
 
 from launch.utilities import AsyncSafeSignalManager
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.launch_supervisor import run_service
+
+
+def cli_controls():
+    """Exercise real ROS imports, arguments, inclusion, and failure exit status."""
+    root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix='launch-cli-control-') as temporary:
+        path = Path(temporary) / 'control.launch.py'
+        path.write_text('''from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
+
+
+def check(context):
+    if LaunchConfiguration('fail').perform(context) == 'true':
+        raise RuntimeError('application-failure-control')
+    assert LaunchConfiguration('label').perform(context) == 'a b'
+    print('CLI_FILE_EVALUATED', flush=True)
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument('label', default_value='unset'),
+        DeclareLaunchArgument('fail', default_value='false'),
+        OpaqueFunction(function=check),
+    ])
+''', encoding='utf-8')
+        cases = [(['label:=first', 'label:=a b'], True, 'CLI_FILE_EVALUATED'),
+                 (['invalid'], False, 'malformed launch argument'),
+                 (['fail:=true'], False, 'application-failure-control')]
+        for arguments, expected_success, marker in cases:
+            result = subprocess.run([sys.executable, str(root / 'scripts/launch_supervisor.py'),
+                                     str(path), *arguments], capture_output=True, text=True,
+                                    timeout=3.0)
+            output = result.stdout + result.stderr
+            print(output, flush=True)
+            assert (result.returncode == 0) is expected_success, output
+            assert marker in output, output
+            print(json.dumps({'case': 'installed-cli-control', 'arguments': arguments,
+                              'returncode': result.returncode}), flush=True)
 
 
 class QueueService:
@@ -132,5 +173,6 @@ def supervised_control():
 
 
 if __name__ == '__main__':
+    cli_controls()
     native_control()
     supervised_control()

@@ -89,7 +89,7 @@ def main(argv=None):
     from launch import LaunchDescription, LaunchService
     from launch.actions import IncludeLaunchDescription
     from launch.launch_description_sources import AnyLaunchDescriptionSource
-    from ros2launch.api import parse_launch_arguments
+    from ros2launch.api.api import parse_launch_arguments
 
     service = LaunchService(argv=args.launch_arguments, noninteractive=True, debug=args.debug)
     service.include_launch_description(LaunchDescription([

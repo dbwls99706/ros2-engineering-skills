@@ -200,7 +200,7 @@ def test_cli_includes_the_real_file_and_passes_arguments(tmp_path, monkeypatch):
         IncludeLaunchDescription=lambda source, **kw: (source, kw)))
     monkeypatch.setitem(sys.modules, 'launch.launch_description_sources', SimpleNamespace(
         AnyLaunchDescriptionSource=lambda value: value))
-    monkeypatch.setitem(sys.modules, 'ros2launch.api', SimpleNamespace(
+    monkeypatch.setitem(sys.modules, 'ros2launch.api.api', SimpleNamespace(
         parse_launch_arguments=lambda values: [value.split(':=', 1) for value in values]))
     monkeypatch.setattr(supervisor, 'run_service', lambda service: 7)
     assert main([str(path), 'rate:=17.0', 'label:=a b']) == 7
