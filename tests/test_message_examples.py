@@ -10,7 +10,7 @@ import pytest
 
 @pytest.fixture(scope='module')
 def normalize():
-    text = (Path(__file__).resolve().parents[1] / 'references/message-types.md').read_text()
+    text = (Path(__file__).resolve().parents[1] / 'references/message-types.md').read_text(encoding='utf-8')
     block = next(code for code in re.findall(r'```python\n(.*?)```', text, re.S)
                  if 'def normalize_xyzw(' in code)
     namespace = {}
@@ -23,6 +23,8 @@ def normalize():
     ((1, 2, 2, 4), (0.2, 0.4, 0.4, 0.8)),
     ((-1, -2, -2, -4), (-0.2, -0.4, -0.4, -0.8)),
     ((1e-300,) * 4, (0.5,) * 4), ((1e300,) * 4, (0.5,) * 4),
+    ((1e308,) * 4, (0.5,) * 4),
+    ((5e-324, 5e-324, 0, 0), (math.sqrt(0.5), math.sqrt(0.5), 0, 0)),
 ])
 def test_normalization_preserves_direction_and_produces_unit_norm(normalize, values, expected):
     result = normalize(values)

@@ -7,7 +7,8 @@ All notable changes are documented here.
 - Correct quaternion normalization and IMU covariance guidance against upstream
   definitions; execute the normalization example in regression tests.
 - Label evaluation reports and history as lexical coverage with answer quality
-  unassessed, including perfect matches and critical-criterion matches.
+  unassessed; matching captured answers require review instead of receiving a
+  pass, including perfect matches and critical-criterion matches.
 - Select Stop-hook candidates from Git before scanning, handle package subdirectory
   workspaces, and use one bounded scan when the Git change set is unavailable.
 - Align detailed reporting guidance, source-review scope, release-version policy,

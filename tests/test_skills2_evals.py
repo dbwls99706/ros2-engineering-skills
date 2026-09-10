@@ -366,7 +366,7 @@ class TestEvalRunnerCLI:
             [sys.executable, EVAL_RUNNER, '--eval-dir', EVALS_DIR],
             capture_output=True, text=True,
         )
-        assert 'Lexical Eval Report' in result.stdout
+        assert 'Quality verdict: NOT ASSESSED' in result.stdout
         assert 'ros2-engineering-skills' in result.stdout
 
     def test_cli_json_output(self):
@@ -867,19 +867,18 @@ def _make_temp_eval_setup(tmp_path, eval_name, prompt_text,
     return str(eval_dir), str(eval_yaml)
 
 
-class TestNav2SafetyPolicyFixtures:
-    """Deterministic policy checks for the revised nav2-configuration eval.
+class TestNav2LexicalFixtures:
+    """Lexical fixture checks for the revised nav2-configuration eval.
 
     These run the LOCAL structural evaluator (run_eval with
     content_source='output' against synthetic captured outputs) — no model
-    calls, no network, fully deterministic in CI. They pin the eval's
-    *policy*: an answer that follows the safety guidance passes, while a
-    legacy-style answer (recoveries_server on Humble, unconditional
-    Spin/BackUp, hardware maximum used as the operational limit) fails.
+    calls, no network, fully deterministic in CI. They check whether the
+    selected fixtures contain the rubric vocabulary. They cannot establish
+    that a response follows the policy or is safe to execute.
 
     Note on thresholds: the default 0.30 coverage threshold is a permissive
     structural smoke check and keyword matching cannot detect negation, so
-    the policy discrimination below is asserted at the stricter local
+    the vocabulary discrimination below is asserted at the stricter local
     threshold (0.55) plus direct matched-term checks on the safety
     vocabulary.
     """
@@ -950,14 +949,17 @@ Provide a launch file with a map argument and the use_sim_time parameter.
         return run_eval(entry, str(eval_dir),
                         content_source='output', **kwargs)
 
-    def test_safety_following_output_passes_default(self, tmp_path):
+    def test_matching_output_requires_review_at_default_threshold(self, tmp_path):
         result = self._run_with_output(tmp_path, self._GOOD_OUTPUT)
-        assert result['status'] == 'pass', result
+        assert result['status'] == 'needs_review', result
+        assert result['lexical_status'] == 'pass'
+        assert result['quality_verdict'] == 'not_assessed'
 
-    def test_safety_following_output_passes_strict(self, tmp_path):
+    def test_matching_output_requires_review_at_strict_threshold(self, tmp_path):
         result = self._run_with_output(
             tmp_path, self._GOOD_OUTPUT, coverage_threshold=0.55)
-        assert result['status'] == 'pass', result
+        assert result['status'] == 'needs_review', result
+        assert result['lexical_status'] == 'pass'
 
     def test_legacy_output_fails_strict(self, tmp_path):
         """Humble + recoveries_server, unconditional Spin/BackUp, and
@@ -1006,7 +1008,7 @@ class TestContentSourceResolution:
 class TestJudgeMode:
     """--mode=judge scores user-pasted real model outputs."""
 
-    def test_judge_pass_when_output_addresses_criteria(self, tmp_path):
+    def test_judge_requires_review_when_output_matches_criteria(self, tmp_path):
         eval_dir, _ = _make_temp_eval_setup(
             tmp_path, 'lc',
             prompt_text='Design a lifecycle node prompt',
@@ -1017,7 +1019,8 @@ class TestJudgeMode:
         )
         config = load_eval_config(eval_dir)
         report = run_all_evals(config, eval_dir, content_source='output')
-        assert report['summary']['overall_status'] == 'pass'
+        assert report['summary']['overall_status'] == 'needs_review'
+        assert report['summary']['needs_review'] == 1
         assert report['content_source'] == 'output'
 
     def test_judge_skipped_when_output_missing(self, tmp_path):
@@ -1437,7 +1440,7 @@ class TestMainDirectInvocation:
             eval_runner_main()
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert 'Lexical Eval Report' in out
+        assert 'Quality verdict: NOT ASSESSED' in out
         assert '[PASS]' in out
 
     def test_main_parity_with_temp_eval_dir(self, monkeypatch, capsys, tmp_path):

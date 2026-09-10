@@ -21,8 +21,10 @@ Every JSON report, case result, and parity-history record exposes
 `scoring_method: lexical_coverage`, `quality_verdict: not_assessed`, and
 `semantic_review_required: true`. The review requirement applies to model-quality
 claims, not to completing packaging checks or ordinary code changes.
-Existing `status`, `pass_rate`, and delta
-fields retain their lexical meaning. Even 100% coverage is not a quality pass:
+`pass_rate` and delta fields are lexical
+metrics. Matching captured answers have `lexical_status: pass` but
+`status: needs_review`; only fixture checks can produce a `pass` status.
+Even 100% coverage is not a quality pass:
 an answer can negate or quote every criterion and still match all its words.
 Text reports label this scope before showing scores. Exit 0 and
 `--require-complete` establish neither semantic correctness nor model improvement.
@@ -81,8 +83,9 @@ python3 scripts/eval_runner.py --mode=judge --require-complete
 python3 scripts/eval_runner.py --mode=judge --require-complete --eval-name gate-policy-review
 ```
 
-Absent captures are `[SKIP]`. No captured cases produce `[NODATA]`; a passing subset
-with missing cases produces `[PARTIAL]`, never `[PASS]`. Exploratory missing-data
+Absent captures are `[SKIP]`. No captured cases produce `[NODATA]`; a matching subset
+with missing cases produces `[PARTIAL]`. A complete matching set produces
+`[REVIEW]`, never `[PASS]`, because its meaning has not been assessed. Exploratory missing-data
 states retain exit 0. A damaged, empty, or non-UTF-8 file is an error, not a scored
 zero; errors take precedence over missing data. `--require-complete` exits 1 for
 any missing selected capture.
@@ -91,8 +94,8 @@ A genuine empty model response needs an explicit execution record. A zero-byte
 file alone cannot distinguish that outcome from a damaged capture. The separate
 capture protocol (`verify_eval_capture.py`) can retain empty responses and failed
 attempts without inventing output. Require that protocol for comparative claims,
-and manually inspect each critical safety/workflow criterion even after lexical
-PASS. Completeness and integrity checks do not authenticate a model session.
+and independently assess each criterion against the response and execution trace.
+Completeness and integrity checks do not authenticate a model session.
 
 ## Paired comparisons and history
 

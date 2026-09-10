@@ -360,6 +360,9 @@ def test_contradictory_critical_matches_never_establish_quality(suite, capsys):
     capture(root, on=bad_answer, off='Unrelated words')
     report = runner.run_all_evals(config, str(root), content_source='output')
     case = report['evals'][0]
+    assert case['status'] == 'needs_review'
+    assert case['lexical_status'] == 'pass'
+    assert report['summary']['overall_status'] == 'needs_review'
     assert case['pass_rate'] == 100.0
     assert case['critical_failures'] == []
     for result in (report, case):
@@ -370,6 +373,7 @@ def test_contradictory_critical_matches_never_establish_quality(suite, capsys):
     output = capsys.readouterr().out
     assert 'Quality verdict: NOT ASSESSED' in output
     assert 'Lexical score: 100.0%' in output
+    assert '[PASS]' not in output
     parity = runner.run_parity_test(config, str(root))
     history = json.loads(Path(parity['history_file']).read_text().splitlines()[-1])
     for result in (parity, history):

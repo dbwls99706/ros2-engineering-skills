@@ -444,9 +444,15 @@ def run_eval(entry, eval_dir, verbose=False,
     total = sum(weight for _, weight in pairs)
     passed_weight = sum(result['weight'] for result in criteria_results if result['passed'])
     pass_rate = passed_weight / total * 100
+    lexical_status = 'pass' if pass_rate >= pass_rate_threshold and not critical_failures else 'fail'
+    # A matching response still needs an independent review of its meaning.
+    # Keep fixture smoke checks usable as CI gates without promoting an
+    # unreviewed model response (including a negated rubric) to a passing answer.
+    status = ('needs_review' if content_source != 'expected' and lexical_status == 'pass'
+              else lexical_status)
     result = {
         **_assessment_scope(),
-        'name': name, 'status': 'pass' if pass_rate >= pass_rate_threshold and not critical_failures else 'fail',
+        'name': name, 'status': status, 'lexical_status': lexical_status,
         'pass_rate': round(pass_rate, 1),
         'passed_criteria': sum(result['passed'] for result in criteria_results),
         'total_criteria': len(criteria_results),
@@ -490,14 +496,15 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
         results.append(result)
 
     total_evals = len(results)
-    passed_evals = sum(1 for r in results if r['status'] == 'pass')
+    passed_evals = sum(1 for r in results if r.get('lexical_status') == 'pass')
+    review_evals = sum(1 for r in results if r['status'] == 'needs_review')
     failed_evals = sum(1 for r in results if r['status'] == 'fail')
     error_evals = sum(1 for r in results if r['status'] == 'error')
     skipped_evals = sum(1 for r in results if r['status'] == 'skipped')
     scored_count = passed_evals + failed_evals
     avg_pass_rate = (
         sum(r['pass_rate'] for r in results
-            if r['status'] in ('pass', 'fail')) / scored_count
+            if r['status'] in ('pass', 'fail', 'needs_review')) / scored_count
         if scored_count > 0 else 0.0
     )
     total_time = sum(r['execution_time_ms'] for r in results)
@@ -508,6 +515,8 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
     # green when the user simply has not pasted anything yet.
     if failed_evals == 0 and error_evals == 0:
         overall = ('no_data' if scored_count == 0 else 'partial') if skipped_evals else 'pass'
+        if overall == 'pass' and review_evals:
+            overall = 'needs_review'
     else:
         overall = 'fail'
 
@@ -524,6 +533,7 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
             'failed': failed_evals,
             'errors': error_evals,
             'skipped': skipped_evals,
+            'needs_review': review_evals,
             'average_pass_rate': round(avg_pass_rate, 1),
             'total_execution_time_ms': round(total_time, 1),
             'overall_status': overall,
@@ -671,7 +681,8 @@ def print_report(report):
 
     summary = report['summary']
     skipped = summary.get('skipped', 0)
-    status_icon = {'pass': 'PASS', 'partial': 'PARTIAL', 'no_data': 'NODATA'}.get(
+    status_icon = {'pass': 'PASS', 'partial': 'PARTIAL', 'no_data': 'NODATA',
+                   'needs_review': 'REVIEW'}.get(
         summary['overall_status'], 'FAIL')
     parts = [
         f'  Lexical checks: [{status_icon}]',
@@ -697,8 +708,7 @@ def print_report(report):
             print(f'         {reason}')
             print()
             continue
-        icon = 'PASS' if ev['status'] == 'pass' else (
-            'FAIL' if ev['status'] == 'fail' else 'ERR ')
+        icon = {'pass': 'PASS', 'fail': 'FAIL', 'needs_review': 'REVIEW'}.get(ev['status'], 'ERR ')
         print(f'  [{icon}] {ev["name"]}')
         print(f'         Lexical score: {ev["pass_rate"]}%  '
               f'({ev.get("passed_criteria", 0)}/{ev.get("total_criteria", 0)} criteria)  '
@@ -875,7 +885,8 @@ def main():
     status = report['summary']['overall_status']
     # Exploratory missing data stays distinct from PASS. Release checks must
     # request complete captures explicitly; invalid data always fails.
-    sys.exit(1 if status == 'fail' or (args.require_complete and status != 'pass') else 0)
+    incomplete = report['summary']['skipped'] > 0
+    sys.exit(1 if status == 'fail' or (args.require_complete and incomplete) else 0)
 
 
 if __name__ == '__main__':

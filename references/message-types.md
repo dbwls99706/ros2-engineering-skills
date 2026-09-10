@@ -673,8 +673,8 @@ $$x^2 + y^2 + z^2 + w^2 = 1$$
 - **Identity (no rotation) is `(0,0,0,1)`.** The Humble message definition defaults
   to this value; explicitly initialize it when constructing an identity rotation.
 - In C++, use `tf2::Quaternion::normalize()` only after checking that the
-  components and norm are finite and the norm is nonzero. In Python, divide by
-  the norm after the same checks:
+  components and norm are finite and the norm is nonzero. In Python, reject
+  nonfinite or zero input and scale before computing the norm:
 
 ```python
 import math
@@ -682,10 +682,14 @@ import math
 
 def normalize_xyzw(values):
     x, y, z, w = (float(value) for value in values)
-    norm = math.hypot(x, y, z, w)
-    if not math.isfinite(norm) or norm == 0.0:
-        raise ValueError("Quaternion must have a finite, nonzero norm")
-    return tuple(value / norm for value in (x, y, z, w))
+    components = (x, y, z, w)
+    scale = max(abs(value) for value in components)
+    if not all(math.isfinite(value) for value in components) or scale == 0.0:
+        raise ValueError("Quaternion must have finite components and be nonzero")
+    # Scale first so extreme finite magnitudes cannot overflow or underflow.
+    scaled = tuple(value / scale for value in components)
+    norm = math.hypot(*scaled)
+    return tuple(value / norm for value in scaled)
 ```
 
 `tf_transformations.quaternion_multiply` composes quaternions; it does not
