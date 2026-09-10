@@ -4,6 +4,10 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Scope verification-level reporting to ROS behavior and hardware-readiness
+  claims, and physical-test authorization tracking to physical tests. Keep
+  prose-only reports proportional without weakening required checks or stop proof.
+
 ## 1.5.0 - 2026-09-08
 
 - Fail fleet verification on completed service errors, cancelled/empty/late

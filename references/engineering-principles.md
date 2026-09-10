@@ -276,9 +276,10 @@ measured hardware response (`references/safety-estop.md` section 3).
 
 ### 13. Verification levels
 
-Say which level a result came from, every time. Each level answers a
-different question, and a claim never inherits the confidence of a level
-it did not reach.
+For claims about ROS behavior or hardware readiness, identify the level actually
+reached. Each level answers a different question; confidence does not transfer
+to an untested level. For prose-only edits, report the relevant checks without
+enumerating unrelated ROS or hardware levels.
 
 | Level | What ran | What it proves |
 |---|---|---|
@@ -290,10 +291,10 @@ it did not reach.
 | L5 | Controlled motion / fault injection | Bounded commissioning tests with appropriate containment, operator present; high-risk faults require restraint |
 | L6 | Supervised field operation | The behavior in its real duty cycle |
 
-Never write an L0–L2 result in L4+ language. "Tests pass" and "safe to
-drive" may not share a sentence. When a level was skipped, say which one
-and why. Level definitions and required evidence: `references/testing.md`
-section 11.
+Never write an L0–L2 result in L4+ language. Passing software tests does not
+establish that hardware is safe to drive. Report unperformed checks when they
+limit the requested claim or are required by the project. Level definitions
+and required evidence: `references/testing.md` section 11.
 
 ## Common anti-patterns
 

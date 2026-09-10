@@ -656,8 +656,8 @@ class TestCiCacheInvalidation:
 
 class TestVerificationLevels:
     """"Tests pass" and "safe to drive" are different levels of evidence.
-    The ladder must stay in the always-loaded file (so it applies to every
-    report) with the detail in testing.md. Order matters as much as
+    The ladder must stay in the always-loaded file for verification claims,
+    with the detail in testing.md. Order matters as much as
     presence: a shuffled or duplicated ladder stops being a ladder."""
 
     def _skill_ladder_rows(self):
@@ -673,7 +673,7 @@ class TestVerificationLevels:
 
     def test_detailed_principles_forbids_level_inflation(self):
         section = _md_section(PRINCIPLES_MD, 'Verification levels')
-        assert 'may not share a sentence' in section, (
+        assert 'Never write an L0–L2 result in L4+ language' in section, (
             'engineering-principles.md must forbid reporting static results as hardware '
             'verification')
 

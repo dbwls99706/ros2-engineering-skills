@@ -63,9 +63,10 @@ constraints and lookup routes, not a checklist to execute on every request.
    define the next test's independent variable, evidence, pass/fail criterion,
    and stop condition. A count target is not proof that observations are
    independent.
-7. **Separate permission from proof.** Track authorization validity, envelope,
-   attempt budget, technical evidence, supervised-test readiness, and operational
-   readiness separately. Authorization never raises a verification level. Do not
+7. **Separate permission from proof.** For physical tests, track authorization
+   validity, envelope, attempt budget, technical evidence, supervised-test readiness,
+   and operational readiness separately. Authorization never raises a verification
+   level. Do not
    ask again for an unchanged, unexpired, and unrevoked approval with attempts
    remaining. Renew after expiry, revocation, exhaustion, or an envelope change.
    Execution authority is separate: user authorization does not override product,
@@ -152,9 +153,10 @@ path crosses a trust boundary or owns hardware.
 
 ## Verification levels
 
-Say which level a result came from, every time. Each level answers a
-different question, and a claim never inherits the confidence of a level
-it did not reach.
+For claims about ROS behavior or hardware readiness, identify the level actually
+reached. Each level answers a different question; confidence does not transfer
+to an untested level. For prose-only edits, report the relevant checks without
+enumerating unrelated ROS or hardware levels.
 
 | Level | What ran | What it proves |
 |---|---|---|
@@ -166,10 +168,10 @@ it did not reach.
 | L5 | Controlled motion / fault injection | Bounded commissioning tests with appropriate containment, operator present; high-risk faults require restraint |
 | L6 | Supervised field operation | The behavior in its real duty cycle |
 
-Never write an L0–L2 result in L4+ language. "Tests pass" and "safe to
-drive" may not share a sentence. When a level was skipped, say which one
-and why. Level definitions and required evidence: `references/testing.md`
-section 11.
+Never write an L0–L2 result in L4+ language. Passing software tests does not
+establish that hardware is safe to drive. Report unperformed checks when they
+limit the requested claim or are required by the project. Level definitions
+and required evidence: `references/testing.md` section 11.
 
 ## Bundled tools and client integration
 
@@ -191,7 +193,7 @@ read `docs/SKILL_CONTRACT.md`. Claude hooks are optional integration, not a
 security or physical-safety boundary; other clients use manual validators.
 Discovery, actual invocation, answer quality, and runtime correctness are
 separate claims. Never present fixtures or a self-reported skill name as a real
-model evaluation. The short report shape is:
+model evaluation. For substantive findings, an optional report shape is:
 
 ```text
 Finding or change: <specific result and file/location>
