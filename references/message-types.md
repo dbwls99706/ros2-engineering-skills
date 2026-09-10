@@ -143,11 +143,13 @@ float32[] intensities     # intensity data (optional, device-specific)
   X-axis points forward.
 - **Angle convention:** `angle_min` and `angle_max` are in radians.
   Zero is directly forward (positive X-axis). Counter-clockwise is positive.
-- **Invalid data:** If a laser ray doesn't hit anything, its range should be
-  `Infinity` (or a value outside `[range_min, range_max]`).
+- **Special values (REP-117):** Use `+Infinity` for no return within the useful
+  range, `-Infinity` for a detection too close to quantify, and `NaN` for an
+  erroneous measurement. Finite values outside `[range_min, range_max]` are
+  discarded but do not carry those special meanings.
   **Do NOT use `0.0` for no return** — that looks like an obstacle at zero distance.
-- **NaN:** A range of `NaN` means the measurement is invalid/erroneous.
-  Distinct from `Infinity` (valid measurement, nothing in range).
+
+Source: [REP-117 informational distance measurements](https://github.com/ros-infrastructure/rep/blob/master/rep-0117.rst).
 
 ### `sensor_msgs/msg/Image`
 
@@ -165,10 +167,14 @@ uint8[] data              # actual pixel data
   - Standard robotics frame (`camera_link`): X-forward, Y-left, Z-up
   - Optical frame (`camera_optical_frame`): X-right, Y-down, Z-forward (into scene)
   - The rotation between them is `rpy="-π/2 0 -π/2"` in the URDF joint.
-- **Encoding:** Use standard strings: `"rgb8"`, `"bgr8"`, `"mono8"`,
-  `"16UC1"` (depth in mm), `"32FC1"` (depth in meters).
-- **`step`:** Must equal `width × bytes_per_pixel` (e.g., `width × 3` for `rgb8`).
-  Some producers pad rows; consumers must use `step`, not `width × bpp`.
+- **Encoding:** Use standard strings such as `"rgb8"`, `"bgr8"`, `"mono8"`,
+  `"16UC1"`, or `"32FC1"`. The encoding defines channel type and layout; a
+  depth-image contract supplies the physical unit.
+- **`step`:** The full row length in bytes, including any padding. A tightly
+  packed `rgb8` image uses `width × 3`, but publishers may use a larger stride.
+  Consumers must advance by `step`, and `data` must contain `step × height` bytes.
+
+Source: [Humble Image definition](https://github.com/ros2/common_interfaces/blob/humble/sensor_msgs/msg/Image.msg).
 
 ### `sensor_msgs/msg/JointState`
 
@@ -230,22 +236,21 @@ geometry_msgs/TwistWithCovariance twist
 float64 x 0
 float64 y 0
 float64 z 0
-float64 w 1   # Changed to 1.0 in Galactic+ (Humble, Jazzy, Kilted, Rolling)
+float64 w 1   # Identity default in Foxy and current ROS 2 definitions
 ```
 
 - **Must always be normalized:** `x² + y² + z² + w² = 1`
-- **Humble+ default is `(0,0,0,1)` (identity)** — safe to use directly.
-  In Foxy (EOL), the default was `(0,0,0,0)` which crashed tf2.
+- **Foxy and current ROS 2 definitions default to `(0,0,0,1)` (identity).**
 - **Still explicitly initialize `w = 1.0`** when constructing quaternions in
-  code that may run on mixed distros or when clarity matters.
+  manually populated or externally supplied data paths, and reject a zero norm.
 
 ```cpp
-// Humble+: default-constructed Quaternion is (0,0,0,1) — valid identity
+// Foxy and current ROS 2: default construction gives the identity
 geometry_msgs::msg::Quaternion q;  // q.w is already 1.0
 
 // Still recommended: explicit initialization for clarity
 geometry_msgs::msg::Quaternion q;
-q.w = 1.0;  // redundant on Humble+ but clear and safe
+q.w = 1.0;  // redundant for the message default but clear and safe
 
 // GOOD — from yaw angle
 tf2::Quaternion tf_q;
@@ -443,9 +448,12 @@ P = [fx'  0  cx' Tx]
     [ 0   0   1   0]
 ```
 
-- For monocular cameras: `Tx = 0`, `Ty = 0`, and `fx' = fx`, `fy' = fy`,
-  `cx' = cx`, `cy' = cy` after rectification.
+- For monocular cameras: `Tx = 0` and `Ty = 0`. Normally `R` is identity and
+  the left 3×3 portion of `P` equals `K`, but processed-image scaling or
+  rectification may make `fx'`, `fy'`, `cx'`, and `cy'` differ from `K`.
 - For stereo cameras: `Tx = -fx' * baseline` (left-right baseline in meters).
+
+Source: [Humble CameraInfo definition](https://github.com/ros2/common_interfaces/blob/humble/sensor_msgs/msg/CameraInfo.msg).
 
 **R (Rectification matrix, 3×3):**
 
@@ -653,15 +661,18 @@ in message payloads.**
 
 ### Depth image unit exception
 
-`sensor_msgs/msg/Image` with encoding `16UC1` stores depth in **millimeters**
-(uint16, range 0–65535 mm). This is a historical convention from RGB-D sensors
-and is the one major exception to the meters rule. Encoding `32FC1` stores
-depth in **meters** (float32).
+For a **REP-118 depth-image stream**, the canonical `32FC1` representation stores
+depth in meters. The optional OpenNI raw representation uses a 16-bit unsigned
+single-channel image in millimeters, conventionally `16UC1`, with zero meaning
+invalid depth. The encoding strings alone do not assign physical units to a
+generic `sensor_msgs/msg/Image`; the topic contract must identify it as depth.
 
 | Encoding | Type | Unit | Max range |
 |---|---|---|---|
-| `16UC1` | uint16 | millimeters | 65.535 m |
-| `32FC1` | float32 | meters | ~3.4 × 10³⁸ m |
+| `16UC1` REP-118 raw depth | uint16 | millimeters | 65.535 m; zero is invalid |
+| `32FC1` REP-118 canonical depth | float32 | meters | `NaN`/`±Inf` follow REP-117 |
+
+Source: [REP-118 depth images](https://github.com/ros-infrastructure/rep/blob/master/rep-0118.rst).
 
 ### Quaternion normalization
 

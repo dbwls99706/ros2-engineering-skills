@@ -77,8 +77,16 @@ def run_service(service):
     finally:
         try:
             if handler_installed:
-                loop.remove_signal_handler(signal.SIGINT)
-                signal.signal(signal.SIGINT, previous_handler)
+                # Restore the loop and Python handlers as one transition. A
+                # signal arriving between the two operations must stay pending
+                # until the previous handler is back in place.
+                previous_mask = signal.pthread_sigmask(
+                    signal.SIG_BLOCK, {signal.SIGINT})
+                try:
+                    loop.remove_signal_handler(signal.SIGINT)
+                    signal.signal(signal.SIGINT, previous_handler)
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         finally:
             loop.close()
 

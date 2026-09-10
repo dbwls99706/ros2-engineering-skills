@@ -6,6 +6,13 @@ All notable changes are documented here.
 
 Pending release; date records the latest source update.
 
+- Correct SROS2 participant/enclave semantics, Enforce-only authorization
+  checks, certificate lifetime and staged rotation; align image stride, depth,
+  camera projection, Foxy quaternion, and Domain ID guidance with upstream.
+- Replace unsourced SROS2 and VPN latency figures with target-path measurement
+  criteria; require the threat model to permit disclosure before using `SIGN`.
+- Preserve the previous SIGINT handler atomically during launch-supervisor
+  teardown and cover a real signal arriving inside the restoration boundary.
 - Centralize verification levels in the testing reference and keep authorization
   details in evidence progression. Remove repository-connector incidents and the
   unrelated Git completion benchmark from the domain skill.

@@ -1116,3 +1116,77 @@ class TestCyclictestProcedureSingleSource:
                 f'benchmark procedure missing element: {needle!r}')
         assert re.search(r'overflows?', section), (
             'benchmark procedure must keep the overflow rerun note')
+
+
+SECURITY_MD = os.path.join(ROOT, 'references', 'security.md')
+MESSAGE_TYPES_MD = os.path.join(ROOT, 'references', 'message-types.md')
+DEPLOYMENT_MD = os.path.join(ROOT, 'references', 'deployment.md')
+
+
+class TestSros2ParticipantAndRotationFacts:
+    """Pin source-reviewed SROS2 facts without treating prose as runtime proof."""
+
+    def test_security_identity_is_participant_context_scoped(self):
+        content = _flat(_read(SECURITY_MD))
+        for needle in ('DomainParticipant', 'ROS context',
+                       'does not have to equal a node name'):
+            assert needle in content
+        for stale in ('Mutual TLS authentication',
+                      'each node gets its own enclave',
+                      'defeats access control'):
+            assert stale not in content
+
+    def test_permissive_is_not_an_authorization_test_recipe(self):
+        for path in (SECURITY_MD, DEPLOYMENT_MD):
+            content = _read(path)
+            assert 'export ROS_SECURITY_STRATEGY=Permissive' not in content
+            assert 'access-control test' in content or (
+                'cannot validate that an access-control denial works' in content)
+
+    def test_rotation_reissues_only_in_staging(self):
+        section = _md_section(SECURITY_MD, 'Certificate rotation at fleet scale')
+        remove = 'rm -f -- "$staged/cert.pem" "$staged/key.pem"'
+        create = 'ros2 security create_enclave "$STAGING" "$enclave"'
+        assert remove in section and create in section
+        assert section.index(remove) < section.index(create)
+        assert 'create_enclave "$KEYSTORE" "$enclave"' not in section
+        for evidence in ('old_serial', 'new_serial', 'old_end', 'new_end',
+                         'openssl verify'):
+            assert evidence in section
+
+    def test_certificate_lifetime_and_signing_key_match_upstream(self):
+        content = _read(SECURITY_MD)
+        assert '3,650-day' in content
+        assert '~2000-day' not in content
+        signing = _md_section(SECURITY_MD, 'Signing and validating policy files')
+        assert 'private/permissions_ca.key.pem' in signing
+        assert 'private/ca.key.pem' not in signing
+
+
+class TestMessageDefinitionFacts:
+    """Pin corrected message semantics whose examples can corrupt sensor use."""
+
+    def test_foxy_quaternion_uses_identity_default(self):
+        section = _md_section(MESSAGE_TYPES_MD,
+                              '`geometry_msgs/msg/Quaternion`')
+        assert 'Foxy and current ROS 2' in section
+        assert 'Foxy (EOL)' not in section
+        assert 'Changed to 1.0 in Galactic+' not in section
+
+    def test_image_stride_includes_padding(self):
+        section = _md_section(MESSAGE_TYPES_MD, '`sensor_msgs/msg/Image`')
+        assert 'full row length in bytes, including any padding' in _flat(section)
+        assert 'Must equal `width × bytes_per_pixel`' not in section
+        assert '`step × height` bytes' in section
+
+    def test_camera_projection_is_not_unconditionally_k(self):
+        content = _read(MESSAGE_TYPES_MD)
+        assert 'Normally `R` is identity' in content
+        assert 'may make' in content and 'differ from `K`' in content
+
+    def test_depth_units_are_scoped_to_rep_118(self):
+        section = _md_section(MESSAGE_TYPES_MD,
+                              'Depth image unit exception')
+        assert 'REP-118 depth-image stream' in section
+        assert 'encoding strings alone do not assign physical units' in (
+            _flat(section))

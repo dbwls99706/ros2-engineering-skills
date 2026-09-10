@@ -142,6 +142,42 @@ def test_prestart_stop_does_not_start_the_service(monkeypatch):
     assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
 
 
+def test_sigint_during_handler_restore_reaches_previous_handler(monkeypatch):
+    loop = asyncio.new_event_loop()
+    remove = loop.remove_signal_handler
+    original_handler = signal.getsignal(signal.SIGINT)
+    original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    events = []
+
+    def previous_handler(signum, frame):
+        events.append(('previous', signum))
+
+    def remove_with_pending_stop(signum):
+        removed = remove(signum)
+        os.kill(os.getpid(), signum)
+        events.append(('sent', signum))
+        return removed
+
+    class Service:
+        async def run_async(self):
+            return 0
+
+    signal.signal(signal.SIGINT, previous_handler)
+    monkeypatch.setattr(asyncio, 'new_event_loop', lambda: loop)
+    monkeypatch.setattr(loop, 'remove_signal_handler', remove_with_pending_stop)
+    try:
+        assert run_service(Service()) == 0
+        assert events == [
+            ('sent', signal.SIGINT),
+            ('previous', signal.SIGINT),
+        ]
+        assert signal.getsignal(signal.SIGINT) is previous_handler
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == original_mask
+        assert loop.is_closed()
+    finally:
+        signal.signal(signal.SIGINT, original_handler)
+
+
 def test_preserves_an_existing_idle_loop():
     previous_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(previous_loop)

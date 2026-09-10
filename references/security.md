@@ -38,10 +38,13 @@ DDS authentication uses the PKI-DH plugin with participant certificates; see the
 ### Why DDS domain isolation is not security
 
 ```bash
-# Domain isolation only changes the UDP port — it is NOT a security mechanism
-# An attacker can trivially scan all 232 domain IDs
+# Domain isolation separates DDS discovery/traffic; it is NOT authentication
+# The DDS-derived ROS 2 range is 0 through 232 inclusive (233 values)
 export ROS_DOMAIN_ID=42  # Does NOT prevent eavesdropping or spoofing
 ```
+
+The usable range is further constrained by platform ephemeral-port settings.
+See the [ROS 2 Domain ID guidance](https://github.com/ros2/ros2_documentation/blob/humble/source/Concepts/Intermediate/About-Domain-ID.rst).
 
 ---
 
@@ -56,11 +59,19 @@ sudo apt install ros-${ROS_DISTRO}-sros2
 # Create SROS2 keystore
 ros2 security create_keystore ~/sros2_keystore
 
-# Generate keys for each node — enclave path must match the node's fully qualified name
+# Create one enclave for each participant/context boundary in this deployment.
+# Matching a one-node-per-process enclave to the node FQN is only a convention.
 ros2 security create_enclave ~/sros2_keystore /my_robot/driver
 ros2 security create_enclave ~/sros2_keystore /my_robot/planner
 ros2 security create_enclave ~/sros2_keystore /my_robot/controller
 ```
+
+DDS security files belong to a DomainParticipant, which maps to a ROS context in
+a process. Separately launched one-node processes can use distinct enclaves as
+above. Composed nodes in one component container normally share its context,
+participant, and enclave unless the application deliberately separates them.
+Choose enclave boundaries from the required privilege separation; the enclave
+path does not have to equal a node name.
 
 ### Step 2: Generate policy from runtime introspection
 
@@ -88,7 +99,7 @@ ros2 security create_permission ~/sros2_keystore /my_robot/controller policy.xml
 ```bash
 export ROS_SECURITY_KEYSTORE=~/sros2_keystore
 export ROS_SECURITY_ENABLE=true
-export ROS_SECURITY_STRATEGY=Enforce  # or "Permissive" for testing
+export ROS_SECURITY_STRATEGY=Enforce
 ```
 
 ### Step 5: Launch secured system
@@ -137,24 +148,34 @@ find ~/sros2_keystore -name "cert.pem" -exec sh -c \
   'echo "=== {} ===" && openssl x509 -in {} -noout -enddate -subject' \;
 ```
 
-Default SROS2-generated certificates have ~2000-day (~5.5 year) validity. For production fleets, implement automated rotation well before expiry.
+Current Humble and Jazzy SROS2 releases generate certificates with 3,650-day
+(approximately 10-year) validity. This is an implementation default, not a
+deployment policy: inspect the installed version and rotate on a shorter,
+explicit production schedule. See the
+[SROS2 certificate builder](https://github.com/ros2/sros2/blob/jazzy/sros2/sros2/_utilities.py).
 
 ---
 
 ## 3. DDS security plugins
 
-The OMG DDS Security specification defines three plugin interfaces that SROS2 configures automatically.
+The OMG DDS Security specification defines five plugin interfaces. ROS 2 uses
+the Authentication, Access Control, and Cryptographic interfaces.
 
 ### Authentication (DDS:Auth:PKI-DH)
 
-Mutual TLS authentication between DDS participants. Each node presents its certificate, both sides verify the chain back to the shared CA. Without authentication, any process on the network can impersonate any node.
+`DDS:Auth:PKI-DH` performs mutual participant authentication using X.509
+certificates and a PKI-DH handshake. Each participant proves its identity and
+validates the peer's certificate chain against its configured identity CA. This
+is DDS Security authentication, not TLS.
 
 ### Access control (DDS:Access:Permissions)
 
-Controls which topics, services, and actions each node can publish or subscribe to. Defined by two XML files:
+Controls which DDS operations each participant/enclave identity may perform.
+ROS topics, services, and actions are compiled into the corresponding DDS topic
+permissions. The two signed inputs are:
 
 - **governance.xml** -- domain-level rules (what protections are enabled)
-- **permissions.xml** -- per-node rules (what each node can access)
+- **permissions.xml** -- per-participant/enclave rules (what that identity can access)
 
 Both files are signed by the permissions CA and distributed as `.p7s` (PKCS#7) files.
 
@@ -181,8 +202,8 @@ The RMW reads `ROS_SECURITY_KEYSTORE` and `ROS_SECURITY_ENCLAVE_OVERRIDE` to loc
 +-- enclaves/
 |   +-- my_robot/
 |       +-- driver/
-|       |   +-- cert.pem                # Node certificate
-|       |   +-- key.pem                 # Node private key (protect!)
+|       |   +-- cert.pem                # Enclave/participant certificate
+|       |   +-- key.pem                 # Enclave private key (protect!)
 |       |   +-- governance.p7s          # Signed governance
 |       |   +-- permissions.p7s         # Signed permissions
 |       |   +-- permissions.xml         # Human-readable permissions
@@ -198,45 +219,77 @@ The RMW reads `ROS_SECURITY_KEYSTORE` and `ROS_SECURITY_ENCLAVE_OVERRIDE` to loc
     +-- permissions_ca.cert.pem
 ```
 
-### CA certificate vs node certificates
+### CA certificate vs enclave certificates
 
 ```bash
 # WRONG — storing CA key on the robot
 scp ~/sros2_keystore/private/ca.key.pem robot@192.168.1.100:/opt/robot/keystore/
 
-# CORRECT — only distribute enclave directories (node cert + key, not CA key)
+# CORRECT — distribute the participant enclave cert + key, not the CA key
 scp -r ~/sros2_keystore/enclaves/my_robot/driver/ \
   robot@192.168.1.100:/opt/robot/keystore/enclaves/my_robot/driver/
 ```
 
-The CA private key should remain on a secure build server or HSM. Only per-node enclave directories are deployed to robots.
+The CA private key should remain on a secure build server or HSM. Deploy only
+the enclave directories required by each runtime participant.
 
 ### Certificate rotation at fleet scale
 
+`create_enclave` is idempotent: if both `cert.pem` and `key.pem` already exist,
+it leaves them unchanged. Issue replacements in a staging copy, prove that the
+certificate changed, and deploy only after every staged enclave validates.
+
 ```bash
 #!/bin/bash
-# scripts/rotate_certs.sh — regenerate and distribute certificates
+# scripts/rotate_certs.sh: stage, verify, and distribute replacement certificates
 set -euo pipefail
 
 KEYSTORE="$HOME/sros2_keystore"
 POLICY="$HOME/fleet_policy.xml"
 ROBOTS_FILE="$HOME/fleet_robots.txt"  # one hostname per line
+STAGING="$(mktemp -d)"
+trap 'rm -rf -- "$STAGING"' EXIT
 
-# Regenerate certificates (requires CA key)
+# Preserve the CAs and governance while replacing enclave identities off-line.
+cp -a "$KEYSTORE/." "$STAGING/"
+
+# Remove only the staged identity, then create and sign a replacement.
 while IFS= read -r enclave; do
-    ros2 security create_enclave "$KEYSTORE" "$enclave"
-    ros2 security create_permission "$KEYSTORE" "$enclave" "$POLICY"
+    live="$KEYSTORE/enclaves${enclave}"
+    staged="$STAGING/enclaves${enclave}"
+    old_serial="$(openssl x509 -in "$live/cert.pem" -noout -serial)"
+    old_end="$(openssl x509 -in "$live/cert.pem" -noout -enddate)"
+
+    rm -f -- "$staged/cert.pem" "$staged/key.pem"
+    ros2 security create_enclave "$STAGING" "$enclave"
+    ros2 security create_permission "$STAGING" "$enclave" "$POLICY"
+
+    new_serial="$(openssl x509 -in "$staged/cert.pem" -noout -serial)"
+    new_end="$(openssl x509 -in "$staged/cert.pem" -noout -enddate)"
+    test "$new_serial" != "$old_serial"
+    test "$new_end" != "$old_end"
+    openssl verify -CAfile "$STAGING/public/identity_ca.cert.pem" \
+      "$staged/cert.pem"
 done < <(find "$KEYSTORE/enclaves" -name "cert.pem" -exec dirname {} \; \
          | sed "s|$KEYSTORE/enclaves||")
 
-# Distribute and rolling restart
+# Distribute only after the complete staged set passes validation.
 while IFS= read -r robot; do
-    rsync -avz --delete "$KEYSTORE/enclaves/" \
+    rsync -avz --delete "$STAGING/enclaves/" \
       "robot@${robot}:/opt/robot/keystore/enclaves/"
     ssh "robot@${robot}" 'sudo systemctl restart ros2-robot'
-    sleep 10  # Wait for stabilization before next robot
+    # Require the application's ROS health and command-path checks here before
+    # continuing to the next robot; service-active alone is not readiness proof.
 done < "$ROBOTS_FILE"
+
+# Keep the signing keystore aligned only after the fleet rollout succeeds.
+rsync -a --delete "$STAGING/" "$KEYSTORE/"
 ```
+
+This keeps the CA identities stable. Rotating a CA is a separate trust-migration
+operation and requires an overlap plan for every participant. The source behavior
+is defined in the
+[SROS2 enclave implementation](https://github.com/ros2/sros2/blob/jazzy/sros2/sros2/keystore/_enclave.py).
 
 ### HSM integration
 
@@ -274,7 +327,7 @@ openssl req -engine pkcs11 -keyform engine \
       <liveliness_protection_kind>ENCRYPT</liveliness_protection_kind>
       <rtps_protection_kind>ENCRYPT</rtps_protection_kind>
       <topic_access_rules>
-        <!-- High-bandwidth sensors: sign only (integrity without encryption overhead) -->
+        <!-- Use SIGN only when the threat model permits sensor-data disclosure -->
         <topic_rule>
           <topic_expression>rt/camera/*</topic_expression>
           <enable_discovery_protection>true</enable_discovery_protection>
@@ -300,7 +353,7 @@ openssl req -engine pkcs11 -keyform engine \
 </dds>
 ```
 
-### Permissions XML — per-node access control
+### Permissions XML: per-participant/enclave access control
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -314,7 +367,7 @@ openssl req -engine pkcs11 -keyform engine \
         <not_after>2028-01-01T00:00:00</not_after>
       </validity>
 
-      <!-- Topics this node can publish -->
+      <!-- Topics this enclave identity can publish -->
       <allow_rule>
         <domains><id>0</id></domains>
         <publish>
@@ -326,7 +379,7 @@ openssl req -engine pkcs11 -keyform engine \
         </publish>
       </allow_rule>
 
-      <!-- Topics this node can subscribe to -->
+      <!-- Topics this enclave identity can subscribe to -->
       <allow_rule>
         <domains><id>0</id></domains>
         <subscribe>
@@ -381,15 +434,23 @@ DDS topic names differ from ROS 2 topic names:
 ### Signing and validating policy files
 
 ```bash
-# Sign governance/permissions after manual edits (requires CA key)
+# Sign governance after manual edits with the permissions CA
 openssl smime -sign -text \
   -in governance.xml -out governance.p7s \
   -signer ~/sros2_keystore/public/permissions_ca.cert.pem \
-  -inkey ~/sros2_keystore/private/ca.key.pem
+  -inkey ~/sros2_keystore/private/permissions_ca.key.pem
 
-# Validate XML against OMG schema before signing
-xmllint --schema omg_shared_ca_governance.xsd governance.xml --noout
-xmllint --schema omg_shared_ca_permissions.xsd permissions.xml --noout
+# Sign permissions with the same permissions CA
+openssl smime -sign -text \
+  -in permissions.xml -out permissions.p7s \
+  -signer ~/sros2_keystore/public/permissions_ca.cert.pem \
+  -inkey ~/sros2_keystore/private/permissions_ca.key.pem
+
+# Locate and validate against the schemas shipped by the installed SROS2
+SCHEMA_DIR="$(python3 -c \
+  'from sros2.policy import get_transport_schema; print(get_transport_schema("dds", "governance.xsd").parent)')"
+xmllint --schema "$SCHEMA_DIR/governance.xsd" governance.xml --noout
+xmllint --schema "$SCHEMA_DIR/permissions.xsd" permissions.xml --noout
 ```
 
 ---
@@ -463,16 +524,21 @@ sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 
 ### Comparison of approaches
 
-| Approach | Latency impact | Per-topic control | Complexity | Best for |
-|---|---|---|---|---|
-| SROS2 (DDS Security) | ~2x latency | Yes | Medium | Full control, compliance |
-| WireGuard VPN | ~10-50 us overhead | No (all-or-nothing) | Low | Simple site-to-site |
-| SSH tunnel | ~1-5 ms overhead | No | Low | Development, debugging |
-| Tailscale/ZeroTier | ~20-100 us overhead | No | Very low | Fleet with NAT traversal |
+| Approach | Protection boundary | Discovery/routing consideration | Per-topic control |
+|---|---|---|---|
+| SROS2 (DDS Security) | DDS participant and topic operations | Retains the selected RMW transport | Yes |
+| Routed VPN (for example, WireGuard) | Traffic crossing the tunnel | Discovery multicast is often not routed by default | No |
+| SSH tunnel | Explicit forwarded connections | Does not transparently provide DDS discovery | No |
+| Mesh overlay | Traffic admitted to the overlay | Multicast support and NAT traversal vary by product | No |
 
-### DDS multicast does not work over VPN
+Measure latency and CPU cost on the target RMW, transport, message sizes, and
+hardware. A product name alone does not determine the added latency.
 
-DDS multicast discovery is not forwarded over VPN tunnels. Use unicast peer lists:
+### DDS multicast across routed VPNs
+
+Many layer-3 VPN configurations do not forward DDS discovery multicast by
+default. Verify the actual overlay and RMW behavior. When multicast discovery is
+unavailable, configure supported unicast peers or a discovery server, for example:
 
 ```xml
 <!-- cyclonedds_vpn.xml — unicast discovery for VPN -->
@@ -496,7 +562,9 @@ DDS multicast discovery is not forwarded over VPN tunnels. Use unicast peer list
 
 ### Field robots behind NAT
 
-For robots behind firewalls, NAT, or cellular connections, use Tailscale/ZeroTier for zero-config mesh VPN, or use Zenoh which natively supports TCP connections through NAT:
+For robots behind firewalls, NAT, or cellular connections, select an overlay or
+router whose connectivity and identity model has been verified for the deployment.
+When using Zenoh, configure its transport security explicitly:
 
 ```bash
 # Tailscale: install on each robot, assigns 100.x.y.z addresses
@@ -504,7 +572,7 @@ curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up --hostname=robot-001
 # Use Tailscale IPs in CycloneDDS peer list
 
-# Zenoh (Jazzy+): built-in TLS without DDS security stack
+# Zenoh transport security is separate from the DDS security stack
 # Configure TLS in Zenoh router config for encrypted transport
 ```
 
@@ -512,26 +580,23 @@ sudo tailscale up --hostname=robot-001
 
 ## 8. Performance impact of encryption
 
-### Reference performance numbers
+### Measure the deployed path
 
-Approximate latency measured on x86_64 with CycloneDDS:
-
-| Message size | No security | SIGN only | ENCRYPT | Overhead (ENCRYPT) |
-|---|---|---|---|---|
-| 64 B (command) | ~80 us | ~120 us | ~160 us | ~2x |
-| 1 KB (status) | ~90 us | ~130 us | ~170 us | ~1.9x |
-| 64 KB (point cloud chunk) | ~200 us | ~240 us | ~280 us | ~1.4x |
-| 1 MB (image) | ~2.5 ms | ~2.8 ms | ~3.2 ms | ~1.3x |
-
-CPU overhead is typically 5-15% additional load depending on message rate. Modern x86 CPUs with AES-NI and ARM CPUs with crypto extensions handle AES-256-GCM in hardware, significantly reducing the cost.
+There is no portable SROS2 latency or CPU multiplier. Results depend on the DDS
+vendor and version, crypto implementation, CPU features, transport, payload size,
+rate, topology, and protection kinds. Benchmark the unsecured baseline, `SIGN`,
+and `ENCRYPT` on the deployed path. Record at least throughput, CPU load, missed
+deadlines, and latency percentiles appropriate to the control budget. Do not copy
+example numbers into an acceptance threshold.
 
 ### Selective encryption strategy
 
 Use mixed protection levels in governance.xml to balance security and performance:
 
-- **ENCRYPT** for commands (`cmd_vel`, `joint_commands`) and sensitive data
-- **SIGN** for high-bandwidth sensor streams (`camera/*`, `scan`) -- integrity without encryption cost
-- **ENCRYPT** as default for everything else
+- **ENCRYPT** for commands (`cmd_vel`, `joint_commands`) and sensitive data.
+- **SIGN** only when confidentiality is explicitly outside the threat model and
+  target measurements show encryption would violate a real budget.
+- **ENCRYPT** as the default when disclosure would be harmful.
 
 See the governance.xml example in Section 5 for the full pattern.
 
@@ -583,25 +648,19 @@ See the [rcl security initialization path](https://github.com/ros2/rcl/blob/jazz
 ### Common transition gotchas
 
 ```bash
-# WRONG — forgetting infrastructure nodes
-ros2 security create_enclave ~/sros2_keystore /my_robot/driver
-ros2 security create_enclave ~/sros2_keystore /my_robot/planner
-# Missing: robot_state_publisher, lifecycle_manager, component_container
-
-# CORRECT — create enclaves for ALL nodes including infrastructure
+# One-node-per-process example: include every participating process
 ros2 security create_enclave ~/sros2_keystore /my_robot/driver
 ros2 security create_enclave ~/sros2_keystore /my_robot/planner
 ros2 security create_enclave ~/sros2_keystore /my_robot/robot_state_publisher
 ros2 security create_enclave ~/sros2_keystore /my_robot/lifecycle_manager
+ros2 security create_enclave ~/sros2_keystore /my_robot/component_container
 ```
 
-```bash
-# WRONG — using the same enclave for all nodes (defeats access control)
-export ROS_SECURITY_ENCLAVE_OVERRIDE=/my_robot/shared
-
-# CORRECT — each node gets its own enclave in the launch file
-# Set per-node via additional_env in Node() declaration
-```
+Composed nodes in `component_container` normally share that process's context,
+participant, and enclave. A shared enclave is valid, but every node in that
+participant receives the union of its grants. Split processes or contexts when
+separate identities are required; do not claim per-node isolation that the
+deployment topology does not provide.
 
 ### Docker deployment
 
@@ -624,8 +683,8 @@ ENV ROS_SECURITY_STRATEGY=Enforce
 |---|---|---|
 | Node fails to start with security enabled | Missing enclave or wrong enclave path | Verify `ROS_SECURITY_ENCLAVE_OVERRIDE` matches a path under `$ROS_SECURITY_KEYSTORE/enclaves/` |
 | "unable to find valid identity" | Certificate expired or CA mismatch | Regenerate certs; check `openssl x509 -in cert.pem -noout -enddate` |
-| Nodes cannot discover each other | Keystores do not share CA | Ensure all nodes use certs generated from the same CA keystore |
-| Performance drops 50%+ | Full encryption on high-bandwidth topics | Use `SIGN` protection for sensor streams in governance.xml |
+| Participants cannot discover each other | Keystores do not share CA | Ensure their certificates chain to mutually trusted CAs |
+| Latency or CPU budget fails after enabling protection | Protection cost was not measured on the deployed path | Benchmark each protection kind; use `SIGN` only if disclosure is acceptable |
 | Service calls timeout with security | Access control denying request/reply topics | Check permissions.xml includes both `rq/...Request` and `rr/...Reply` patterns |
 | "Inconsistent security policy" | governance.xml format error or unsigned | Validate against OMG XSD schema; re-sign with `openssl smime -sign` |
 | ros2 CLI tools cannot see topics | CLI identity or permissions do not allow access | Give the CLI its own enclave and the required narrow grants; inspect authentication and permission errors |
@@ -647,9 +706,11 @@ ls -la "$ROS_SECURITY_KEYSTORE/enclaves$(echo $ROS_SECURITY_ENCLAVE_OVERRIDE)"
 # Step 3: Check certificate validity
 openssl x509 -in cert.pem -noout -text | grep -A2 "Validity"
 
-# Step 4: Switch to Permissive to isolate the problem
-export ROS_SECURITY_STRATEGY=Permissive
-# Run the system and check logs for SECURITY warnings
+# Step 4: Keep Enforce while testing authentication and authorization failures
+export ROS_SECURITY_STRATEGY=Enforce
+# If initialization fallback itself must be isolated, use Permissive only in an
+# isolated, non-actuating diagnostic. It may start an unsecured participant and
+# therefore cannot validate that an access-control denial works.
 
 # Step 5: Enable CycloneDDS security tracing
 ```
