@@ -532,6 +532,30 @@ problem is fixed. Verify a proposed upstream repair against the installed versio
 with a deterministic signal-injection regression and unchanged child-exit gates.
 Process shutdown remains separate from a downstream hardware stop mechanism.
 
+For authorized headless execution, the bundle provides
+`scripts/launch_supervisor.py`. Source ROS and the workspace, then give it the
+installed launch file and ordinary `name:=value` arguments:
+
+```bash
+python3 scripts/launch_supervisor.py \
+  "$(ros2 pkg prefix --share my_robot_driver)/launch/fleet.launch.py"
+```
+
+This POSIX entry point starts the real launch graph using `LaunchService` with
+its own asyncio loop. Its non-raising SIGINT handler stays active through task,
+async-generator, and executor cleanup, then restores the prior handler. Send
+SIGINT to the supervisor PID for graceful shutdown. It does not impose a hardware
+stop deadline or guarantee exit from an unresponsive user callback. A process
+manager must still enforce its shutdown deadline and account for every child.
+
+The generated-fleet CI uses this shipped entry point, retaining the 10-second
+supervisor limit and zero-exit evidence for every started child. A separate
+deterministic probe exercises the installed ROS signal manager with the old
+raising handler as a negative control. Native `ros2 launch --show-args` still
+checks file discovery/import compatibility; these results do **not** establish
+that upstream `ros2 launch` SIGINT handling was repaired. Launch files remain
+usable by that CLI, with the shutdown limitation above.
+
 Sources: [Python asyncio SIGINT behavior](https://docs.python.org/3.12/library/asyncio-runner.html#handling-keyboard-interruption),
 [ROS launch 3.4.11 signal management](https://github.com/ros2/launch/blob/3.4.11/launch/launch/utilities/signal_management.py),
 [LaunchService.run](https://github.com/ros2/launch/blob/3.4.11/launch/launch/launch_service.py).

@@ -205,8 +205,11 @@ def generate_launch_description():
         IncludeLaunchDescription(PythonLaunchDescriptionSource({str(installed_launch)!r})),
     ])
 """, encoding='utf-8')
-    command = ['bash', '-c', 'source "$1"; exec ros2 launch "$2"',
-               'fleet-probe', str(work / 'install/setup.bash'), str(wrapper)]
+    # Exercise the shipped user entry point, including its event-loop signal
+    # ownership. The native CLI's SIGINT race is a separate documented limit.
+    command = ['bash', '-c', 'source "$1"; exec python3 "$2" "$3"',
+               'fleet-probe', str(work / 'install/setup.bash'),
+               str(ROOT / 'scripts/launch_supervisor.py'), str(wrapper)]
     with tempfile.TemporaryFile(mode='w+b') as output:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
                                    stderr=subprocess.STDOUT, start_new_session=True)
@@ -343,6 +346,7 @@ def verify_fleet(work, package, lifecycle, drop_transition_events=False, rapid_s
                 'startup_completion_required': lifecycle and not rapid_shutdown,
                 'rapid_shutdown_after_active': rapid_shutdown,
                 'transition_events_discarded': drop_transition_events,
+                'entrypoint': 'scripts/launch_supervisor.py',
                 'children': children, 'status': 'pass'}
     finally:
         try:
@@ -375,6 +379,13 @@ def main():
                         '--event-handlers', 'console_direct+', '--cmake-args',
                         '-DBUILD_TESTING=OFF', '-DCMAKE_BUILD_TYPE=Release'],
                        cwd=work, check=True, timeout=180)
+        # Retain native CLI discovery/import compatibility for every variant.
+        # This does not claim to fix upstream ros2 launch SIGINT handling.
+        for package, _, _ in variants:
+            launch = work / 'install' / package / 'share' / package / 'launch/fleet.launch.py'
+            subprocess.run(['bash', '-c', 'source "$1"; exec ros2 launch "$2" --show-args',
+                            'fleet-native-probe', str(work / 'install/setup.bash'), str(launch)],
+                           check=True, timeout=10)
         records = []
         # Fresh launches expose startup/shutdown races; any failed trial stops the gate.
         # This is not retry-until-pass: every recorded trial must succeed.

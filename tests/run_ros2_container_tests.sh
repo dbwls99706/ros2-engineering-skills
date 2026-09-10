@@ -25,6 +25,9 @@ python3 tests/check_offline_xml.py
 echo '=== Repository unit tests ==='
 python3 -m pytest tests/ -ra --tb=short --durations=15 -o faulthandler_timeout=45
 
+echo '=== Installed launch signal manager: deterministic negative and repaired controls ==='
+timeout --signal=TERM --kill-after=5s 15s python3 tests/check_launch_signals.py
+
 echo '=== Generate four package types plus component and lifecycle variants ==='
 mkdir -p "$WS/src"
 python3 scripts/create_package.py test_cpp_pkg --type cpp --dest "$WS/src"

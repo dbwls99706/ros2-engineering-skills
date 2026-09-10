@@ -181,6 +181,7 @@ user's launch file merely to inspect it:
 |---|---|
 | Generate a package after changes are authorized | `scripts/create_package.py` |
 | Inspect a launch file or directory statically | `scripts/launch_validator.py` |
+| Run an authorized launch (POSIX) | `scripts/launch_supervisor.py` |
 | Compare declared offered/requested QoS | `scripts/qos_checker.py` |
 | Inspect rosbag2 QoS metadata | `scripts/rosbag2_qos_checker.py` |
 | Inspect a proposed tool command/edit | `scripts/skill_validate_hook.py` |
