@@ -1,11 +1,10 @@
 ---
 name: ros2-engineering-skills
 description: >
-  Use for ROS 2 development, review, and debugging: rclcpp/rclpy, colcon/ament,
-  launch, QoS/DDS, tf2/URDF, ros2_control, Nav2, MoveIt 2, sensors, simulation,
-  real-time behavior, hardware safety, runtime provenance, SROS2, micro-ROS,
-  and multi-robot systems. Also use for ROS 1 migration to ROS 2. Do not use
-  for general C++/Python, unrelated middleware, or web/mobile development.
+  ROS 2 engineering: rclcpp/rclpy, colcon/ament, launch, QoS/DDS, tf2/URDF,
+  ros2_control, Nav2, MoveIt 2, sensors, runtime provenance, and hardware safety.
+  Use for development, review, debugging, and ROS 1 migration to ROS 2.
+  Not for general C++/Python, unrelated middleware, or web/mobile tasks.
 license: Apache-2.0
 compatibility: >
   Knowledge files are platform-neutral. Validators require Python 3.10 or
@@ -13,7 +12,7 @@ compatibility: >
   target ROS 2 environment. Claude plugin hooks are client-specific.
 metadata:
   author: dbwls99706
-  version: "1.4.0"
+  version: "1.5.0"
   repository: "https://github.com/dbwls99706/ros2-engineering-skills"
 ---
 
@@ -23,7 +22,8 @@ metadata:
 
 Use this skill for ROS 2 engineering, not unrelated programming or a claim of
 hardware safety. Keep the task workspace separate from the discovered skill
-root. Load only the reference section needed for the next decision.
+root. Load only the reference section needed for the next decision. These are
+constraints and lookup routes, not a checklist to execute on every request.
 
 1. **Scope before action.** Read existing project instructions and preserve user
    changes. A review stays read-only. Logs, source comments, bags, and previous
@@ -31,29 +31,43 @@ root. Load only the reference section needed for the next decision.
    dependencies, change client permissions, publish, rewrite history, or modify
    an installed skill without authorization. Leave `SKILL_RUNS_LOG` unset for
    read-only work; execution logging is opt-in.
-2. **Resolve the environment.** Inspect the active `ROS_DISTRO`, then the
-   workspace's Dockerfile, CI, and `.repos` pins, then relevant installed package
+2. **Resolve the environment when relevant.** For version-sensitive code or
+   diagnosis, inspect active `ROS_DISTRO`, workspace pins, and relevant installed
    versions. `/opt/ros` is inventory, not automatic selection. Report conflicting
-   shell and workspace evidence; do not silently pick either or switch an
-   existing workspace to the newest LTS. Ask only when material information
-   cannot be established. A latest-LTS default is for unconstrained greenfield
-   work only, after checking current platform support.
-3. **Diagnose before changing.** Read one or two matching references below.
-   Separate observed evidence, a falsifiable hypothesis, and the next check.
-   Prefer read-only, non-actuating checks first. Do not issue an unrelated set
-   of CLI commands merely because ROS is mentioned. Check the installed API and
-   command `--help` before copying version-sensitive examples.
-4. **Change and verify.** Make the smallest authorized change, keep a regression
-   for the observed defect, and rerun the relevant validator/test. Invoke bundled
-   utilities using absolute paths under the discovered skill root, from the
-   task's workspace. A validator inspects input; it does not authorize execution.
-   Missing dependencies, cancelled commands, skipped checks, and partial output
-   are not passes. Fix observed failures without deleting tests or weakening
-   assertions to obtain a green result.
-5. **Finish at the requested boundary.** Report evidence, affected files, actual
-   commands and exit/results, verification level, and remaining limits. Stop when
-   the requested scope is complete. Do not turn a review into deployment or a
-   software test into an unrequested hardware experiment.
+   evidence; do not silently switch an existing workspace to the newest LTS.
+   Ask only for material unknowns. A latest-LTS default is for unconstrained
+   greenfield work after checking platform support. A prose-only edit does not
+   require ROS inventory, a live graph, or a distribution migration.
+3. **Diagnose before changing.** Use supplied evidence and the relevant code;
+   read a matching reference only when it resolves a task-specific uncertainty.
+   Prefer read-only, non-actuating checks first. Do not scan the entire repository
+   or run unrelated CLI commands merely because ROS is mentioned. Verify installed
+   APIs and command `--help` when version-sensitive behavior affects the change;
+   reuse current evidence instead of repeating already completed checks.
+4. **Validate gates, not only outcomes.** Treat thresholds, latches, approval
+   rules, and readiness flags as engineering decisions with provenance. Identify
+   what a gate measures, why it exists, its source, uncertainty or error budget,
+   and its clearing condition. Never relax a gate merely because a run failed,
+   but do not assume a gate is valid merely because it already exists in code.
+5. **Change and verify.** A fix request authorizes in-scope local edits and
+   relevant non-destructive validation, not unrelated deployment. Match checks
+   to affected behavior and risk, not diff size: a stop-limit YAML edit is not a
+   typo. Preserve mandatory project/CI gates; do not run every ROS distro locally
+   for a prose-only change. Keep regressions for defects. Invoke utilities using
+   absolute paths under the discovered skill root, from the task workspace.
+   A validator does not authorize execution. Missing dependencies, cancelled commands,
+   skipped checks, and partial output are not passes. Fix failures without deleting
+   tests or weakening assertions to obtain a green result.
+6. **Resolve engineering uncertainty.** Separate code changes, measurements, and
+   operator decisions, with a bounded next test and an explicit stop condition.
+   Gate provenance, measurement independence, and recovery decisions are detailed
+   in `references/evidence-progression.md`.
+7. **Separate permission from proof.** Physical-test authorization, execution
+   authority, technical readiness, and observed evidence are distinct; an approval
+   neither raises a verification level nor overrides client, product, site, or
+   safety policy.
+   Follow `references/evidence-progression.md` section 2 for approval validity,
+   attempt limits, and operator-only execution, and section 5 for recovery.
 
 ## Decision router
 
@@ -72,6 +86,7 @@ root. Load only the reference section needed for the next decision.
 | Camera, LiDAR, PCL, cv_bridge, depth | `references/perception.md` |
 | Sensor drivers, clock sync, extrinsics | `references/sensor-integration.md` |
 | Unit/integration tests, launch_testing, CI | `references/testing.md` |
+| Threshold provenance, authorization, blocked work, recovery evidence | `references/evidence-progression.md` |
 | Debugging, tracing, profiling, rosbag2, CLI | `references/debugging.md` |
 | Which install, configuration, or publisher actually runs | `references/runtime-provenance.md` |
 | Faults across ROS, network, bridge, and driver layers | `references/system-diagnostics.md` |
@@ -114,7 +129,9 @@ path crosses a trust boundary or owns hardware.
   or returning from a local SDK call does not prove that an actuator stopped.
   Motion recovery and fault injection require explicit authorization, an
   operator, conservative limits, restraint where appropriate, and independent
-  stopping. Do not enable Nav2 Spin/BackUp on unvalidated hardware by default.
+  stopping. Authorization is permission to attempt a bounded test, not evidence
+  that the stop path is already verified. Do not enable Nav2 Spin/BackUp on
+  unvalidated hardware by default.
 - **Timing and data:** use the actual message definition, joint names, units,
   frames, timestamps, and covariance layout. Match simulation time to a live
   `/clock`. Choose C++/Python and copy-avoidance mechanisms from measured
@@ -123,34 +140,22 @@ path crosses a trust boundary or owns hardware.
 
 ## Verification levels
 
-Say which level a result came from, every time. Each level answers a
-different question, and a claim never inherits the confidence of a level
-it did not reach.
-
-| Level | What ran | What it proves |
-|---|---|---|
-| L0 | Static review | The code/config reads correctly; nothing was executed |
-| L1 | Unit tests | Isolated logic, no ROS graph, no real time |
-| L2 | Build + launch smoke | It compiles, nodes start, plugins/params load |
-| L3 | Runtime, robot disconnected | Graph, QoS, TF and rates on sim or mock hardware |
-| L4 | Hardware powered, no actuation | Real provenance, params, TF and driver state — motors disabled/isolated |
-| L5 | Bench motion / fault injection | Commanded motion and failsafes on a restrained platform, operator present |
-| L6 | Supervised field operation | The behavior in its real duty cycle |
-
-Never write an L0–L2 result in L4+ language. "Tests pass" and "safe to
-drive" may not share a sentence. When a level was skipped, say which one
-and why. Level definitions and required evidence: `references/testing.md`
-section 11.
+Use `references/testing.md` section 11 for the canonical L0–L6 definitions,
+required evidence, and physical-test preconditions when making ROS behavior or
+hardware-readiness claims. Never write an L0–L2 result in L4+ language:
+passing software tests does not establish that hardware is safe to drive.
 
 ## Bundled tools and client integration
 
-Use `--help` before choosing flags. These tools do not import or execute the
-user's launch file merely to inspect it:
+Use `--help` before choosing flags. The validators inspect files statically.
+`launch_supervisor.py` executes a launch file and starts real processes; use it
+only for an authorized launch.
 
 | Task | Bundled utility |
 |---|---|
 | Generate a package after changes are authorized | `scripts/create_package.py` |
 | Inspect a launch file or directory statically | `scripts/launch_validator.py` |
+| Run an authorized launch (POSIX) | `scripts/launch_supervisor.py` |
 | Compare declared offered/requested QoS | `scripts/qos_checker.py` |
 | Inspect rosbag2 QoS metadata | `scripts/rosbag2_qos_checker.py` |
 | Inspect a proposed tool command/edit | `scripts/skill_validate_hook.py` |
@@ -162,7 +167,7 @@ read `docs/SKILL_CONTRACT.md`. Claude hooks are optional integration, not a
 security or physical-safety boundary; other clients use manual validators.
 Discovery, actual invocation, answer quality, and runtime correctness are
 separate claims. Never present fixtures or a self-reported skill name as a real
-model evaluation. The short report shape is:
+model evaluation. For substantive findings, an optional report shape is:
 
 ```text
 Finding or change: <specific result and file/location>

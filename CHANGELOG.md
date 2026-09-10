@@ -2,12 +2,101 @@
 
 All notable changes are documented here.
 
-## Unreleased
+## 1.5.0 - 2026-09-10
 
+- Correct SROS2 participant/enclave semantics, Enforce-only authorization
+  checks, certificate lifetime and staged rotation; align image stride, depth,
+  camera projection, Foxy quaternion, and Domain ID guidance with upstream.
+- Replace unsourced SROS2 and VPN latency figures with target-path measurement
+  criteria; require the threat model to permit disclosure before using `SIGN`.
+- Preserve the previous SIGINT handler atomically during launch-supervisor
+  teardown and cover a real signal arriving inside the restoration boundary.
+- Separate orderly lifecycle finalization from the active-state SIGINT probe so
+  Humble shutdown behavior cannot race lifecycle-node destruction in the fleet gate.
+- Centralize verification levels in the testing reference and keep authorization
+  details in evidence progression. Remove repository-connector incidents and the
+  unrelated Git completion benchmark from the domain skill.
+- Add simulation, real-time, SROS2, micro-ROS, and fleet routing scenarios; remove
+  rubric hints from progression questions. These are evaluation inputs, not
+  measured activation or model-quality results.
+- Repair the security threat table and multiline QoS help example; accept quoted
+  and unquoted ISO dates consistently in evaluation metadata.
+- Ship a POSIX launch supervisor that preserves ready callbacks across SIGINT
+  and records an interrupt before launch starts. Exercise real signals and real
+  ROS CLI argument parsing; preserve the fleet shutdown deadline and child checks.
+- Correct launch namespace resolution, permit-generation/reset guidance, SROS2
+  rejection outcomes, and exception-safe lifecycle teardown guidance.
+
+- Correct quaternion normalization and IMU covariance guidance against upstream
+  definitions; execute the normalization example in regression tests.
+- Label evaluation reports and history as lexical coverage with answer quality
+  unassessed; matching captured answers require review instead of receiving a
+  pass, including perfect matches and critical-criterion matches.
+- Select Stop-hook candidates from Git before scanning, handle package subdirectory
+  workspaces, and use one bounded scan when the Git change set is unavailable.
+- Align detailed reporting guidance, source-review scope, release-version policy,
+  and the README's evaluation inventory with the current contracts.
+
+- Scope verification-level reporting to ROS behavior and hardware-readiness
+  claims, and physical-test authorization tracking to physical tests. Keep
+  prose-only reports proportional without weakening required checks or stop proof.
+
+- Fail fleet verification on completed service errors, cancelled/empty/late
+  replies, and exhausted readiness budgets; retry only unanswered read requests
+  and retire their pending futures on all exit paths.
+- Keep Claude invocation/tool-approval controls separate from Codex metadata;
+  document model-upgrade comparisons without adding portable permission grants,
+  forced model choices, or unconditional skill routing.
+
+- Retire unanswered lifecycle state reads within the existing startup deadline
+  and retry only the idempotent query; activation remains one-shot. Preserve
+  lost-response and persistent-failure regression cases.
+
+- Make environment discovery, reference reading, and local validation proportional
+  to the task while retaining mandatory CI and physical-safety boundaries.
+- Add task-scope cases to the paired capture suite, expand routing
+  negatives, and document controlled model/skill-upgrade comparisons.
+- Reject FIFOs and other non-regular capture inputs without blocking; bound reads
+  and verify artifact hashes and text from one snapshot.
+- Keep missing, partial, and damaged model captures separate from scored results;
+  require valid ON/OFF pairs before reporting a parity delta. Confine evaluation
+  inputs and history to their declared directories and reject malformed manifests.
+- Scope parity history to the runner, suite, fixtures, version, and scoring rules;
+  do not count absent data or repeated captures as new deprecation evidence.
+  Add explicit capture-completeness gates and critical lexical criteria while
+  retaining the requirement for independent semantic review.
+- Bound physical-test approval by its attempt budget as well as its session and
+  envelope. Recheck readiness before execution; a failed or ambiguous command is
+  not an automatic retry, and reviewing a gate does not authorize bypassing it.
+- Align controlled-motion verification levels and clarify independent measurements;
+  fix the container CI example's shell and remove its stale ROS-prefix cache.
+
+- Add evidence-driven progression rules for acceptance gates: review threshold
+  provenance, measured quantity, uncertainty, error-budget relevance, and clearing
+  conditions instead of treating existing code as automatic authority or tuning
+  criteria merely to make a failed run pass.
+- Separate user authorization, authorization validity, execution authority,
+  supervised-test readiness, L0-L6 evidence, and operational readiness. Preserve
+  unchanged, unexpired, unrevoked approvals without turning permission into proof
+  or overriding client, product, site, or safety execution policy.
+- Give L5 and L6 distinct execution preconditions, retain operator-only execution
+  for high-risk physical fault injection, and repair stale numbered-principle links
+  so detailed references point to the engineering-principles source of truth.
+- Turn repeated blockers into concrete resolution plans with independent variables,
+  required evidence, pass/fail criteria, and stop conditions; distinguish current
+  healthy observations from latched historical failures and prevent stale-command
+  replay during recovery.
+- Add canonical progression behavior fixtures for gate-policy review, supervised
+  test authorization, latched localization recovery, and sensor-metric separation.
+  Public calibration examples are explicitly synthetic, and the structural runner
+  remains clearly separated from real model-output judging.
 - Correct perception and deployment reference guidance: qualify image transport
   and copy-avoidance claims, check timestamp/clock evidence before queue tuning,
   complete the health-monitor example, and distinguish real device
   acknowledgements from fixed shutdown sleeps.
+- Stabilize generated-fleet readiness acceptance by retrying idempotent read
+  services within bounds, requiring a brief stable-active window, and keeping
+  sibling transition churn out of the transition-event-loss negative control.
 
 ## 1.4.0 - 2026-09-08
 

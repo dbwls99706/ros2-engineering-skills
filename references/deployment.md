@@ -491,20 +491,26 @@ The daemon runs as a background process. It connects to the DDS network independ
 
 ## 7. Security (SROS2)
 
-For production deployments, enable DDS security via SROS2. This provides mutual TLS authentication,
-topic-level access control, and message encryption. See `references/security.md` for the complete
-SROS2 workflow including keystore setup, governance/permissions authoring, certificate management,
-supply chain hardening, and performance impact analysis.
+For production deployments, enable DDS security via SROS2. It configures
+DDS:Auth:PKI-DH participant authentication, DDS access control, and message
+protection. See `references/security.md` for enclave boundaries, keystore setup,
+governance/permissions authoring, certificate management, supply chain hardening,
+and target-path performance measurement.
 
-Quick start for testing:
+Initialization smoke test in an isolated, non-actuating environment:
 
 ```bash
 ros2 security create_keystore ~/sros2_keystore
 ros2 security create_enclave ~/sros2_keystore /my_robot/driver
 export ROS_SECURITY_KEYSTORE=~/sros2_keystore
 export ROS_SECURITY_ENABLE=true
-export ROS_SECURITY_STRATEGY=Permissive  # Use Enforce in production
+export ROS_SECURITY_STRATEGY=Enforce
 ```
+
+The default enclave has broad permissions. Replace them with the intended policy
+and test both allowed and denied operations before treating this as an
+authorization test. `Permissive` may fall back to unsecured operation when
+security initialization fails; it is not an access-control test mode.
 
 ## 8. Monitoring and health checks
 

@@ -94,9 +94,9 @@ PRESETS = {
         "sub": QoSProfile(Reliability.BEST_EFFORT, Durability.VOLATILE, History.KEEP_LAST, 5, "Sensor Subscriber"),
     },
     "command": {
-        # Matches SKILL.md Principle 6 "Command velocity" row: deadline 100 ms,
-        # lifespan 200 ms. Catches stale commands so the executor side does not
-        # act on an outdated velocity if the publisher hangs.
+        # Matches references/engineering-principles.md Principle 6 "Command velocity"
+        # row: deadline 100 ms, lifespan 200 ms. Catches stale commands so the
+        # executor side does not act on an outdated velocity if the publisher hangs.
         "pub": QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1,
                           "Command Publisher",
                           deadline_ms=100, lifespan_ms=200),

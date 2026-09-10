@@ -16,17 +16,22 @@ Usage:
     python eval_runner.py [--eval-dir DIR] [--eval-name NAME] [--json] [--verbose]
 
 Exit codes:
-    0 — All evals passed
-    1 — One or more evals failed
-    2 — Configuration error
+    0 - No scored failures; exploratory missing-data states are not a pass
+    1 - Scored failure, invalid data, history failure, or required capture missing
+    2 - Configuration error or lexical deprecation review signal (parity)
 """
 
-__version__ = '1.0.0'
+__version__ = '1.2.0'
 
 import argparse
+from datetime import datetime, timezone
+import hashlib
+import math
+import ntpath
 import json
 import os
 import re
+import stat
 import sys
 import time
 
@@ -50,123 +55,192 @@ def _import_yaml():
     return yaml
 
 
-def load_eval_config(eval_dir):
-    """Load and validate eval.yaml from the given directory.
+MAX_TEXT_BYTES = 20 * 1024 * 1024
+NAME_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}')
+DEVICE_PATTERN = re.compile(r'(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)', re.I)
 
-    Returns:
-        dict: Parsed eval configuration.
 
-    Raises:
-        SystemExit: If eval.yaml is missing or malformed, or PyYAML is
-            not installed.
-    """
-    yaml = _import_yaml()
-    config_path = os.path.join(eval_dir, 'eval.yaml')
-    if not os.path.isfile(config_path):
-        print(f'Error: eval.yaml not found at {config_path}', file=sys.stderr)
-        sys.exit(2)
+def _assessment_scope():
+    """Lexical matches, including critical ones, never certify answer quality."""
+    return {
+        'scoring_method': 'lexical_coverage',
+        'quality_verdict': 'not_assessed',
+        'semantic_review_required': True,
+    }
 
+
+def _valid_name(value):
+    return (isinstance(value, str) and NAME_PATTERN.fullmatch(value) is not None
+            and not value.endswith('.') and DEVICE_PATTERN.match(value) is None)
+
+
+def _finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
     try:
-        with open(config_path, 'r', encoding='utf-8') as fh:
-            config = yaml.safe_load(fh)
-    except yaml.YAMLError as e:
-        print(f'Error: failed to parse eval.yaml: {e}', file=sys.stderr)
-        sys.exit(2)
-
-    if not isinstance(config, dict):
-        print('Error: eval.yaml must be a YAML mapping', file=sys.stderr)
-        sys.exit(2)
-
-    if 'evals' not in config:
-        print('Error: eval.yaml must contain an "evals" key', file=sys.stderr)
-        sys.exit(2)
-
-    if not isinstance(config['evals'], list):
-        print('Error: "evals" must be a list', file=sys.stderr)
-        sys.exit(2)
-
-    return config
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _resolve_within(base_dir, rel_path):
-    """Resolve ``rel_path`` against ``base_dir`` and reject paths that escape it.
+    """Resolve a portable relative path, rejecting escapes and absolute paths.
 
-    Returns the resolved absolute path on success, or ``None`` if the path
-    escapes ``base_dir`` (e.g. ``../../etc/passwd``).
+    This is a snapshot check, not a sandbox against concurrent hostile writes.
     """
-    base = os.path.realpath(base_dir)
-    candidate = os.path.realpath(os.path.join(base, rel_path))
+    if (not isinstance(rel_path, str) or not rel_path.strip()
+            or '\x00' in rel_path or '\\' in rel_path
+            or ntpath.splitdrive(rel_path)[0] or os.path.isabs(rel_path)):
+        return None
     try:
+        base = os.path.realpath(base_dir)
+        candidate = os.path.realpath(os.path.join(base, rel_path))
         if os.path.commonpath([base, candidate]) != base:
             return None
-    except ValueError:
-        # Different drives on Windows, or other commonpath edge cases.
+    except (OSError, ValueError, RuntimeError):
         return None
     return candidate
 
 
-def validate_eval_entry(entry, eval_dir):
-    """Validate a single eval entry has all required fields and files exist.
+def _read_text(filepath):
+    """Read bounded regular UTF-8 text; never turn an I/O error into a score."""
+    flags = os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0)
+    fd = os.open(filepath, flags)
+    with os.fdopen(fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f'Not a regular file: {filepath}')
+        if info.st_size > MAX_TEXT_BYTES:
+            raise ValueError(f'File exceeds {MAX_TEXT_BYTES} bytes: {filepath}')
+        data = handle.read(MAX_TEXT_BYTES + 1)
+        if len(data) > MAX_TEXT_BYTES:
+            raise ValueError(f'File exceeds {MAX_TEXT_BYTES} bytes: {filepath}')
+    return data.decode('utf-8')
 
-    Returns:
-        list[str]: List of validation error messages (empty = valid).
-    """
+
+def load_eval_config(eval_dir):
+    """Reject malformed manifests, including duplicate keys and ambiguous names."""
+    yaml = _import_yaml()
+
+    class UniqueLoader(yaml.SafeLoader):
+        pass
+
+    def mapping(loader, node, deep=False):
+        result = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            try:
+                if key in result:
+                    raise ValueError(f'Duplicate YAML key: {key}')
+                result[key] = loader.construct_object(value_node, deep=deep)
+            except TypeError as exc:
+                raise ValueError('YAML mapping keys must be scalar') from exc
+        return result
+
+    UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+    # YAML implicitly types ISO dates/timestamps. Keep manifest metadata JSON
+    # compatible, with the same spelling and hash as an explicitly quoted value.
+    UniqueLoader.add_constructor('tag:yaml.org,2002:timestamp', UniqueLoader.construct_scalar)
+    config_path = _resolve_within(eval_dir, 'eval.yaml')
+    try:
+        if config_path is None:
+            raise ValueError('eval.yaml escapes eval directory')
+        config = yaml.load(_read_text(config_path), Loader=UniqueLoader)
+        _validate_config_shape(config)
+    except (OSError, UnicodeError, ValueError, RecursionError, yaml.YAMLError) as exc:
+        print(f'Error: invalid eval.yaml: {exc}', file=sys.stderr)
+        raise SystemExit(2) from exc
+    return config
+
+
+def _validate_config_shape(config):
+    if not isinstance(config, dict):
+        raise ValueError('eval.yaml must be a YAML mapping')
+    entries = config.get('evals')
+    if not isinstance(entries, list) or not entries:
+        raise ValueError('"evals" must be a non-empty list')
+    names = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or not _valid_name(entry.get('name')):
+            raise ValueError('Each eval must have a portable, non-empty name')
+        name = entry['name'].casefold()
+        if name in names:
+            raise ValueError(f'Duplicate eval name: {entry["name"]}')
+        names.add(name)
+    try:
+        json.dumps(config, sort_keys=True, allow_nan=False)
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise ValueError('Manifest must contain finite JSON-compatible values') from exc
+    parity = config.get('parity_test')
+    if parity is not None:
+        if not isinstance(parity, dict):
+            raise ValueError('parity_test must be a mapping')
+        threshold = parity.get('threshold', 5.0)
+        count = parity.get('consecutive_failures_for_deprecation', 3)
+        if not _finite_number(threshold) or not -100 <= threshold <= 100:
+            raise ValueError('parity threshold must be finite, in [-100, 100]')
+        if type(count) is not int or not 1 <= count <= 1000:
+            raise ValueError('consecutive_failures_for_deprecation must be an integer in [1, 1000]')
+
+
+def validate_eval_entry(entry, eval_dir):
+    """Validate fields and fixture paths without mutating the manifest."""
+    if not isinstance(entry, dict):
+        return ['Eval entry must be a mapping']
     errors = []
-    required_fields = ['name', 'prompt', 'expected', 'criteria']
-    for field in required_fields:
+    for field in ('name', 'prompt', 'expected', 'criteria'):
         if field not in entry:
             errors.append(f'Missing required field: {field}')
-
-    # Resolve and cache paths on the entry so run_eval can reuse them
-    # without re-resolving (avoids a TOCTOU window between validation and
-    # use, and removes a duplicate commonpath call).
-    if 'prompt' in entry:
-        prompt_path = _resolve_within(eval_dir, entry['prompt'])
-        if prompt_path is None:
-            errors.append(f'Prompt path escapes eval dir: {entry["prompt"]}')
-        elif not os.path.isfile(prompt_path):
-            errors.append(f'Prompt file not found: {prompt_path}')
-        else:
-            entry['_resolved_prompt'] = prompt_path
-
-    if 'expected' in entry:
-        expected_path = _resolve_within(eval_dir, entry['expected'])
-        if expected_path is None:
-            errors.append(
-                f'Expected path escapes eval dir: {entry["expected"]}')
-        elif not os.path.isfile(expected_path):
-            errors.append(f'Expected file not found: {expected_path}')
-        else:
-            entry['_resolved_expected'] = expected_path
-
-    if 'criteria' in entry:
-        if not isinstance(entry['criteria'], list):
-            errors.append('"criteria" must be a list')
-        else:
-            for i, criterion in enumerate(entry['criteria']):
-                if isinstance(criterion, dict):
-                    if 'description' not in criterion:
-                        errors.append(
-                            f'Criterion {i} missing "description"')
-                elif not isinstance(criterion, str):
-                    errors.append(
-                        f'Criterion {i} must be a string or dict')
-
+    if not _valid_name(entry.get('name')):
+        errors.append('Eval name must be a portable filename, not a path')
+    for field in ('prompt', 'expected'):
+        if field not in entry:
+            continue
+        path = _resolve_within(eval_dir, entry[field])
+        if path is None:
+            errors.append(f'{field.title()} path escapes eval dir or is not relative: {entry[field]!r}')
+        elif not os.path.isfile(path):
+            errors.append(f'{field.title()} file not found or not regular: {path}')
+    criteria = entry.get('criteria')
+    if not isinstance(criteria, list) or not criteria:
+        errors.append('"criteria" must be a non-empty list')
+    else:
+        ids = set()
+        for i, criterion in enumerate(criteria):
+            if isinstance(criterion, dict):
+                description = criterion.get('description')
+                if not isinstance(description, str) or not description.strip():
+                    errors.append(f'Criterion {i} missing "description" or empty text')
+                if 'critical' in criterion and type(criterion['critical']) is not bool:
+                    errors.append(f'Criterion {i} critical must be Boolean')
+                if 'id' in criterion:
+                    identifier = criterion['id']
+                    if not _valid_name(identifier) or identifier in ids:
+                        errors.append(f'Criterion {i} id must be unique and portable')
+                    else:
+                        ids.add(identifier)
+            elif not isinstance(criterion, str) or not criterion.strip():
+                errors.append(f'Criterion {i} must be a non-empty string or dict')
+        try:
+            pairs = _extract_criteria_with_weights(criteria)
+            total = sum(weight for _, weight in pairs)
+            if not _finite_number(total) or total <= 0:
+                errors.append('Criteria must have a positive finite total weight')
+        except ValueError as exc:
+            errors.append(str(exc))
     if 'timeout' in entry:
-        if not isinstance(entry['timeout'], (int, float)):
-            errors.append('"timeout" must be a number')
+        if not _finite_number(entry['timeout']):
+            errors.append('"timeout" must be a finite number')
         elif entry['timeout'] <= 0:
             errors.append('"timeout" must be positive')
-
     return errors
 
 
 def load_file_content(filepath):
-    """Load content from a file, returning empty string on error."""
+    """Compatibility helper. Scoring uses _read_text to retain actual errors."""
     try:
-        with open(filepath, 'r', encoding='utf-8') as fh:
-            return fh.read()
-    except OSError:
+        return _read_text(filepath)
+    except (OSError, UnicodeError, ValueError):
         return ''
 
 
@@ -240,7 +314,7 @@ def evaluate_criteria(expected_content, criteria_texts,
         # Extract key terms from the criterion for matching
         key_terms = []
         words = criterion_text.lower().split()
-        # Filter out common words to find meaningful terms
+        # Filter out common words to find meaningful key terms
         stop_words = {
             'must', 'should', 'the', 'a', 'an', 'is', 'are', 'for',
             'and', 'or', 'of', 'in', 'to', 'with', 'that', 'this',
@@ -270,187 +344,132 @@ def evaluate_criteria(expected_content, criteria_texts,
 
 
 def _extract_criteria_with_weights(criteria_entries):
-    """Return list of (text, weight) tuples for criteria.
-
-    Supports both string and dict forms. Weight defaults to 1.0 when omitted
-    (so old eval.yaml entries without weight behave as before).
-    """
+    """Return declared weights; malformed values must never silently default."""
     pairs = []
-    for c in criteria_entries:
-        if isinstance(c, str):
-            pairs.append((c, 1.0))
-        elif isinstance(c, dict):
-            text = c.get('description', str(c))
-            weight = c.get('weight', 1.0)
-            try:
-                weight = float(weight)
-            except (TypeError, ValueError):
-                weight = 1.0
-            if weight < 0:
-                weight = 0.0
-            pairs.append((text, weight))
+    for criterion in criteria_entries:
+        if isinstance(criterion, str):
+            pairs.append((criterion, 1.0))
+        elif isinstance(criterion, dict):
+            text = criterion.get('description')
+            weight = criterion.get('weight', 1.0)
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError('Criterion must have a non-empty description')
+            if not _finite_number(weight) or weight < 0:
+                raise ValueError('Criterion weight must be a finite non-negative number')
+            pairs.append((text, float(weight)))
+        else:
+            raise ValueError('Criterion must be a string or dict')
     return pairs
 
 
 def _content_path_for_source(eval_dir, eval_name, source):
-    """Return the file path that backs a given content `source` for an eval.
-
-    Sources:
-        'expected' - the reference/ideal answer (fixture).
-        'output'   - the actual model output captured by the user with the
-                     skill loaded (evals/outputs/{name}.md).
-        'baseline' - the actual model output captured WITHOUT the skill loaded
-                     (evals/outputs_baseline/{name}.md), used for parity.
-    """
     if source == 'expected':
-        return None  # caller uses entry['_resolved_expected']
-    sub = {'output': 'outputs',
-           'baseline': 'outputs_baseline'}[source]
-    return os.path.join(eval_dir, sub, f'{eval_name}.md')
+        return None
+    if not _valid_name(eval_name) or source not in ('output', 'baseline'):
+        raise ValueError('Invalid capture name or source')
+    sub = {'output': 'outputs', 'baseline': 'outputs_baseline'}[source]
+    logical_root = os.path.join(eval_dir, sub)
+    if os.path.lexists(logical_root) and not os.path.isdir(logical_root):
+        raise ValueError(f'{sub} is not a readable directory')
+    root = _resolve_within(eval_dir, sub)
+    if root is None:
+        raise ValueError(f'{sub} escapes eval directory')
+    candidate = _resolve_within(root, f'{eval_name}.md')
+    if candidate is None:
+        raise ValueError(f'Capture escapes {sub} directory')
+    return candidate
+
+
+def _digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
 
 def run_eval(entry, eval_dir, verbose=False,
              coverage_threshold=0.30, pass_rate_threshold=80.0,
              content_source='expected'):
-    """Run a single eval and return results.
+    """Score valid text only; missing captures and damaged files are distinct."""
+    start = time.monotonic()
+    name = entry.get('name', '<unknown>') if isinstance(entry, dict) else '<unknown>'
 
-    Args:
-        entry: eval definition (dict from eval.yaml).
-        eval_dir: directory containing eval.yaml.
-        verbose: include prompt/expected paths and lengths in result.
-        coverage_threshold: per-criterion key-term coverage required to pass.
-        pass_rate_threshold: overall weighted pass rate for the eval to be
-            considered passing. Both thresholds are CLI-configurable so the
-            same code can be used both for a permissive structural smoke
-            check and for stricter local validation.
-        content_source: 'expected' (default, current fixture behaviour),
-            'output' (real model output captured under outputs/), or
-            'baseline' (output captured without the skill loaded). Returns
-            status='skipped' if the source file is missing — this lets
-            parity_test report "not yet captured" without failing CI.
+    def failure(errors, status='error'):
+        return {**_assessment_scope(), 'name': name, 'status': status, 'errors': errors,
+                'execution_time_ms': round((time.monotonic() - start) * 1000, 1),
+                'criteria_results': [], 'pass_rate': 0.0,
+                'content_source': content_source}
 
-    Returns:
-        dict: Eval results including pass/fail, timing, and criteria breakdown.
-    """
-    start_time = time.monotonic()
+    errors = validate_eval_entry(entry, eval_dir)
+    if content_source not in ('expected', 'output', 'baseline'):
+        errors.append('Unknown content source')
+    if (not _finite_number(coverage_threshold) or not 0 <= coverage_threshold <= 1
+            or not _finite_number(pass_rate_threshold) or not 0 <= pass_rate_threshold <= 100):
+        errors.append('Invalid scoring thresholds')
+    if errors:
+        return failure(errors)
+    try:
+        prompt_path = _resolve_within(eval_dir, entry['prompt'])
+        expected_path = _resolve_within(eval_dir, entry['expected'])
+        if prompt_path is None or expected_path is None:
+            raise ValueError('Fixture path escapes eval directory')
+        prompt_content = _read_text(prompt_path)
+        fixture = _read_text(expected_path)
+        if not prompt_content.strip():
+            return failure([f'Empty prompt file: {prompt_path}'])
+        if not fixture.strip():
+            return failure([f'Empty expected file: {expected_path}'])
+        content_path = expected_path
+        if content_source == 'expected':
+            content = fixture
+        else:
+            content_path = _content_path_for_source(eval_dir, name, content_source)
+            # A dangling link is damaged input, not an absent capture.
+            logical = os.path.join(eval_dir, {'output': 'outputs', 'baseline': 'outputs_baseline'}[content_source],
+                                   f'{name}.md')
+            if not os.path.exists(content_path) and not os.path.lexists(logical):
+                result = failure([], 'skipped')
+                result['reason'] = f'No {content_source} captured yet: {content_path}'
+                return result
+            content = _read_text(content_path)
+        if not content.strip():
+            return failure([f'Empty {content_source} file: {content_path}'])
+    except (OSError, UnicodeError, ValueError) as exc:
+        return failure([f'Cannot read eval input: {exc}'])
 
-    # Validate entry
-    validation_errors = validate_eval_entry(entry, eval_dir)
-    if validation_errors:
-        elapsed = (time.monotonic() - start_time) * 1000
-        return {
-            'name': entry.get('name', '<unknown>'),
-            'status': 'error',
-            'errors': validation_errors,
-            'execution_time_ms': round(elapsed, 1),
-            'criteria_results': [],
-            'pass_rate': 0.0,
-        }
-
-    # Reuse the paths resolved during validation (no re-resolution, which
-    # avoids any TOCTOU window between validate_eval_entry and here).
-    prompt_path = entry['_resolved_prompt']
-
-    # Pick which file backs the criteria check. Default 'expected' uses the
-    # fixture; 'output'/'baseline' look at user-captured model outputs.
-    if content_source == 'expected':
-        content_path = entry['_resolved_expected']
-    else:
-        content_path = _content_path_for_source(
-            eval_dir, entry['name'], content_source)
-        if not os.path.isfile(content_path):
-            elapsed = (time.monotonic() - start_time) * 1000
-            return {
-                'name': entry['name'],
-                'status': 'skipped',
-                'reason': (f'No {content_source} captured yet: '
-                           f'expected file at {content_path}. See '
-                           'docs/EVAL_WORKFLOW.md for how to populate.'),
-                'execution_time_ms': round(elapsed, 1),
-                'criteria_results': [],
-                'pass_rate': 0.0,
-                'content_source': content_source,
-            }
-
-    prompt_content = load_file_content(prompt_path)
-    expected_content = load_file_content(content_path)
-
-    if not prompt_content:
-        elapsed = (time.monotonic() - start_time) * 1000
-        return {
-            'name': entry['name'],
-            'status': 'error',
-            'errors': [f'Empty prompt file: {prompt_path}'],
-            'execution_time_ms': round(elapsed, 1),
-            'criteria_results': [],
-            'pass_rate': 0.0,
-        }
-
-    if not expected_content:
-        elapsed = (time.monotonic() - start_time) * 1000
-        return {
-            'name': entry['name'],
-            'status': 'error',
-            'errors': [f'Empty {content_source} file: {content_path}'],
-            'execution_time_ms': round(elapsed, 1),
-            'criteria_results': [],
-            'pass_rate': 0.0,
-        }
-
-    # Extract criteria + weights, evaluate, then compute weighted pass rate.
-    criteria_pairs = _extract_criteria_with_weights(entry['criteria'])
-    criteria_texts = [t for t, _ in criteria_pairs]
-    weights = [w for _, w in criteria_pairs]
-    criteria_results = evaluate_criteria(
-        expected_content, criteria_texts,
-        coverage_threshold=coverage_threshold)
-    # Attach weight to each result (downstream reports can show it).
-    for r, w in zip(criteria_results, weights):
-        r['weight'] = w
-
-    passed_count = sum(1 for r in criteria_results if r['passed'])
-    total_count = len(criteria_results)
-    weighted_passed = sum(w for r, w in zip(criteria_results, weights)
-                          if r['passed'])
-    weighted_total = sum(weights)
-    # Use weighted pass rate when weights are non-uniform; fall back to
-    # simple ratio if all weights are 0 or the eval has no criteria.
-    if weighted_total > 0:
-        pass_rate = (weighted_passed / weighted_total) * 100
-    else:
-        pass_rate = (passed_count / total_count * 100) if total_count > 0 else 0.0
-
-    elapsed = (time.monotonic() - start_time) * 1000
-
-    # Estimate token count (rough: ~4 chars per token)
-    token_estimate = (len(prompt_content) + len(expected_content)) // 4
-
-    status = 'pass' if pass_rate >= pass_rate_threshold else 'fail'
-
+    pairs = _extract_criteria_with_weights(entry['criteria'])
+    criteria_results = evaluate_criteria(content, [text for text, _ in pairs],
+                                         coverage_threshold=coverage_threshold)
+    critical_failures = []
+    for i, (result, (_, weight), criterion) in enumerate(zip(criteria_results, pairs, entry['criteria'])):
+        result['weight'] = weight
+        critical = isinstance(criterion, dict) and criterion.get('critical', False)
+        result['critical'] = critical
+        if critical and not result['passed']:
+            critical_failures.append(criterion.get('id', f'criterion_{i}'))
+    total = sum(weight for _, weight in pairs)
+    passed_weight = sum(result['weight'] for result in criteria_results if result['passed'])
+    pass_rate = passed_weight / total * 100
+    lexical_status = 'pass' if pass_rate >= pass_rate_threshold and not critical_failures else 'fail'
+    # A matching response still needs an independent review of its meaning.
+    # Keep fixture smoke checks usable as CI gates without promoting an
+    # unreviewed model response (including a negated rubric) to a passing answer.
+    status = ('needs_review' if content_source != 'expected' and lexical_status == 'pass'
+              else lexical_status)
     result = {
-        'name': entry['name'],
-        'status': status,
+        **_assessment_scope(),
+        'name': name, 'status': status, 'lexical_status': lexical_status,
         'pass_rate': round(pass_rate, 1),
-        'passed_criteria': passed_count,
-        'total_criteria': total_count,
-        'weighted_passed': round(weighted_passed, 2),
-        'weighted_total': round(weighted_total, 2),
-        'execution_time_ms': round(elapsed, 1),
-        'token_estimate': token_estimate,
-        'criteria_results': criteria_results,
-        'tags': entry.get('tags', []),
+        'passed_criteria': sum(result['passed'] for result in criteria_results),
+        'total_criteria': len(criteria_results),
+        'weighted_passed': round(passed_weight, 2), 'weighted_total': round(total, 2),
+        'execution_time_ms': round((time.monotonic() - start) * 1000, 1),
+        'token_estimate': (len(prompt_content) + len(content)) // 4,
+        'criteria_results': criteria_results, 'critical_failures': critical_failures,
+        'tags': entry.get('tags', []), 'content_source': content_source,
+        'content_sha256': _digest(content), 'prompt_sha256': _digest(prompt_content),
+        'fixture_sha256': _digest(fixture),
     }
-
     if verbose:
-        result['prompt_path'] = prompt_path
-        # `expected_path` kept as the field name for backwards compat with
-        # tooling that consumed previous verbose output; the value now
-        # reflects whichever content_source was scored.
-        result['expected_path'] = content_path
-        result['content_source'] = content_source
-        result['prompt_length'] = len(prompt_content)
-        result['expected_length'] = len(expected_content)
-
+        result.update(prompt_path=prompt_path, expected_path=content_path,
+                      prompt_length=len(prompt_content), expected_length=len(content))
     return result
 
 
@@ -462,6 +481,7 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
     Returns:
         dict: Aggregate results including per-eval and summary data.
     """
+    _validate_config_shape(config)
     evals = config['evals']
     if eval_name:
         evals = [e for e in evals if e.get('name') == eval_name]
@@ -479,14 +499,15 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
         results.append(result)
 
     total_evals = len(results)
-    passed_evals = sum(1 for r in results if r['status'] == 'pass')
+    passed_evals = sum(1 for r in results if r.get('lexical_status') == 'pass')
+    review_evals = sum(1 for r in results if r['status'] == 'needs_review')
     failed_evals = sum(1 for r in results if r['status'] == 'fail')
     error_evals = sum(1 for r in results if r['status'] == 'error')
     skipped_evals = sum(1 for r in results if r['status'] == 'skipped')
     scored_count = passed_evals + failed_evals
     avg_pass_rate = (
         sum(r['pass_rate'] for r in results
-            if r['status'] in ('pass', 'fail')) / scored_count
+            if r['status'] in ('pass', 'fail', 'needs_review')) / scored_count
         if scored_count > 0 else 0.0
     )
     total_time = sum(r['execution_time_ms'] for r in results)
@@ -496,12 +517,14 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
     # 'no_data' state matters for judge mode in CI - we do not want a clean
     # green when the user simply has not pasted anything yet.
     if failed_evals == 0 and error_evals == 0:
-        overall = 'no_data' if (
-            scored_count == 0 and skipped_evals > 0) else 'pass'
+        overall = ('no_data' if scored_count == 0 else 'partial') if skipped_evals else 'pass'
+        if overall == 'pass' and review_evals:
+            overall = 'needs_review'
     else:
         overall = 'fail'
 
     return {
+        **_assessment_scope(),
         'skill': config.get('skill', '<unknown>'),
         'version': config.get('version', '<unknown>'),
         'classification': config.get('classification', '<unknown>'),
@@ -513,6 +536,7 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
             'failed': failed_evals,
             'errors': error_evals,
             'skipped': skipped_evals,
+            'needs_review': review_evals,
             'average_pass_rate': round(avg_pass_rate, 1),
             'total_execution_time_ms': round(total_time, 1),
             'overall_status': overall,
@@ -524,175 +548,158 @@ def run_all_evals(config, eval_dir, eval_name=None, verbose=False,
 
 def run_parity_test(config, eval_dir, verbose=False,
                     coverage_threshold=0.30, pass_rate_threshold=80.0):
-    """Score the skill ON vs OFF and report delta + deprecation status.
-
-    For each eval:
-      * Score evals/outputs/{name}.md            -> skill_on_pass_rate
-      * Score evals/outputs_baseline/{name}.md   -> skill_off_pass_rate
-      * delta = on - off
-
-    Evals missing either capture are marked skipped, do not break the run,
-    but do exclude themselves from the delta aggregate.
-
-    Aggregate delta is compared against eval.yaml's
-    `parity_test.threshold` (default 5.0%). The result is appended to
-    `evals/history/<UTC ISO date>.json` as JSON-lines. If the most recent
-    `parity_test.consecutive_failures_for_deprecation` runs all sit under
-    threshold, the report flags the skill as a deprecation candidate.
-    """
+    """Compare valid ON/OFF pairs, retaining absent and invalid evidence."""
+    _validate_config_shape(config)
     parity_cfg = config.get('parity_test') or {}
     threshold = float(parity_cfg.get('threshold', 5.0))
-    consec = int(
-        parity_cfg.get('consecutive_failures_for_deprecation', 3))
-
-    on_report = run_all_evals(
-        config, eval_dir, verbose=verbose,
-        coverage_threshold=coverage_threshold,
-        pass_rate_threshold=pass_rate_threshold,
-        content_source='output')
-    off_report = run_all_evals(
-        config, eval_dir, verbose=verbose,
-        coverage_threshold=coverage_threshold,
-        pass_rate_threshold=pass_rate_threshold,
-        content_source='baseline')
-
-    off_by_name = {ev['name']: ev for ev in off_report['evals']}
-    deltas = []
-    per_eval = []
-    for ev_on in on_report['evals']:
-        ev_off = off_by_name.get(ev_on['name'], {})
-        if (ev_on.get('status') == 'skipped'
-                or ev_off.get('status') == 'skipped'):
-            per_eval.append({
-                'name': ev_on['name'],
-                'status': 'skipped',
-                'reason': (ev_on.get('reason')
-                           or ev_off.get('reason')
-                           or 'missing capture on one side'),
-            })
-            continue
-        on_rate = ev_on.get('pass_rate', 0.0)
-        off_rate = ev_off.get('pass_rate', 0.0)
-        delta = on_rate - off_rate
-        deltas.append(delta)
-        per_eval.append({
-            'name': ev_on['name'],
-            'status': 'scored',
-            'skill_on_pass_rate': on_rate,
-            'skill_off_pass_rate': off_rate,
-            'delta': round(delta, 2),
-            'meets_threshold': delta >= threshold,
-        })
-
-    avg_delta = sum(deltas) / len(deltas) if deltas else 0.0
-    threshold_met = bool(deltas) and avg_delta >= threshold
-
-    # Append to history (JSON-lines).
-    history_dir = os.path.join(eval_dir, 'history')
-    os.makedirs(history_dir, exist_ok=True)
-    history_path = os.path.join(
-        history_dir,
-        time.strftime('%Y-%m', time.gmtime()) + '.jsonl')
-    history_entry = {
-        'timestamp_utc': time.strftime(
-            '%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'avg_delta': round(avg_delta, 2),
-        'threshold': threshold,
-        'threshold_met': threshold_met,
-        'scored_evals': len(deltas),
-        'skipped_evals': len(per_eval) - len(deltas),
-        'per_eval': per_eval,
+    consec = parity_cfg.get('consecutive_failures_for_deprecation', 3)
+    reports = [run_all_evals(config, eval_dir, verbose=verbose,
+                             coverage_threshold=coverage_threshold,
+                             pass_rate_threshold=pass_rate_threshold, content_source=source)
+               for source in ('output', 'baseline')]
+    deltas, per_eval, captures, fixtures = [], [], [], []
+    for on, off in zip(reports[0]['evals'], reports[1]['evals']):
+        item = {'name': on['name']}
+        if 'error' in (on['status'], off['status']):
+            item.update(status='error', errors=on.get('errors', []) + off.get('errors', []))
+        elif 'skipped' in (on['status'], off['status']):
+            item.update(status='skipped', reason=on.get('reason') or off.get('reason'))
+        elif (on['prompt_sha256'], on['fixture_sha256']) != (off['prompt_sha256'], off['fixture_sha256']):
+            item.update(status='error', errors=['Fixtures changed between ON and OFF scoring'])
+        else:
+            delta = on['pass_rate'] - off['pass_rate']
+            deltas.append(delta)
+            item.update(status='scored', skill_on_pass_rate=on['pass_rate'],
+                        skill_off_pass_rate=off['pass_rate'], delta=round(delta, 2),
+                        meets_threshold=delta >= threshold)
+            captures.append([on['name'], on['content_sha256'], off['content_sha256']])
+            fixtures.append([on['name'], on['prompt_sha256'], on['fixture_sha256']])
+        per_eval.append(item)
+    errors = sum(item['status'] == 'error' for item in per_eval)
+    skipped = sum(item['status'] == 'skipped' for item in per_eval)
+    data_status = ('error' if errors else 'no_data' if not deltas
+                   else 'partial' if skipped else 'complete')
+    average = sum(deltas) / len(deltas) if deltas else None
+    threshold_met = average is not None and average >= threshold
+    manifest = {key: value for key, value in config.items() if not key.startswith('_')}
+    # Do not incorporate cached paths from older callers into the experiment ID.
+    manifest['evals'] = [{key: value for key, value in entry.items() if not key.startswith('_')}
+                         for entry in config['evals']]
+    scope = _digest(json.dumps([__version__, manifest, fixtures, coverage_threshold,
+                               pass_rate_threshold], sort_keys=True, allow_nan=False))
+    capture_id = _digest(json.dumps(captures, sort_keys=True)) if deltas else None
+    record = {
+        **_assessment_scope(),
+        'history_schema': 2, 'timestamp_utc': datetime.now(timezone.utc).isoformat(),
+        'scope_sha256': scope, 'capture_sha256': capture_id, 'data_status': data_status,
+        'avg_delta': round(average, 2) if average is not None else None,
+        'threshold': threshold, 'threshold_met': threshold_met,
+        'scored_evals': len(deltas), 'skipped_evals': skipped, 'error_evals': errors,
+        'total_evals': len(per_eval), 'per_eval': per_eval,
     }
+    history_path = None
+    history_error = None
+    deprecation = False
     try:
-        with open(history_path, 'a', encoding='utf-8') as fh:
-            fh.write(json.dumps(history_entry) + '\n')
-    except OSError:
-        pass  # history is best-effort, do not crash the run
+        history_dir = _resolve_within(eval_dir, 'history')
+        if history_dir is None:
+            raise ValueError('History directory escapes eval directory')
+        os.makedirs(history_dir, exist_ok=True)
+        history_path = _resolve_within(history_dir, time.strftime('%Y-%m', time.gmtime()) + '.jsonl')
+        if history_path is None:
+            raise ValueError('History file escapes history directory')
+        # O_NONBLOCK avoids hanging on an accidentally supplied FIFO.
+        fd = os.open(history_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NONBLOCK', 0), 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError('History destination is not a regular file')
+            handle.write(json.dumps(record, allow_nan=False) + '\n')
+        if data_status == 'complete':
+            deprecation = _check_deprecation_streak(history_dir, threshold, consec, scope)
+    except (OSError, UnicodeError, ValueError) as exc:
+        history_error = str(exc)
+    result = {**record, 'skill': config.get('skill', '<unknown>'),
+              'version': config.get('version', '<unknown>'), 'mode': 'parity',
+              'consecutive_failures_for_deprecation': consec,
+              'deprecation_candidate': deprecation, 'history_file': history_path}
+    if history_error:
+        result['history_error'] = history_error
+    return result
 
-    deprecation_candidate = _check_deprecation_streak(
-        history_dir, threshold, consec)
 
-    return {
-        'skill': config.get('skill', '<unknown>'),
-        'version': config.get('version', '<unknown>'),
-        'mode': 'parity',
-        'threshold': threshold,
-        'consecutive_failures_for_deprecation': consec,
-        'avg_delta': round(avg_delta, 2),
-        'threshold_met': threshold_met,
-        'deprecation_candidate': deprecation_candidate,
-        'scored_evals': len(deltas),
-        'skipped_evals': len(per_eval) - len(deltas),
-        'per_eval': per_eval,
-        'history_file': history_path,
-    }
-
-
-def _check_deprecation_streak(history_dir, threshold, consec_required):
-    """Return True if the most recent `consec_required` history entries all
-    failed to meet `threshold`. Returns False if not enough history exists
-    yet (need at least `consec_required` runs to declare deprecation).
-    """
-    if consec_required <= 0:
+def _check_deprecation_streak(history_dir, threshold, consec_required, scope=None):
+    """Require complete, distinct, same-scope captures. Legacy rows are not evidence."""
+    if scope is None or type(consec_required) is not int or consec_required <= 0:
         return False
     try:
-        files = sorted(
-            (f for f in os.listdir(history_dir) if f.endswith('.jsonl')),
-            reverse=True)
-    except OSError:
+        entries = []
+        for name in sorted(os.listdir(history_dir)):
+            if not name.endswith('.jsonl'):
+                continue
+            path = _resolve_within(history_dir, name)
+            if path is None:
+                return False
+            for line in _read_text(path).splitlines():
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get('history_schema') != 2 or entry.get('scope_sha256') != scope:
+                    continue
+                if entry.get('data_status') != 'complete':
+                    continue
+                if (not isinstance(entry.get('timestamp_utc'), str)
+                        or not isinstance(entry.get('capture_sha256'), str)
+                        or not re.fullmatch(r'[0-9a-f]{64}', entry['capture_sha256'])
+                        or not _finite_number(entry.get('avg_delta'))
+                        or entry.get('threshold') != threshold
+                        or type(entry.get('scored_evals')) is not int
+                        or entry['scored_evals'] <= 0
+                        or entry['scored_evals'] != entry.get('total_evals')
+                        or entry.get('skipped_evals') != 0 or entry.get('error_evals') != 0):
+                    return False
+                entries.append(entry)
+    except (OSError, UnicodeError, ValueError):
         return False
-    entries = []
-    for fname in files:
-        try:
-            with open(os.path.join(history_dir, fname),
-                      'r', encoding='utf-8') as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-        except OSError:
-            continue
-    # Sort by timestamp descending and take the most recent N.
-    entries.sort(key=lambda e: e.get('timestamp_utc', ''), reverse=True)
-    recent = entries[:consec_required]
-    if len(recent) < consec_required:
-        return False
-    return all(not e.get('threshold_met', False) for e in recent)
+    # Re-scoring old files must not move them ahead of a newer successful trial.
+    first_seen = {}
+    for entry in sorted(entries, key=lambda item: item['timestamp_utc']):
+        first_seen.setdefault(entry['capture_sha256'], entry)
+    recent = sorted(first_seen.values(), key=lambda item: item['timestamp_utc'],
+                    reverse=True)[:consec_required]
+    return len(recent) == consec_required and all(entry['avg_delta'] < threshold for entry in recent)
 
 
 def print_report(report):
     """Print a human-readable eval report."""
     print('=' * 70)
-    print(f'  Skills 2.0 Eval Report: {report["skill"]} v{report["version"]}')
+    print(f'  Lexical Eval Report: {report["skill"]} v{report["version"]}')
     print(f'  Classification: {report["classification"]}  |  '
           f'Deprecation Risk: {report["deprecation_risk"]}')
     print('=' * 70)
+    print('  Quality verdict: NOT ASSESSED; semantic review needed for quality claims.')
+    print('  Percentages measure keyword coverage, not accuracy or safety.')
     print()
 
     summary = report['summary']
     skipped = summary.get('skipped', 0)
-    scored = summary['passed'] + summary['failed']
-    # If everything was skipped (no model outputs captured yet) treat the
-    # whole run as 'no data' rather than spuriously claiming PASS.
-    if scored == 0 and skipped > 0:
-        status_icon = 'NODATA'
-    else:
-        status_icon = 'PASS' if summary['overall_status'] == 'pass' else 'FAIL'
+    status_icon = {'pass': 'PASS', 'partial': 'PARTIAL', 'no_data': 'NODATA',
+                   'needs_review': 'REVIEW'}.get(
+        summary['overall_status'], 'FAIL')
     parts = [
-        f'  Overall: [{status_icon}]',
-        f'{summary["passed"]}/{summary["total_evals"]} passed',
-        f'({summary["average_pass_rate"]}% avg)',
+        f'  Lexical checks: [{status_icon}]',
+        f'{summary["passed"]}/{summary["total_evals"]} matched',
+        f'({summary["average_pass_rate"]}% avg lexical score)',
         f'{summary["total_execution_time_ms"]:.0f}ms total',
     ]
     if skipped:
         parts.insert(2, f'skipped: {skipped}')
     print('  '.join(parts))
     source = report.get('content_source', 'expected')
-    if source != 'expected':
+    if source == 'expected':
+        print('  Content source: expected fixtures; no model was invoked.')
+    else:
         print(f'  Content source: {source} '
               f'(use --mode=structural for the fixture-only smoke check)')
     print()
@@ -704,10 +711,9 @@ def print_report(report):
             print(f'         {reason}')
             print()
             continue
-        icon = 'PASS' if ev['status'] == 'pass' else (
-            'FAIL' if ev['status'] == 'fail' else 'ERR ')
+        icon = {'pass': 'PASS', 'fail': 'FAIL', 'needs_review': 'REVIEW'}.get(ev['status'], 'ERR ')
         print(f'  [{icon}] {ev["name"]}')
-        print(f'         Pass rate: {ev["pass_rate"]}%  '
+        print(f'         Lexical score: {ev["pass_rate"]}%  '
               f'({ev.get("passed_criteria", 0)}/{ev.get("total_criteria", 0)} criteria)  '
               f'{ev["execution_time_ms"]:.1f}ms')
 
@@ -726,9 +732,9 @@ def print_report(report):
     if report.get('parity_test') and report['parity_test'].get('enabled'):
         pt = report['parity_test']
         print('-' * 70)
-        print(f'  Parity Test: enabled (threshold: {pt["threshold"]}%)')
+        print(f'  Parity Test: enabled (threshold: {pt.get("threshold", 5.0)}%)')
         print(f'  Consecutive failures for deprecation: '
-              f'{pt["consecutive_failures_for_deprecation"]}')
+              f'{pt.get("consecutive_failures_for_deprecation", 3)}')
         print()
 
     print('=' * 70)
@@ -737,14 +743,19 @@ def print_report(report):
 def _print_parity_report(report):
     """Human-readable parity report (skill ON vs OFF)."""
     print('=' * 70)
-    print(f'  Skills 2.0 Parity Test: {report["skill"]} v{report["version"]}')
+    print(f'  Lexical Parity Test: {report["skill"]} v{report["version"]}')
     print(f'  Threshold: avg_delta >= {report["threshold"]}%  |  '
           f'Deprecation streak: {report["consecutive_failures_for_deprecation"]}')
     print('=' * 70)
+    print('  Quality verdict: NOT ASSESSED; semantic review needed for quality claims.')
+    print('  Deltas compare keyword coverage, not measured model improvement.')
     print()
     threshold_icon = 'MET' if report['threshold_met'] else 'MISS'
-    print(f'  Average delta:        {report["avg_delta"]:+.2f}%  '
-          f'[{threshold_icon}]')
+    delta_text = f'{report["avg_delta"]:+.2f}%' if report['avg_delta'] is not None else 'NODATA'
+    print(f'  Average delta:        {delta_text}  [{threshold_icon}]')
+    print(f'  Data status:          {report.get("data_status", "complete")}')
+    if report.get('history_error'):
+        print(f'  History ERROR:        {report["history_error"]}')
     print(f'  Scored evals:         {report["scored_evals"]}  '
           f'(skipped: {report["skipped_evals"]})')
     if report['deprecation_candidate']:
@@ -757,6 +768,8 @@ def _print_parity_report(report):
     for ev in report['per_eval']:
         if ev['status'] == 'skipped':
             print(f'  [SKIP] {ev["name"]:40s}  {ev["reason"]}')
+        elif ev['status'] == 'error':
+            print(f'  [ERR] {ev["name"]}: {ev.get("errors", [])}')
         else:
             icon = '+' if ev['meets_threshold'] else '-'
             print(f'  [{icon}]    {ev["name"]:40s}  '
@@ -768,7 +781,7 @@ def _print_parity_report(report):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Skills 2.0 Eval Runner - Automated quality verification')
+        description='Skills 2.0 Eval Runner - Lexical fixture and capture checks')
     parser.add_argument(
         '--eval-dir', default=None,
         help='Directory containing eval.yaml (default: evals/ relative to skill root)')
@@ -797,15 +810,18 @@ def main():
         default=None,  # resolved to 'structural' below; None distinguishes
                        # an explicit --mode from the default for the
                        # --parity exclusivity check
-        help=('structural (default): score evals/expected fixtures - cheap '
-              'CI gate. judge: score user-pasted real model outputs under '
-              'evals/outputs/ - see docs/EVAL_WORKFLOW.md'))
+        help=('structural (default): check expected fixtures. judge: check '
+              'keyword coverage in captured outputs under evals/outputs/. '
+              'Neither mode assesses answer quality; see docs/EVAL_WORKFLOW.md'))
     parser.add_argument(
         '--parity', action='store_true', default=False,
         help=('Run parity test: score skill ON (evals/outputs/) vs OFF '
               '(evals/outputs_baseline/), append delta to evals/history/, '
               'and flag deprecation candidacy if recent runs miss threshold. '
               'Mutually exclusive with --mode.'))
+    parser.add_argument(
+        '--require-complete', action='store_true',
+        help='Fail judge/parity mode if any selected capture is missing')
     parser.add_argument(
         '--version', action='version',
         version=f'%(prog)s {__version__}')
@@ -848,8 +864,11 @@ def main():
             print(json.dumps(report, indent=2))
         else:
             _print_parity_report(report)
-        # Exit non-zero ONLY for deprecation candidacy; missing threshold
-        # on a single run is informational, not a CI failure.
+        # Missing a lexical threshold once is informational. Damaged data or
+        # history is an error; release mode also requires complete captures.
+        if (report['data_status'] == 'error' or report.get('history_error')
+                or (args.require_complete and report['data_status'] != 'complete')):
+            sys.exit(1)
         sys.exit(2 if report['deprecation_candidate'] else 0)
 
     mode = args.mode or 'structural'
@@ -867,10 +886,10 @@ def main():
         print_report(report)
 
     status = report['summary']['overall_status']
-    # 'no_data' (judge mode, nothing captured yet) is not a CI failure -
-    # exit 0 so users can wire judge mode into CI without it failing until
-    # outputs are populated. Only an explicit fail/error returns non-zero.
-    sys.exit(1 if status == 'fail' else 0)
+    # Exploratory missing data stays distinct from PASS. Release checks must
+    # request complete captures explicitly; invalid data always fails.
+    incomplete = report['summary']['skipped'] > 0
+    sys.exit(1 if status == 'fail' or (args.require_complete and incomplete) else 0)
 
 
 if __name__ == '__main__':

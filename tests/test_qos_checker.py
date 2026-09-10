@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -232,14 +233,14 @@ class TestPresets:
         assert pub.lifespan_ms == 1000
 
     def test_command_preset_has_deadline_and_lifespan(self):
-        """Command preset must match SKILL.md Principle 6 Command velocity row.
+        """Command preset must match engineering-principles.md Principle 6.
 
-        SKILL.md declares deadline=100ms and lifespan=200ms for command topics
-        (stale-command protection). The preset previously omitted both, so
-        Claude reading SKILL.md and Claude running `qos_checker.py --preset
-        command` produced different QoS recommendations for the same task.
-        Both pub and sub use the same values: DDS RxO requires offered<=requested
-        for deadline and the symmetric pair keeps the preset self-compatible.
+        The Command velocity row declares deadline=100ms and lifespan=200ms for
+        command topics (stale-command protection). The preset previously omitted
+        both, so the written reference and `qos_checker.py --preset command`
+        produced different QoS recommendations for the same task. Both pub and
+        sub use the same values: DDS RxO requires offered<=requested for deadline
+        and the symmetric pair keeps the preset self-compatible.
         """
         pub = PRESETS["command"]["pub"]
         sub = PRESETS["command"]["sub"]
@@ -274,12 +275,10 @@ class TestPresets:
         deadline_match = re.search(r'(\d+)\s*ms', deadline_cell)
         lifespan_match = re.search(r'(\d+)\s*ms', lifespan_cell)
         assert deadline_match is not None, (
-            f'SKILL.md Command velocity deadline cell unparseable: '
-            f'{deadline_cell!r}'
+            f'Command velocity deadline cell unparseable: {deadline_cell!r}'
         )
         assert lifespan_match is not None, (
-            f'SKILL.md Command velocity lifespan cell unparseable: '
-            f'{lifespan_cell!r}'
+            f'Command velocity lifespan cell unparseable: {lifespan_cell!r}'
         )
         skill_deadline = int(deadline_match.group(1))
         skill_lifespan = int(lifespan_match.group(1))
@@ -341,6 +340,20 @@ class TestCLI:
     def test_no_args_shows_help(self):
         result = run_script()
         assert result.returncode != 0
+
+    def test_multiline_help_example_can_be_copied_and_run(self):
+        help_text = run_script('--help').stdout
+        example = help_text.split('Examples:\n', 1)[1].split('\n\n', 1)[0]
+        lines = example.splitlines()[-2:]
+        assert lines[0].endswith('\\')
+        assert lines[1].lstrip().startswith('--sub ')
+        argv = shlex.split('\n'.join(lines).replace('\\\n', ''))
+        result = run_script(*argv[1:])
+        assert result.returncode == 1
+        report = json.loads(result.stdout)
+        assert report['compatible'] is False
+        assert report['publisher']['deadline_ms'] == 100.0
+        assert report['subscriber']['deadline_ms'] == 50.0
 
     def test_preset_rejects_pub_sub(self):
         # --preset must not silently discard user-supplied profiles

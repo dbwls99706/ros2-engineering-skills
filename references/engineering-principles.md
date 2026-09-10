@@ -21,8 +21,8 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 > `NEXT_REVIEW` comments above.
 
 Detect the distro before generating code — do not ask first, and do not
-assume the newest release. Work down this ladder and stop at the first
-answer:
+assume the newest release. Compare the applicable evidence below before selecting
+a target; a sourced shell alone does not establish the workspace's intended distro:
 
 1. **Active shell:** `echo $ROS_DISTRO` — the distro currently sourced.
    `ls /opt/ros/` is *inventory evidence* (what is installed), never an
@@ -141,10 +141,13 @@ Start from these profiles and adjust per use case:
 These rows are **starting points, not verdicts**. The sensor row matches
 `rmw_qos_profile_sensor_data` (BEST_EFFORT, depth 5), which fits a
 high-rate stream whose consumer only wants the newest sample — but depth
-follows the consumer's tolerance for staleness and its processing time,
-and a sensor whose loss the system cannot detect (a safety-relevant scan,
-a one-shot calibration) belongs on RELIABLE. Decide per data path, then
-record why.
+follows the consumer's tolerance for staleness and its processing time.
+For safety-relevant or one-shot data, assess delivery, loss detection and freshness
+together; RELIABLE may be needed, but cannot make an undetectable failure safe.
+Decide per data path, then record why. For a permit stream, KEEP_LAST(1) can replace
+an unread revocation with a later positive value even with RELIABLE. Keep revocation
+latched at its source until the current stop generation is acknowledged and reset
+is authorized (`references/safety-estop.md` sections 2 and 5).
 
 QoS mismatch is one common cause of "I published but nobody receives."
 Inspect the actual endpoints with `ros2 topic info <topic> -v` before
@@ -152,10 +155,11 @@ changing either side. Matching QoS is necessary for communication, but
 compatibility alone does not prove that the delivered data is timely,
 semantically valid, or safe to act on (Principle 13).
 
-**DEADLINE and LIFESPAN** are critical for safety-critical systems. DEADLINE fires an
-event when no message arrives within the specified period (detect stale data). LIFESPAN
-discards messages older than the specified duration before delivery (prevent acting on
-stale data). See `references/communication.md` section 9 for full API and examples.
+**DEADLINE and LIFESPAN** assist detection and retention control. A missed deadline
+is an event, not execution of a stop, and expiry in DDS does not validate application
+data age. The safety row's numbers are illustrative; derive accepted age and the
+whole stopping budget, and keep a steady-clock application watchdog and independent
+downstream stop. See `references/communication.md` section 9 for the APIs.
 
 ### 7. Naming conventions
 
@@ -276,24 +280,9 @@ measured hardware response (`references/safety-estop.md` section 3).
 
 ### 13. Verification levels
 
-Say which level a result came from, every time. Each level answers a
-different question, and a claim never inherits the confidence of a level
-it did not reach.
-
-| Level | What ran | What it proves |
-|---|---|---|
-| L0 | Static review | The code/config reads correctly; nothing was executed |
-| L1 | Unit tests | Isolated logic, no ROS graph, no real time |
-| L2 | Build + launch smoke | It compiles, nodes start, plugins/params load |
-| L3 | Runtime, robot disconnected | Graph, QoS, TF and rates on sim or mock hardware |
-| L4 | Hardware powered, no actuation | Real provenance, params, TF and driver state — motors disabled/isolated |
-| L5 | Bench motion / fault injection | Commanded motion and failsafes on a restrained platform, operator present |
-| L6 | Supervised field operation | The behavior in its real duty cycle |
-
-Never write an L0–L2 result in L4+ language. "Tests pass" and "safe to
-drive" may not share a sentence. When a level was skipped, say which one
-and why. Level definitions and required evidence: `references/testing.md`
-section 11.
+Use [Testing §11](testing.md#11-verification-levels) as the canonical L0–L6
+ladder, including the evidence and preconditions for each level. A software
+result does not establish hardware readiness.
 
 ## Common anti-patterns
 

@@ -1,6 +1,6 @@
 interface:
   display_name: "ROS 2 Engineering"
   short_description: "Evidence-first ROS 2 development and debugging"
-  default_prompt: "Use $ros2-engineering-skills to inspect the target ROS 2 environment, load the relevant reference, and state the verification level of each result."
+  default_prompt: "Use $ros2-engineering-skills for this ROS 2 task. Load only needed references, validate the affected behavior, and report evidence and limits within the requested scope."
 policy:
   allow_implicit_invocation: true

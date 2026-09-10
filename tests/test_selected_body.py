@@ -29,16 +29,14 @@ def test_large_tables_are_not_eagerly_loaded():
     assert 'Do not preload that entire' in BODY
 
 
-def test_verification_ladder_is_identical_in_short_and_detailed_contracts():
-    def rows(text):
-        return [line for line in text.splitlines() if re.match(r'^\| L[0-6] \|', line)]
-    actual = rows(BODY)
-    assert len(actual) == 7
-    assert actual == rows(DETAILS)
-    assert 'Hardware powered, no actuation' in actual[4]
-    assert 'motors disabled/isolated' in actual[4]
-    assert 'operator present' in actual[5]
-    assert 'Never write an L0–L2 result in L4+ language' in BODY
+def test_verification_ladder_has_one_canonical_definition():
+    testing = (ROOT / 'references/testing.md').read_text(encoding='utf-8')
+    rows = [line for line in testing.splitlines() if re.match(r'^\| \*\*L[0-6]\*\*', line)]
+    assert len(rows) == 7
+    for path in ('SKILL.md', 'README.md', 'references/engineering-principles.md'):
+        text = (ROOT / path).read_text(encoding='utf-8')
+        assert 'testing.md' in text
+        assert not re.search(r'^\| (?:\*\*)?L[0-6]', text, re.MULTILINE)
 
 
 @pytest.mark.parametrize('required', [

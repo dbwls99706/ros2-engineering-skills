@@ -88,25 +88,36 @@ def _copyright_cpp(maintainer: str = "TODO") -> str:
 
 # Emitted into each lifecycle launch so installed packages are self-contained.
 # GetState is authoritative even if the VOLATILE transition-event sample was lost.
-_LIFECYCLE_ACTIVATION = """async def _activate_when_configured(context, node, activate_event, timeout=15.0):
+_LIFECYCLE_ACTIVATION = """async def _activate_when_configured(context, node, activate_event, timeout=15.0,
+                                    request_timeout=1.0):
     ros_node = get_ros_node(context)
     client = ros_node.create_client(
         lifecycle_msgs.srv.GetState, node.node_name + '/get_state')
     deadline = time.monotonic() + timeout
     requested = False
     future = None
+    request_deadline = deadline
+    read_timeouts = 0
     last_state = 'service unavailable'
     try:
         while not context.is_shutdown:
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f'Lifecycle startup timed out for {node.node_name}: {last_state}')
-            if not client.service_is_ready():
-                await asyncio.sleep(0.05)
-                continue
+                    f'Lifecycle startup timed out for {node.node_name}: {last_state}; '
+                    f'GetState timeouts: {read_timeouts}')
             if future is None:
+                if not client.service_is_ready():
+                    await asyncio.sleep(0.05)
+                    continue
                 future = client.call_async(lifecycle_msgs.srv.GetState.Request())
+                request_deadline = min(deadline, time.monotonic() + request_timeout)
             if not future.done():
+                if time.monotonic() >= request_deadline:
+                    # Retire a lost read without replaying a state-changing command.
+                    future.cancel()
+                    client.remove_pending_request(future)
+                    future = None
+                    read_timeouts += 1
                 await asyncio.sleep(0.05)
                 continue
             response = future.result()

@@ -9,9 +9,10 @@ from scripts.create_package import _LIFECYCLE_ACTIVATION
 
 
 def run_case(states=(1, 2, 2, 3), *, ready=True, pending=False, shutdown_after=None,
-             cancel_on_sleep=False):
+             cancel_on_sleep=False, pending_requests=0, request_timeout=1.0,
+             ready_until=None):
     clock = [0.0]
-    events, destroyed, futures = [], [], []
+    events, destroyed, futures, removed = [], [], [], []
     context = SimpleNamespace(is_shutdown=False, emit_event_sync=events.append)
 
     async def sleep(delay):
@@ -25,11 +26,14 @@ def run_case(states=(1, 2, 2, 3), *, ready=True, pending=False, shutdown_after=N
     class Future:
         cancelled = False
 
+        def __init__(self):
+            self.index = len(futures)
+
         def done(self):
-            return not pending
+            return not pending and self.index >= pending_requests
 
         def result(self):
-            value = states[min(len(futures) - 1, len(states) - 1)]
+            value = states[min(self.index, len(states) - 1)]
             if isinstance(value, Exception):
                 raise value
             if value is None:
@@ -41,7 +45,10 @@ def run_case(states=(1, 2, 2, 3), *, ready=True, pending=False, shutdown_after=N
 
     class Client:
         def service_is_ready(self):
-            return ready
+            return ready and (ready_until is None or clock[0] < ready_until)
+
+        def remove_pending_request(self, future):
+            removed.append(future)
 
         def call_async(self, request):
             future = Future()
@@ -70,11 +77,13 @@ def run_case(states=(1, 2, 2, 3), *, ready=True, pending=False, shutdown_after=N
     node = SimpleNamespace(node_name='/robot_2/probe')
     error = None
     try:
-        asyncio.run(namespace['_activate_when_configured'](context, node, event, timeout=0.4))
+        asyncio.run(namespace['_activate_when_configured'](
+            context, node, event, timeout=0.4, request_timeout=request_timeout))
     except Exception as exc:
         error = exc
     return SimpleNamespace(error=error, events=events, event=event, destroyed=destroyed,
-                           client=client, futures=futures, bindings=bindings)
+                           client=client, futures=futures, bindings=bindings,
+                           removed=removed, elapsed=clock[0])
 
 
 def test_observed_inactive_triggers_exactly_one_targeted_activation():
@@ -143,3 +152,39 @@ def test_normal_launch_cancellation_does_not_fail_shutdown():
 def test_unexpected_cancellation_is_not_silenced():
     with pytest.raises(asyncio.CancelledError):
         run_case(pending=True, cancel_on_sleep=True)
+
+
+def test_lost_first_state_response_is_retired_before_retry():
+    result = run_case((1, 2, 3), pending_requests=1, request_timeout=0.1)
+    assert result.error is None
+    assert result.events == [result.event]
+    assert len(result.futures) == 3
+    assert result.removed == [result.futures[0]]
+    assert result.futures[0].cancelled
+    assert result.destroyed == [result.client]
+    assert result.elapsed < 0.4
+
+
+def test_persistent_read_loss_does_not_extend_overall_startup_deadline():
+    result = run_case(pending=True, request_timeout=0.1)
+    assert isinstance(result.error, RuntimeError)
+    assert 'GetState timeouts:' in str(result.error)
+    assert 1 < len(result.futures) <= 4
+    assert all(future.cancelled for future in result.futures)
+    assert result.events == []
+    assert 0.4 <= result.elapsed <= 0.45
+
+
+def test_disappearing_service_cannot_prevent_pending_read_retirement():
+    result = run_case(pending=True, request_timeout=0.1, ready_until=0.05)
+    assert isinstance(result.error, RuntimeError)
+    assert result.removed == [result.futures[0]]
+    assert len(result.futures) == 1
+    assert result.events == []
+
+
+def test_read_retries_do_not_resend_activation():
+    result = run_case((1, 2, 2, 2), pending_requests=1, request_timeout=0.1)
+    assert isinstance(result.error, RuntimeError)
+    assert result.events == [result.event]
+    assert result.futures[0].cancelled

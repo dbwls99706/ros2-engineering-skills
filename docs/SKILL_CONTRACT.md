@@ -51,10 +51,11 @@ not a substitute for host permissions, a sandbox, or a physical safety function.
 Never automatically install dependencies, rewrite history, change a client's
 permissions, publish results, or modify the installed skill while doing a review.
 
-Every result identifies the verification performed and what remains untested.
-L0-L2 checks cannot establish powered-hardware or field behavior. Motion and
-fault injection require explicit authorization, conservative limits, an operator,
-and an independent stop path. Requesting a zero command is not measured stopping.
+For ROS behavior or hardware-readiness claims, use the
+[verification ladder](../references/testing.md#11-verification-levels).
+Physical-test authorization and execution follow
+[Evidence progression §2](../references/evidence-progression.md#2-authorization-and-readiness-are-separate);
+stop-path evidence follows [Safety §3](../references/safety-estop.md).
 
 ## Claude protocol adapter
 
@@ -79,6 +80,13 @@ the conversation. Legacy manual CLIs retain their reports and exit codes. These
 are different contracts. A unit test of the adapter is not a recorded client
 hook event, and a regex guard is not a security boundary. NotebookEdit source is
 normalized; unsupported or malformed payloads are not guessed into valid edits.
+
+Stop selects existing Git-modified/untracked candidates before validation; a
+documentation-only change needs no Python directory walk. When Git cannot identify
+the change set, one depth-limited scan collects candidates. Both paths retain
+build/vendor/hidden-directory exclusions and stay within the task workspace.
+The Git set includes pre-existing user changes and excludes already committed
+changes; it is not a record of which files the agent edited in this session.
 
 ## Evaluation and maintenance
 

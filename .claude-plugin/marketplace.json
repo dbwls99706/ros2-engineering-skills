@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "ros2-engineering",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "description": "Production-grade ROS 2 engineering guidance and validation tools",
       "author": {
         "name": "YuJin Hong",

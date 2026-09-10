@@ -22,9 +22,14 @@
 ## 1. Lifecycle node state machine
 
 Lifecycle (managed) nodes follow the ROS 2 managed node state machine defined
-in the [Managed Nodes design article](https://design.ros2.org/articles/node_lifecycle.html). Every node that owns
-resources (hardware drivers, sensor pipelines, planners, controllers) should
-be a lifecycle node.
+in the [Managed Nodes design article](https://design.ros2.org/articles/node_lifecycle.html).
+Choose lifecycle from resource ownership and supervision: it is useful when a
+manager needs explicit configuration, activation, cleanup, and recovery
+transitions. A plain node can be appropriate when an outer supervisor owns
+those obligations, for third-party nodes whose lifecycle behavior you cannot
+change, or on targets with limited lifecycle support such as rclc/micro-ROS.
+Document who owns initialization, stopping, resource release, and recovery;
+adding a lifecycle state machine also adds transition failures to manage.
 
 ```text
                      ┌───────────────┐
@@ -227,6 +232,47 @@ In rclpy, pair `create_lifecycle_publisher()` with
 `destroy_lifecycle_publisher()`. The ordinary `destroy_publisher()` removes the
 native publisher but does not unregister its managed lifecycle object. Test
 cleanup/reconfigure and active shutdown, not just the first activation.
+
+### Exception-safe cleanup for resource owners
+
+[`rclcpp::TimerBase::cancel()` can throw](https://github.com/ros2/rclcpp/blob/jazzy/rclcpp/include/rclcpp/timer.hpp).
+Calling it unguarded inside a project-defined cleanup function such as
+`halt() noexcept` (not an rclcpp API) can invoke `std::terminate` before
+a later stop transmission or transport close is attempted. One `try` block
+around the entire cleanup sequence also skips later steps after the first
+exception.
+
+1. Fence ordinary writes first at the driver's write boundary, synchronized
+   with every writer, including callbacks already in flight. A lifecycle label
+   or timer cancellation alone does not provide that fence.
+2. Isolate each fallible operation: timer cancellation, the configured
+   best-effort stop/zero transmission, and transport close each need their own
+   error boundary. Handle unsuccessful return codes as well as exceptions,
+   continue independent cleanup attempts, and attempt the stop transmission
+   before closing its transport. Keep each operation within its configured
+   deadline and make repeated cleanup safe after partial initialization.
+3. Retain cleanup failure status for the lifecycle caller or supervisor. A
+   later successful close must not erase an earlier cancellation or stop
+   failure. Do not report successful resource release when required cleanup
+   failed.
+4. Use `noexcept` only when no exception can escape, including from error
+   reporting. In a destructor or other nonthrowing path, record failure in
+   nonthrowing status storage before attempting diagnostics, and contain
+   exceptions from each cleanup attempt separately.
+
+Successful cleanup, a Finalized lifecycle state, or an accepted zero command
+does not prove that an actuator stopped. Keep the downstream command
+timeout/watchdog and independent stop path required by the ownership design;
+stop claims require remote acceptance evidence and measured response. Process
+cleanup is best effort and cannot replace those mechanisms after a crash.
+
+Inspect destructors as well as explicit cleanup calls. In the linked Jazzy
+implementation, `GenericTimer` calls `cancel()` again in its destructor. If
+cancellation keeps failing, the last shared-pointer release can terminate the
+process instead of reaching an outer `catch`. Finish required stop/close attempts
+and retain their failure status before releasing the timer; an interrupted
+lifecycle transition must not be reported as completed cleanup. Check the
+installed implementation when evaluating this failure path.
 
 ## 3. Implementing lifecycle transitions (rclpy)
 

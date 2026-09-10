@@ -502,9 +502,12 @@ class TestFaultInjectionSafetyConsistency:
         return _md_section(SAFETY_ESTOP_MD, heading)
 
     def test_isolation_check_requires_safety_conditions(self):
-        section = self._section('Verify the isolation')
+        section = _flat(self._section('Verify the isolation'))
         assert 'Test this as part of CI-on-robot' not in section
-        for needle in ('simulation/HIL', 'operator-approved', 'restrained',
+        # HIL can actuate real hardware; it is not automatically an isolated
+        # simulation. Pin the actuation boundary as well as operator safeguards.
+        for needle in ('actuation disconnected', 'HIL as physical',
+                       'operator-approved', 'restrained',
                        'unattended CI', 'AI agent'):
             assert needle in section, (
                 f'isolation-check section missing safety condition: '
@@ -656,26 +659,23 @@ class TestCiCacheInvalidation:
 
 class TestVerificationLevels:
     """"Tests pass" and "safe to drive" are different levels of evidence.
-    The ladder must stay in the always-loaded file (so it applies to every
-    report) with the detail in testing.md. Order matters as much as
-    presence: a shuffled or duplicated ladder stops being a ladder."""
+    The canonical ladder lives in testing.md; other entries route to it.
+    Order matters: a shuffled or duplicated ladder is a structural defect."""
 
     def _skill_ladder_rows(self):
-        section = _md_section(PRINCIPLES_MD, 'Verification levels')
-        return re.findall(r'^\| (L\d) \|', section, re.M)
+        section = _md_section(TESTING_MD, 'Verification levels')
+        return re.findall(r'^\| \*\*(L\d)\*\*', section, re.M)
 
-    def test_detailed_principles_ladder_is_ordered_and_unique(self):
+    def test_canonical_ladder_is_ordered_and_unique(self):
         rows = self._skill_ladder_rows()
         expected = [f'L{i}' for i in range(7)]
         assert rows == expected, (
-            f'engineering-principles.md verification ladder must be L0..L6 in order, got '
+            f'testing.md verification ladder must be L0..L6 in order, got '
             f'{rows}')
 
-    def test_detailed_principles_forbids_level_inflation(self):
+    def test_detailed_principles_routes_to_canonical_ladder(self):
         section = _md_section(PRINCIPLES_MD, 'Verification levels')
-        assert 'may not share a sentence' in section, (
-            'engineering-principles.md must forbid reporting static results as hardware '
-            'verification')
+        assert '(testing.md#11-verification-levels)' in section
 
     def test_testing_md_expands_every_level_in_order(self):
         section = _md_section(TESTING_MD, 'Verification levels')
@@ -1116,3 +1116,77 @@ class TestCyclictestProcedureSingleSource:
                 f'benchmark procedure missing element: {needle!r}')
         assert re.search(r'overflows?', section), (
             'benchmark procedure must keep the overflow rerun note')
+
+
+SECURITY_MD = os.path.join(ROOT, 'references', 'security.md')
+MESSAGE_TYPES_MD = os.path.join(ROOT, 'references', 'message-types.md')
+DEPLOYMENT_MD = os.path.join(ROOT, 'references', 'deployment.md')
+
+
+class TestSros2ParticipantAndRotationFacts:
+    """Pin source-reviewed SROS2 facts without treating prose as runtime proof."""
+
+    def test_security_identity_is_participant_context_scoped(self):
+        content = _flat(_read(SECURITY_MD))
+        for needle in ('DomainParticipant', 'ROS context',
+                       'does not have to equal a node name'):
+            assert needle in content
+        for stale in ('Mutual TLS authentication',
+                      'each node gets its own enclave',
+                      'defeats access control'):
+            assert stale not in content
+
+    def test_permissive_is_not_an_authorization_test_recipe(self):
+        for path in (SECURITY_MD, DEPLOYMENT_MD):
+            content = _read(path)
+            assert 'export ROS_SECURITY_STRATEGY=Permissive' not in content
+            assert 'access-control test' in content or (
+                'cannot validate that an access-control denial works' in content)
+
+    def test_rotation_reissues_only_in_staging(self):
+        section = _md_section(SECURITY_MD, 'Certificate rotation at fleet scale')
+        remove = 'rm -f -- "$staged/cert.pem" "$staged/key.pem"'
+        create = 'ros2 security create_enclave "$STAGING" "$enclave"'
+        assert remove in section and create in section
+        assert section.index(remove) < section.index(create)
+        assert 'create_enclave "$KEYSTORE" "$enclave"' not in section
+        for evidence in ('old_serial', 'new_serial', 'old_end', 'new_end',
+                         'openssl verify'):
+            assert evidence in section
+
+    def test_certificate_lifetime_and_signing_key_match_upstream(self):
+        content = _read(SECURITY_MD)
+        assert '3,650-day' in content
+        assert '~2000-day' not in content
+        signing = _md_section(SECURITY_MD, 'Signing and validating policy files')
+        assert 'private/permissions_ca.key.pem' in signing
+        assert 'private/ca.key.pem' not in signing
+
+
+class TestMessageDefinitionFacts:
+    """Pin corrected message semantics whose examples can corrupt sensor use."""
+
+    def test_foxy_quaternion_uses_identity_default(self):
+        section = _md_section(MESSAGE_TYPES_MD,
+                              '`geometry_msgs/msg/Quaternion`')
+        assert 'Foxy and current ROS 2' in section
+        assert 'Foxy (EOL)' not in section
+        assert 'Changed to 1.0 in Galactic+' not in section
+
+    def test_image_stride_includes_padding(self):
+        section = _md_section(MESSAGE_TYPES_MD, '`sensor_msgs/msg/Image`')
+        assert 'full row length in bytes, including any padding' in _flat(section)
+        assert 'Must equal `width × bytes_per_pixel`' not in section
+        assert '`step × height` bytes' in section
+
+    def test_camera_projection_is_not_unconditionally_k(self):
+        content = _read(MESSAGE_TYPES_MD)
+        assert 'Normally `R` is identity' in content
+        assert 'may make' in content and 'differ from `K`' in content
+
+    def test_depth_units_are_scoped_to_rep_118(self):
+        section = _md_section(MESSAGE_TYPES_MD,
+                              'Depth image unit exception')
+        assert 'REP-118 depth-image stream' in section
+        assert 'encoding strings alone do not assign physical units' in (
+            _flat(section))

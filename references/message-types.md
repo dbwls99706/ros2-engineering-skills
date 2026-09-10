@@ -143,11 +143,13 @@ float32[] intensities     # intensity data (optional, device-specific)
   X-axis points forward.
 - **Angle convention:** `angle_min` and `angle_max` are in radians.
   Zero is directly forward (positive X-axis). Counter-clockwise is positive.
-- **Invalid data:** If a laser ray doesn't hit anything, its range should be
-  `Infinity` (or a value outside `[range_min, range_max]`).
+- **Special values (REP-117):** Use `+Infinity` for no return within the useful
+  range, `-Infinity` for a detection too close to quantify, and `NaN` for an
+  erroneous measurement. Finite values outside `[range_min, range_max]` are
+  discarded but do not carry those special meanings.
   **Do NOT use `0.0` for no return** — that looks like an obstacle at zero distance.
-- **NaN:** A range of `NaN` means the measurement is invalid/erroneous.
-  Distinct from `Infinity` (valid measurement, nothing in range).
+
+Source: [REP-117 informational distance measurements](https://github.com/ros-infrastructure/rep/blob/master/rep-0117.rst).
 
 ### `sensor_msgs/msg/Image`
 
@@ -165,10 +167,14 @@ uint8[] data              # actual pixel data
   - Standard robotics frame (`camera_link`): X-forward, Y-left, Z-up
   - Optical frame (`camera_optical_frame`): X-right, Y-down, Z-forward (into scene)
   - The rotation between them is `rpy="-π/2 0 -π/2"` in the URDF joint.
-- **Encoding:** Use standard strings: `"rgb8"`, `"bgr8"`, `"mono8"`,
-  `"16UC1"` (depth in mm), `"32FC1"` (depth in meters).
-- **`step`:** Must equal `width × bytes_per_pixel` (e.g., `width × 3` for `rgb8`).
-  Some producers pad rows; consumers must use `step`, not `width × bpp`.
+- **Encoding:** Use standard strings such as `"rgb8"`, `"bgr8"`, `"mono8"`,
+  `"16UC1"`, or `"32FC1"`. The encoding defines channel type and layout; a
+  depth-image contract supplies the physical unit.
+- **`step`:** The full row length in bytes, including any padding. A tightly
+  packed `rgb8` image uses `width × 3`, but publishers may use a larger stride.
+  Consumers must advance by `step`, and `data` must contain `step × height` bytes.
+
+Source: [Humble Image definition](https://github.com/ros2/common_interfaces/blob/humble/sensor_msgs/msg/Image.msg).
 
 ### `sensor_msgs/msg/JointState`
 
@@ -230,22 +236,21 @@ geometry_msgs/TwistWithCovariance twist
 float64 x 0
 float64 y 0
 float64 z 0
-float64 w 1   # Changed to 1.0 in Galactic+ (Humble, Jazzy, Kilted, Rolling)
+float64 w 1   # Identity default in Foxy and current ROS 2 definitions
 ```
 
 - **Must always be normalized:** `x² + y² + z² + w² = 1`
-- **Humble+ default is `(0,0,0,1)` (identity)** — safe to use directly.
-  In Foxy (EOL), the default was `(0,0,0,0)` which crashed tf2.
+- **Foxy and current ROS 2 definitions default to `(0,0,0,1)` (identity).**
 - **Still explicitly initialize `w = 1.0`** when constructing quaternions in
-  code that may run on mixed distros or when clarity matters.
+  manually populated or externally supplied data paths, and reject a zero norm.
 
 ```cpp
-// Humble+: default-constructed Quaternion is (0,0,0,1) — valid identity
+// Foxy and current ROS 2: default construction gives the identity
 geometry_msgs::msg::Quaternion q;  // q.w is already 1.0
 
 // Still recommended: explicit initialization for clarity
 geometry_msgs::msg::Quaternion q;
-q.w = 1.0;  // redundant on Humble+ but clear and safe
+q.w = 1.0;  // redundant for the message default but clear and safe
 
 // GOOD — from yaw angle
 tf2::Quaternion tf_q;
@@ -443,9 +448,12 @@ P = [fx'  0  cx' Tx]
     [ 0   0   1   0]
 ```
 
-- For monocular cameras: `Tx = 0`, `Ty = 0`, and `fx' = fx`, `fy' = fy`,
-  `cx' = cx`, `cy' = cy` after rectification.
+- For monocular cameras: `Tx = 0` and `Ty = 0`. Normally `R` is identity and
+  the left 3×3 portion of `P` equals `K`, but processed-image scaling or
+  rectification may make `fx'`, `fy'`, `cx'`, and `cy'` differ from `K`.
 - For stereo cameras: `Tx = -fx' * baseline` (left-right baseline in meters).
+
+Source: [Humble CameraInfo definition](https://github.com/ros2/common_interfaces/blob/humble/sensor_msgs/msg/CameraInfo.msg).
 
 **R (Rectification matrix, 3×3):**
 
@@ -604,25 +612,32 @@ Diagonal (variances): indices 0, 4, 8
 
 ### Covariance rules
 
-- **Never use exact `0.0` on the diagonal.** This tells EKF/SLAM nodes the
-  measurement has zero uncertainty (infinite confidence), which causes
-  matrix inversion errors and filter divergence.
-  Use very small values instead: `1e-6`.
-- **Unknown covariance:** Set the entire matrix to zeros and document that
-  covariance is unknown. Some nodes treat all-zeros as "use default covariance."
-- **IMU "data unavailable" signal:** Set `covariance[0] = -1.0` to indicate
-  the sensor does not provide this measurement (see section 3).
+- **Known uncertainty:** Use measured or specified variances in the correct
+  units (for example, m² and rad²). Do not replace unknown uncertainty with an
+  arbitrary small positive number: that can give unreliable data excessive weight.
+- **IMU covariance unknown:** In `sensor_msgs/msg/Imu`, an all-zero matrix means
+  the measurement's covariance is unknown. The consumer must obtain or assume a
+  covariance before using that measurement; it does not mean perfect accuracy.
+- **IMU measurement unavailable:** Set the associated `covariance[0]` to `-1.0`
+  when that measurement is not provided. The consumer should disregard it.
+- **Other messages and filters:** `PoseWithCovariance` does not define the IMU
+  sentinel conventions. Check the installed consumer's handling of zero or
+  singular covariance. A zero variance may express an exact constraint or require
+  special handling; neither a crash nor a default substitution is universal.
 
 ```python
-# BAD — zero variance causes EKF to explode
-msg.pose.covariance[0] = 0.0   # "I know x with infinite precision"
+# Measurement exists, but its covariance is unknown (IMU convention only).
+msg.orientation_covariance = [0.0] * 9
 
-# GOOD — small but nonzero
-msg.pose.covariance[0] = 1e-6  # Very confident but numerically stable
+# No orientation estimate is provided by this IMU.
+msg.orientation_covariance[0] = -1.0
 
-# GOOD — realistic uncertainty from sensor specs
-msg.pose.covariance[0] = 0.01  # 0.1m standard deviation → 0.01 variance
+# Separate pose-message example: a measured 0.1 m standard deviation.
+pose_msg.pose.covariance[0] = 0.1 ** 2
 ```
+
+Sources: [Humble Imu definition](https://github.com/ros2/common_interfaces/blob/humble/sensor_msgs/msg/Imu.msg)
+and [Humble PoseWithCovariance definition](https://github.com/ros2/common_interfaces/blob/humble/geometry_msgs/msg/PoseWithCovariance.msg).
 
 ## 12. Standard units (REP-103)
 
@@ -646,15 +661,18 @@ in message payloads.**
 
 ### Depth image unit exception
 
-`sensor_msgs/msg/Image` with encoding `16UC1` stores depth in **millimeters**
-(uint16, range 0–65535 mm). This is a historical convention from RGB-D sensors
-and is the one major exception to the meters rule. Encoding `32FC1` stores
-depth in **meters** (float32).
+For a **REP-118 depth-image stream**, the canonical `32FC1` representation stores
+depth in meters. The optional OpenNI raw representation uses a 16-bit unsigned
+single-channel image in millimeters, conventionally `16UC1`, with zero meaning
+invalid depth. The encoding strings alone do not assign physical units to a
+generic `sensor_msgs/msg/Image`; the topic contract must identify it as depth.
 
 | Encoding | Type | Unit | Max range |
 |---|---|---|---|
-| `16UC1` | uint16 | millimeters | 65.535 m |
-| `32FC1` | float32 | meters | ~3.4 × 10³⁸ m |
+| `16UC1` REP-118 raw depth | uint16 | millimeters | 65.535 m; zero is invalid |
+| `32FC1` REP-118 canonical depth | float32 | meters | `NaN`/`±Inf` follow REP-117 |
+
+Source: [REP-118 depth images](https://github.com/ros-infrastructure/rep/blob/master/rep-0118.rst).
 
 ### Quaternion normalization
 
@@ -662,23 +680,48 @@ Quaternions (`geometry_msgs/msg/Quaternion`) must always satisfy:
 
 $$x^2 + y^2 + z^2 + w^2 = 1$$
 
-- **Default `(0,0,0,0)` is INVALID** — crashes tf2.
-- **Identity (no rotation) is `(0,0,0,1)`** — always initialize `w = 1.0`.
-- Use `tf2::Quaternion::normalize()` (C++) or
-  `tf_transformations.quaternion_multiply` (Python) to ensure normalization
-  after manual construction.
+- **`(0,0,0,0)` is invalid:** reject it; normalization cannot recover an orientation.
+- **Identity (no rotation) is `(0,0,0,1)`.** The Humble message definition defaults
+  to this value; explicitly initialize it when constructing an identity rotation.
+- In C++, use `tf2::Quaternion::normalize()` only after checking that the
+  components and norm are finite and the norm is nonzero. In Python, reject
+  nonfinite or zero input and scale before computing the norm:
+
+```python
+import math
+
+
+def normalize_xyzw(values):
+    x, y, z, w = (float(value) for value in values)
+    components = (x, y, z, w)
+    scale = max(abs(value) for value in components)
+    if not all(math.isfinite(value) for value in components) or scale == 0.0:
+        raise ValueError("Quaternion must have finite components and be nonzero")
+    # Scale first so extreme finite magnitudes cannot overflow or underflow.
+    scaled = tuple(value / scale for value in components)
+    norm = math.hypot(*scaled)
+    return tuple(value / norm for value in scaled)
+```
+
+`tf_transformations.quaternion_multiply` composes quaternions; it does not
+normalize them. Multiplying `(0,0,0,2)` by the identity still has norm 2.
+Normalization fixes magnitude, not an incorrect frame, rotation order, or sensor
+calibration.
+
+Sources: [Humble Quaternion definition](https://github.com/ros2/common_interfaces/blob/humble/geometry_msgs/msg/Quaternion.msg)
+and [tf_transformations implementation](https://github.com/DLu/tf_transformations/blob/main/tf_transformations/__init__.py).
 
 ## 13. Common failures and anti-patterns
 
 | Anti-pattern | Why it fails | Fix |
 |---|---|---|
 | Using `0.0` for missing LiDAR data | Looks like an obstacle at zero distance | Use `Infinity` or `NaN` (or value outside `[range_min, range_max]`) |
-| Leaving Quaternion uninitialized (Foxy) | Crashes tf2 ("Quaternion has length close to zero") | Humble+ defaults to `w=1.0`; still explicit-init for safety |
+| Passing a zero or nonfinite Quaternion | Invalid orientation; the consumer may reject the transform | Reject invalid values; use `(0,0,0,1)` for an intended identity |
 | Image published in `camera_link` | Point clouds and detections rotated 90° | Publish in `camera_optical_frame` |
-| Setting IMU covariance to all `0.0` when no data | EKF treats it as "perfectly accurate" → filter diverges | Set `covariance[0] = -1.0` to signal "data unavailable" |
+| Using all-zero IMU covariance for a missing measurement | Signals unknown uncertainty for an existing measurement, not missing data | Set `covariance[0] = -1.0` for the unavailable measurement |
 | Using `time.time()` for `header.stamp` | Fails during rosbag playback or Gazebo simulation | Use `node.get_clock().now()` (C++) or `.to_msg()` (Python) |
 | Assuming JointState index order | Different publishers may order joints differently | Look up joint by `name`, never assume position by index |
-| Zero diagonal in covariance matrix | Matrix inversion fails in EKF/SLAM → NaN propagation | Use `1e-6` minimum on diagonal |
+| Replacing unknown covariance with an arbitrary `1e-6` | Implies unjustified confidence and can overweight the measurement | Use measured uncertainty or the message and consumer's explicit unknown-data handling |
 | Manually iterating PointCloud2 `data[]` | Byte offset errors, endianness bugs | Use `pcl::fromROSMsg()` or `PointCloud2Iterator` |
 | Not publishing CameraInfo with Image | 3D perception nodes silently fail | Always pair Image + CameraInfo on synchronized topics |
 | Putting images in action feedback | Feedback published at high rate → bandwidth explosion | Use topics for streaming data, feedback for progress status only |

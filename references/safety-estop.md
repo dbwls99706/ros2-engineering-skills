@@ -1,11 +1,11 @@
 # Safety and E-Stop Systems
 
-> **Distro stability:** every pattern in this guide (QoS events, twist_mux, SROS2
-> permissions) works identically on Humble, Jazzy, Kilted, and Rolling. Distro-sensitive
-> details are tagged inline.
+> **Version scope:** the safety invariants are portable; QoS-event support, mux
+> options and security configuration depend on the installed ROS, RMW and package
+> versions. Verify those interfaces before applying an example.
 
 This guide covers designing the stop path of a robot: hardware vs software e-stop,
-heartbeat-based e-stop topics with enforcing QoS, command arbitration so a stop always
+heartbeat-based permits with watchdogs, command arbitration so a stop decision
 wins, SROS2 isolation so only the safety node can command (or clear) a stop, and reset
 semantics. SROS2 keystore/enclave mechanics live in `references/security.md` §2 and §5 —
 this file covers the *safety architecture* built on top of them.
@@ -26,28 +26,20 @@ this file covers the *safety architecture* built on top of them.
 
 ### Software e-stop is NOT safety-rated
 
-State this in every design review: a ROS 2 e-stop runs on a non-real-time OS, over a
-best-effort network, through software with no certified failure analysis. Standards for
-machine safety (ISO 13849 performance levels, IEC 62061 SIL) require a hardware safety
-chain — physically-wired e-stop buttons, safety relays or a safety PLC, and motor
-drivers whose STO (Safe Torque Off) input cuts torque independently of the compute.
+An ordinary ROS 2 stop node does not establish a machine safety rating. Keep an
+independent safety chain with suitable e-stop devices, relays or a safety PLC,
+and the drive's required stopping functions. Select and validate that chain from
+the machine risk assessment and applicable requirements. STO removes drive torque;
+it does not by itself establish braking, standstill or load holding. A safety PLC
+may use certified software; the requirement is independence from the ordinary
+ROS compute and network path, not absence of all software.
 
 The two layers have different jobs:
 
-```text
-┌────────────────────────────────────────────────────────────┐
-│ HARDWARE SAFETY CHAIN (safety-rated, no software involved) │
-│  e-stop buttons ─► safety relay ─► motor driver STO        │
-│  Stops the robot even if every computer is frozen.         │
-└────────────────────────────────────────────────────────────┘
-┌────────────────────────────────────────────────────────────┐
-│ SOFTWARE E-STOP (ROS 2 — protective stop, not a substitute)│
-│  /e_stop heartbeat ─► arbitration mux ─► zero commands     │
-│  Faster, remote-triggerable, recoverable without a         │
-│  power cycle; catches faults the hardware chain cannot     │
-│  see (bad plan, runaway node, geofence breach).            │
-└────────────────────────────────────────────────────────────┘
-```
+| Layer | Path | Responsibility |
+|---|---|---|
+| Independent safety chain | E-stop devices → safety relay/PLC → required drive stop and holding functions | Machine-validated stopping independent of the ROS compute and network path |
+| Software stop | Supervisor permit → final command gate → driver stop, with downstream watchdogs | Inhibit motion for application faults such as a bad plan or geofence breach; report the observed outcome |
 
 Design both, and make the software layer *report* the hardware layer's state (the
 safety PLC's status output wired to a GPIO/fieldbus input) so operators see one
@@ -66,17 +58,30 @@ if msg.emergency_stop:
     self.stop_motors()
 
 # GOOD — fail-safe: motion is *enabled* by a fresh heartbeat, stop is the default
-# (implemented with QoS DEADLINE below — no hand-rolled timeout bookkeeping)
+# QoS events assist detection; an application watchdog and downstream stop are still required.
 ```
 
 ## 2. E-stop topic design
 
-### Heartbeat with enforcing QoS
+### Heartbeat with QoS detection and application watchdogs
 
-Use the safety-heartbeat QoS profile from `SKILL.md` Principle 6: RELIABLE, VOLATILE,
-KEEP_LAST/1, DEADLINE 500 ms, LIFESPAN 1 s. DEADLINE turns "the heartbeat stopped"
-into a middleware event; LIFESPAN prevents a stale queued message from being read as
-a fresh permit after a hiccup.
+The RELIABLE, VOLATILE, KEEP_LAST/1 profile in
+`references/engineering-principles.md` Principle 6 is an illustrative starting
+point. Derive heartbeat period, deadline, lifespan and accepted sample age from
+the verified end-to-end stop budget. The example's 500 ms deadline and 1 s lifespan
+are not validated machine limits. DEADLINE reports a missed update; LIFESPAN limits
+DDS sample retention. Neither guarantees that a callback runs on time or that a
+delivered permit is fresh enough for the application.
+
+**A revocation must persist at its source.** RELIABLE with KEEP_LAST(1) does not
+preserve every intermediate value: `false` followed by `true` can leave only `true`
+when the gate next takes a sample. Latch revocation in the supervisor and continue
+publishing revoked state until the gate acknowledges the corresponding stop
+generation and the supervisor accepts explicit rearm authorization. This precedes
+the separate gate reset in Section 5; it does not wait for that later reset.
+Serialize supervisor rearm and
+decision updates so a new fault wins. A brief healthy reading must not
+restore positive permits. A gate cannot latch a revocation it never receives.
 
 ```cpp
 // safety_heartbeat_publisher — runs on the safety node (operator station or
@@ -95,18 +100,20 @@ public:
     rclcpp::QoS qos(rclcpp::KeepLast(1));
     qos.reliable()
        .deadline(500ms)          // consumers get an event if we go silent
-       .lifespan(1s);            // stale permits are never delivered
+       .lifespan(1s);            // DDS retention only; application age checks still apply
     permit_pub_ = create_publisher<std_msgs::msg::Bool>("/safety/motion_permit", qos);
 
     timer_ = create_wall_timer(200ms, [this] {   // 2.5x margin under the deadline
       std_msgs::msg::Bool permit;
-      permit.data = checks_pass();   // geofence, operator e-stop UI, HW chain status
+      if (!checks_pass()) { revoked_ = true; }
+      permit.data = !revoked_;       // healthy readings cannot clear a revocation
       permit_pub_->publish(permit);  // data==false OR silence both mean STOP
     });
   }
 
 private:
   bool checks_pass();
+  bool revoked_{true};  // Startup is stopped; only the reset protocol below may clear this.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr permit_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
@@ -128,10 +135,21 @@ permit_sub_ = create_subscription<std_msgs::msg::Bool>(
   "/safety/motion_permit", qos,
   [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
     if (!msg->data) { engage_estop("permit revoked"); }
-    else { last_permit_ = now(); }
+    else { last_permit_ = std::chrono::steady_clock::now(); }
   },
   options);
 ```
+
+These Bool excerpts illustrate heartbeat callbacks, not a complete reset or
+freshness protocol. A deployed permit needs a supervisor session, monotonically
+identified decision/stop generation, and evidence of generation age. Match stop
+acknowledgements and resets to that generation; reject stale sessions and replayed
+reset requests. A local receipt timestamp alone cannot distinguish a newly made
+decision from delayed data. Account for timestamp clock error when comparing age.
+Start the gate stopped, use a steady-clock watchdog even before the first sample,
+and keep a downstream controller watchdog for an executor or process that hangs.
+
+History semantics: [DDS reliability and history](https://fast-dds.docs.eprosima.com/en/v2.14.5/fastdds/dds_layer/core/policy/standardQosPolicies.html#historyqospolicy).
 
 > **RxO reminder:** DEADLINE is request-vs-offered. The publisher must *offer* a
 > deadline ≤ the subscriber's requested 500 ms or the pair silently never matches —
@@ -155,14 +173,16 @@ self.state_pub = self.create_publisher(EstopState, '/safety/estop_state', estop_
 ```
 
 Two topics, two jobs: `/safety/motion_permit` (heartbeat, gates motion) and
-`/safety/estop_state` (latched, informs humans and UIs). Do not merge them — a latched
-topic cannot be a heartbeat, and a heartbeat cannot inform late joiners.
+`/safety/estop_state` (retained status, informs humans and UIs). Retained status is
+not a live permission. A late joiner starts stopped and requires a fresh valid
+permit plus the reset protocol; neither cached status nor a returning heartbeat
+may clear its latch.
 
 ## 3. Command arbitration
 
 An e-stop that publishes zero velocity *once* loses the race against a planner
 publishing at 20 Hz. Arbitrate all command sources through a priority multiplexer so
-the stop path structurally outranks everything.
+the sources have a defined order, then apply the stop decision at a final gate.
 
 ### twist_mux priority configuration
 
@@ -179,10 +199,6 @@ twist_mux:
         topic: /cmd_vel_teleop     # operator joystick overrides autonomy
         timeout: 0.5
         priority: 100
-      watchdog_stop:
-        topic: /cmd_vel_watchdog   # heartbeat watchdog's zero command
-        timeout: 0.5
-        priority: 200
     locks:
       # A lock is stronger than any topic priority: while /safety/estop_active
       # is true (or SILENT past its timeout!), every lower-priority source is masked.
@@ -195,32 +211,41 @@ twist_mux:
 ```bash
 sudo apt install ros-${ROS_DISTRO}-twist-mux
 ros2 run twist_mux twist_mux --ros-args --params-file config/twist_mux.yaml \
-  -r cmd_vel_out:=/cmd_vel      # only the mux publishes the real /cmd_vel
+  -r cmd_vel_out:=/cmd_vel_selected  # internal selection; the final gate owns /cmd_vel
 ```
 
-The lock's `timeout` gives arbitration the same fail-safe property as the heartbeat:
-a dead safety node engages the lock. (Jazzy+ ships `twist_mux` with `TwistStamped`
-support via the `use_stamped` parameter; Humble's release is unstamped `Twist` only.)
+The lock suppresses lower-priority inputs; it does not itself publish a stop.
+A priority-255 lock would also mask a priority-200 zero-command source. The
+`estop_gate` therefore subscribes to `/cmd_vel_selected` and owns the only
+driver-facing `/cmd_vel` publisher. It forwards selected motion only while the
+permit, latch, source generation and command-age checks pass. On stop it fences
+forwarding and emits the driver's documented stop command directly, independently
+of mux input selection. Serialize that check with every output write.
+
+Keep downstream command timeouts for a gate or mux crash. The example timeouts are
+starting points, not measured stopping limits. Check the installed mux's message
+type and output topic; `Twist` and `TwistStamped` options vary by package version.
+See [twist_mux masking and callbacks](https://github.com/ros-teleop/twist_mux/blob/rolling/include/twist_mux/topic_handle.hpp).
 
 ### Close the bypass hole
 
-Arbitration only works if the mux is the *sole* publisher on the real command topic.
-Remap every producer onto its mux input and enforce it:
+The final gate must be the *sole* publisher on the driver-facing command topic.
+Remap producers to mux inputs and the mux output to the gate's input:
 
 ```bash
-# Audit: exactly one publisher (the mux) may appear here
+# Audit: exactly one publisher (the final gate) may appear here
 ros2 topic info /cmd_vel -v
 ```
 
-On a secured system, make the bypass impossible instead of just audited: only the mux's
+On a secured system, enforce this ownership: only the gate's
 enclave gets publish permission on `/cmd_vel` (Section 4).
 
 ### Zero on a topic is not a stopped robot
 
 `ros2 topic echo /cmd_vel` showing zeros proves one thing: a message was
-published. It is not evidence that the robot stopped, and treating it as such is
-how a stop path passes review and fails in the field. Four links sit between the
-message and a stationary machine, and each one has to be verified on its own.
+published. It is not evidence that the robot stopped. Verify command ownership,
+driver translation, transport submission, device acceptance and measured response
+separately.
 
 **1. Command ownership matches the declared architecture.** With two publishers
 there is no defined command priority. Without an arbiter the subscriber can
@@ -235,7 +260,7 @@ hot-standby designs exist; they need their own written ownership rule, not the
 absence of one.) Verify the count against that rule, do not assume it:
 
 ```bash
-ros2 topic info /cmd_vel -v     # single-arbiter design: exactly 1 (the mux)
+ros2 topic info /cmd_vel -v     # single-arbiter design: exactly 1 (the final gate)
 ```
 
 Three distinct activities, easy to collapse into one and wrong when you do:
@@ -314,7 +339,7 @@ behavior, the vendor's documented command latency, and the sensor noise floor (a
 threshold below your encoder's resolution is not a criterion). Publish them with
 the stop-path test results so a later run can be compared against the same bar.
 
-| Link | Evidence | Level (`SKILL.md` Principle 13) |
+| Link | Evidence | Level (`references/engineering-principles.md` Principle 13) |
 |---|---|---|
 | Command ownership | `ros2 topic info -v` publisher set vs declared architecture, SROS2 policy, enforcement test | L3 |
 | Driver translation | driver source / vendor API path taken by a zero command | L0 + L4 |
@@ -322,18 +347,22 @@ the stop-path test results so a later run can be compared against the same bar.
 | Device acceptance | vendor ack / device status transition / echoed sequence within `T_ack`, or an explicit "not directly verified" | L4 |
 | Hardware response | encoder/current/IMU feedback vs `epsilon_stop`/`T_stop`/`T_hold` | L5 |
 
-Only the full chain is a verified stop. Reporting link 1 as if it were link 4 is
-pitfall 15 in `SKILL.md`. Link 4 requires commanded motion on a restrained
-platform with an operator present — the conditions in Section 6 apply in full,
-and it is never an unattended CI step or an AI agent action.
+Only the full chain supports a verified-stop claim. Topic observations do not
+establish measured hardware response (Principle 13 in
+`references/engineering-principles.md`). Measuring stopping from commanded motion
+requires a restrained platform and an operator under the conditions in Section 6;
+it is never an unattended CI step or an agent-executed physical fault injection.
 
 ### Stopping through ros2_control
 
-Zero velocity through the mux handles kinematic stops. For a stronger protective stop,
-switch to a stop-capable controller or deactivate the active one — controller
-switching and hardware-level safe-stop patterns (including `on_deactivate` zero-command
-discipline) are in `references/hardware-interface.md`. The e-stop gate node calls
-`/controller_manager/switch_controller` with the stop controller at `STRICT` switching.
+A project may implement the driver stop through a stop-capable ros2_control
+controller or a verified deactivation path. Assign the authorized switching caller
+and its service permissions, check the installed interface, and handle switching
+failure within the stop budget. A successful switch or deactivation is not proof
+of physical stopping; confirm what the hardware writes and observe the response.
+See `references/hardware-interface.md` for driver cleanup, and the
+[controller-manager interface](https://control.ros.org/jazzy/doc/ros2_control/controller_manager/doc/userdoc.html)
+for switching and fallback limitations.
 
 ## 4. SROS2 e-stop isolation
 
@@ -351,9 +380,9 @@ safety-specific policy.
 | Attack | Effect without isolation | Countermeasure |
 |---|---|---|
 | Spoofed permit heartbeat | Robot keeps moving through a real e-stop | Only `safety_supervisor` enclave may publish `/safety/motion_permit` |
-| Forged estop-clear | Latched stop released without operator action | Only `safety_supervisor` may publish `/safety/estop_state`; reset only via authenticated service (Section 5) |
-| Command-topic bypass | Malicious node publishes `/cmd_vel` directly, skipping the mux | Only `twist_mux` enclave may publish `/cmd_vel` |
-| Unauthorized node joins domain | Foothold for all of the above | `ROS_SECURITY_STRATEGY=Enforce` — unauthenticated participants cannot join |
+| Forged estop-clear or ACK | Latched stop released without operator action | Gate owns state and stop ACK; only the supervisor may request its versioned reset (Section 5) |
+| Command-topic bypass | Malicious node publishes `/cmd_vel` directly, skipping the gate | Only `estop_gate` enclave may publish `/cmd_vel` |
+| Unauthorized node joins domain | Foothold for all of the above | Governance rejects unauthenticated participants and enables join access control; each process uses `Enforce` |
 
 ### Least-privilege policy for the safety topics
 
@@ -363,33 +392,56 @@ safety-specific policy.
 <policy version="0.2.0"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <enclaves>
-    <!-- The ONLY identity allowed to write the safety topics -->
+    <!-- Supervisor owns permits and requests gate reset. -->
     <enclave path="/safety_supervisor">
       <profiles>
         <profile ns="/" node="safety_supervisor">
           <topics publish="ALLOW">
             <topic>safety/motion_permit</topic>
-            <topic>safety/estop_state</topic>
-            <topic>safety/estop_active</topic>
           </topics>
           <topics subscribe="ALLOW">
             <topic>diagnostics_agg</topic>
+            <topic>safety/stop_ack</topic>
+            <topic>safety/estop_state</topic>
           </topics>
+          <services request="ALLOW">
+            <service>estop_gate/reset</service>
+          </services>
         </profile>
       </profiles>
     </enclave>
 
-    <!-- The mux: sole writer of the real command topic -->
+    <!-- Gate owns effective stop state, ACK and driver-facing commands. -->
+    <enclave path="/estop_gate">
+      <profiles>
+        <profile ns="/" node="estop_gate">
+          <topics publish="ALLOW">
+            <topic>cmd_vel</topic>
+            <topic>safety/stop_ack</topic>
+            <topic>safety/estop_state</topic>
+            <topic>safety/estop_active</topic>
+          </topics>
+          <topics subscribe="ALLOW">
+            <topic>safety/motion_permit</topic>
+            <topic>cmd_vel_selected</topic>
+          </topics>
+          <services reply="ALLOW">
+            <service>estop_gate/reset</service>
+          </services>
+        </profile>
+      </profiles>
+    </enclave>
+
+    <!-- The mux selects sources but cannot bypass the final gate. -->
     <enclave path="/twist_mux">
       <profiles>
         <profile ns="/" node="twist_mux">
           <topics publish="ALLOW">
-            <topic>cmd_vel</topic>
+            <topic>cmd_vel_selected</topic>
           </topics>
           <topics subscribe="ALLOW">
             <topic>cmd_vel_nav</topic>
             <topic>cmd_vel_teleop</topic>
-            <topic>cmd_vel_watchdog</topic>
             <topic>safety/estop_active</topic>
           </topics>
         </profile>
@@ -415,25 +467,30 @@ safety-specific policy.
 </policy>
 ```
 
+This safety-specific fragment gives the named ACK and reset routes in both
+directions. Add only the application's actual hardware feedback, infrastructure
+and authorized start/source-generation interfaces; then generate and verify the
+effective DDS grants. It is not a complete policy for unspecified nodes.
+Service policy syntax: [SROS2 client/server example](https://github.com/ros2/sros2/blob/jazzy/sros2/test/policies/add_two_ints.policy.xml).
+
 Key points:
 
-- **Default-deny governance.** Set `<default>DENY</default>` for publish/subscribe
-  rules in the governance file (`security.md` §5) — the profiles above are then the
-  complete write surface for safety topics. With default-allow, the policy is decoration.
-- **No wildcard publish grants** in *any* enclave that isn't the supervisor. A profile
-  with `<topic>*</topic>` publish access can spoof the permit; audit for wildcards:
-
-```bash
-# Audit every signed permissions file for wildcard publish grants
-grep -rn '\*' keystore/enclaves/*/permissions.xml | grep -i publish
-```
+- **Default-deny permissions.** `<default>DENY</default>` belongs in each DDS
+  permissions grant, not the governance document. Governance must also reject
+  unauthenticated participants and enable join, read and write access control for
+  the protected topics (`security.md` §5).
+- **Audit effective grants in every enclave, including the supervisor.** Broad or
+  wildcard grants must not accidentally authorize a protected publication. Inspect
+  the XML structure and overlapping rules; filtering individual lines containing
+  `publish` cannot establish the effective permissions of a multiline grant.
 
 - Remember DDS topic mangling: in *hand-written DDS permissions* the ROS topic
   `/safety/motion_permit` appears as `rt/safety/motion_permit` (`security.md` §5
   "Topic name prefixes"). The sros2 policy format above handles the prefix for you.
 - Run with `ROS_SECURITY_ENABLE=true` and `ROS_SECURITY_STRATEGY=Enforce` on every
-  node of the robot — `Permissive` mode lets an unauthenticated participant publish
-  the permit topic, which defeats the entire section.
+  participating process so missing or invalid security artifacts cannot silently
+  fall back to unsecured operation. Peer admission and topic access still depend
+  on governance and permissions; `Enforce` alone does not define those rules.
 
 ### Verify the isolation
 
@@ -441,11 +498,19 @@ grep -rn '\*' keystore/enclaves/*/permissions.xml | grep -i publish
 # From a shell with NO enclave (or a wrong one): both must fail under Enforce
 ros2 topic pub --once /safety/motion_permit std_msgs/msg/Bool '{data: true}'
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{}'
-# Expected: participant fails authentication / permission denied in DDS logs,
-# and `ros2 topic info -v` on the robot shows no new publisher appeared.
+# Expected: local rcl_init rejects missing/invalid enclave security artifacts
+# before participant creation, OR DDS rejects participant/topic access.
+# In either case, an authorized observer must see no unauthorized publisher
+# or delivered command; inspect the failing process and receiver evidence.
 ```
 
-Automate this check only in simulation/HIL. On physical hardware, run it as an
+Local rejection is expected when [rcl security directory discovery](https://github.com/ros2/rcl/blob/jazzy/rcl/src/rcl/security.c)
+fails under Enforce: [rcl_init](https://github.com/ros2/rcl/blob/jazzy/rcl/src/rcl/init.c)
+returns before initializing the RMW context. DDS logs are not required for that
+failure path.
+
+Automate this check only with actuation disconnected, such as an isolated simulation.
+Treat HIL as physical whenever it can actuate hardware. On physical hardware, run it as an
 operator-approved test on a restrained platform (same rules as the stop-path
 checklist below); never as unattended CI or by an AI agent — if enforcement is
 broken, the spoofed permit or `/cmd_vel` goes through. A bringup check that
@@ -454,6 +519,9 @@ the policy is enforced.
 
 ## 5. Recovery and reset semantics
 
+Apply [Evidence progression §5](evidence-progression.md#5-recovery-without-stale-command-replay)
+to the recovery decision. The protocol below implements it at the stop gate.
+
 ### Latch the stop, require a deliberate reset
 
 An e-stop that clears itself the moment the trigger condition disappears invites
@@ -461,40 +529,43 @@ oscillation (robot lurches every time a flaky heartbeat recovers) and violates t
 principle that a human must confirm the hazard is gone. Latch the stop; clear it only
 through an explicit reset action:
 
-```python
-# estop_gate node — latching state machine
-from std_srvs.srv import Trigger
+Both supervisor and gate start stopped. Their protocol must preserve revocation
+across delayed callbacks, reconnects and restarts:
 
-class EstopGate(Node):
-    def __init__(self):
-        super().__init__('estop_gate')
-        self.latched = False
-        # Reset is a SERVICE, not a topic: request/response confirms receipt,
-        # and SROS2 can restrict callers (only the operator UI enclave).
-        self.reset_srv = self.create_service(Trigger, '~/reset', self.on_reset)
+1. The supervisor latches a new revocation generation and keeps issuing revoked
+   state. The gate fences command output, invalidates the command generation,
+   latches its incident, and acknowledges that specific supervisor generation.
+   An acknowledgement means the software gate latched; physical standstill needs
+   separate feedback.
+2. Following deliberate operator **rearm authorization**, the supervisor may offer a new
+   permit only after the current stop acknowledgement, cleared cause and hardware
+   prerequisites have been verified. A missing or old acknowledgement keeps it
+   revoked. Recovering health alone cannot rearm it.
+3. The gate remains stopped until the later **gate reset** request, authorized for
+   the current incident, validates the supervisor session/generation, gate boot
+   session and incident, fresh permit and measured stationary state.
+   Reject a reset from a prior incident. A plain
+   `std_srvs/Trigger` carries no incident identifier; use a versioned reset request
+   or an equally explicit stale-request exclusion protocol. Serialize reset and
+   new stop events so a concurrent fault wins.
+4. Reset reaches **armed but stationary**. It does not start navigation or accept
+   an old producer's continuing command stream. Require deliberate start/resume
+   for a new command generation, and neutral/reasserted deadman for teleoperation.
+   A bare Twist has no intent-generation field; use a typed command envelope or
+   an authenticated source-enable protocol that excludes old goals and queued data.
 
-    def engage(self, reason: str):
-        if not self.latched:
-            self.latched = True
-            self.get_logger().error(f'E-STOP ENGAGED: {reason}')
-            self.publish_estop_state(engaged=True, reason=reason)
-
-    def on_reset(self, request, response):
-        if self.trigger_condition_still_present():
-            response.success = False
-            response.message = 'Reset refused: stop condition still active'
-            return response
-        self.latched = False
-        self.publish_estop_state(engaged=False, reason='operator reset')
-        response.success = True
-        return response
-```
+Each gate restart creates a new session identity, so an incident counter reused
+after restart cannot make an old reset valid. An interrupted handshake leaves
+the gate stopped. Do not require a positive motion permit before acknowledging
+the revoked state; that creates a reset
+deadlock. Protect acknowledgement, permit and reset identities with the actual
+security policy, not caller-supplied names alone.
 
 Reset rules that survive incident reviews:
 
-- **Reset restores *permission*, not *motion*.** After reset, the robot stays
-  stationary until a fresh command arrives from an active source. Never replay the
-  pre-stop command.
+- **Reset restores *permission*, not *motion*.** A recently republished command
+  from an old goal is still an old intent. Require the new authorized command
+  generation before forwarding it; never replay the pre-stop command.
 - **Refuse reset while the condition persists** (button still pressed, heartbeat still
   absent, geofence still violated).
 - **Log engage and reset with cause and identity** — feed `/safety/estop_state`
@@ -506,84 +577,65 @@ Reset rules that survive incident reviews:
 
 ## 6. Testing the stop path
 
-A stop path that has never been fault-injected does not work — it only compiles. Test
-the *failure* behaviors, not the happy path. General launch_testing setup is in
+Without relevant fault tests, the stop path remains unverified; compilation does
+not establish its behavior. Test the *failure* behaviors as well as the happy path.
+General launch_testing setup is in
 `references/testing.md`; these are the safety-specific cases.
+
+Physical stop-path and spoofing checks require a bounded plan naming the approved
+operator, physical restraint/containment, conservative speed and torque limits,
+independent physical stop, and measured success and abort criteria. State these
+conditions in the physical test handoff. This reference reserves their execution
+to the operator; user authorization does not delegate that execution authority. An agent may
+prepare the procedure and evaluate evidence, but must not execute these physical
+fault injections itself.
 
 ### Fault-injection integration test
 
-```python
-# test/test_estop_gate.py — launch_testing: kill the supervisor, assert the stop
-import time
-import unittest
+Use `launch_testing` with the application's actual versioned permit, ACK, reset
+and state types on an isolated graph with actuation disconnected. A generic test
+cannot invent these interfaces or their arming fixture. Implement this sequence:
 
-import launch
-import launch_ros.actions
-import launch_testing
-import launch_testing.actions
-import pytest
-import rclpy
-from geometry_msgs.msg import Twist
-from std_msgs.msg import Bool
+1. Wait for the expected supervisor, gate and mock driver to start and discover
+   the required services. Complete supervisor rearm and gate reset for the current
+   generations. Assert **armed but stationary**, with stopped output. Failure to
+   reach this precondition is a setup failure, not a successful stop test.
+2. Clear previous observations, record a steady-clock fault time, and terminate
+   the identified supervisor once. Retain evidence of which process was signalled.
+3. Require a new latched gate incident within the configured detection/executor
+   budget, and verify the final command and mock driver's timeout/stop behavior.
+   A retained startup-stopped sample or an old incident cannot satisfy this check.
+4. In a separate disconnected-mock trial, deliberately enable a new command
+   generation and observe a nonzero command at the mock driver before injecting
+   the fault. Keep the producer publishing; require the gate to replace or inhibit
+   that command and the mock to enter its defined stopped state within budget.
+   This checks interruption of active commands, not physical braking.
+5. Separately exercise a brief revoked decision followed by healthy decisions
+   while the consumer is delayed; the supervisor must retain revocation. Cover
+   missing/old ACKs, stale resets, reconnect sessions, and a new stop racing reset.
+   None may rearm the gate or replay an old goal.
+6. Require every started process to exit during bounded teardown and retain state
+   generations, signal order, logs, versions and failed deadlines. Do not lengthen
+   a bound or reuse a previous trial's evidence to make a failed attempt pass.
 
-
-@pytest.mark.launch_test
-def generate_test_description():
-    supervisor = launch_ros.actions.Node(
-        package='my_robot_safety', executable='safety_supervisor',
-        name='safety_supervisor')
-    gate = launch_ros.actions.Node(
-        package='my_robot_safety', executable='estop_gate', name='estop_gate')
-    return launch.LaunchDescription([
-        supervisor, gate, launch_testing.actions.ReadyToTest(),
-    ]), {'supervisor': supervisor}
-
-
-class TestEstopFailSafe(unittest.TestCase):
-
-    @classmethod
-    def setUpClass(cls):
-        rclpy.init()
-        cls.node = rclpy.create_node('estop_test_probe')
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.node.destroy_node()
-        rclpy.shutdown()
-
-    def test_supervisor_death_engages_stop(self, launch_service, supervisor, proc_info):
-        states = []
-        sub = self.node.create_subscription(
-            Bool, '/safety/estop_engaged', lambda m: states.append(m.data), 10)
-
-        # Fault injection: kill the heartbeat source outright.
-        supervisor_action = supervisor
-        launch_service.emit_event(
-            launch.events.process.SignalProcess(
-                signal_number=9,
-                process_matcher=launch.events.process.matches_action(supervisor_action)))
-
-        # The DEADLINE (500 ms) must fire and latch the stop well within 2 s.
-        end = time.time() + 2.0
-        while time.time() < end and not any(states):
-            rclpy.spin_once(self.node, timeout_sec=0.1)
-        self.assertTrue(any(states),
-                        'estop_gate never engaged after supervisor SIGKILL')
-        self.node.destroy_subscription(sub)
-```
+These checks establish software protocol behavior only. Hardware response still
+requires the controlled commissioning tests below.
 
 ### Stop-path checklist
 
-Run these on the real robot (wheels off the ground / in a cage) before every release:
+Select the applicable cases for commissioning and changes that affect the stop
+path or its dependencies. Record the tested configuration and retain the required
+release gates; an unrelated prose edit does not itself require new physical fault
+injection. Physical runs use the restrained conditions below.
 
 | # | Fault injected | Required behavior |
 |---|---|---|
-| 1 | `kill -9` the safety supervisor | Stop engaged within one deadline period; mux lock active |
+| 1 | `kill -9` the safety supervisor | Gate latches and stopping response meets the approved end-to-end budget; middleware notification alone is insufficient |
 | 2 | Pull the network cable / radio between operator and robot | Same as 1 — network partition is indistinguishable from a dead node |
 | 3 | Publish `/cmd_vel` from a rogue shell while stopped | No motion; under Enforce the publisher never matches |
 | 4 | Publish a forged permit from an enclave-less shell | Authentication/permission failure; robot stays stopped |
 | 5 | Request reset while the e-stop button is still pressed | Reset refused with an explanatory message |
-| 6 | Reset after a genuine clear | Robot stays stationary until a *fresh* command arrives |
+| 6 | Reset after a genuine clear | Robot stays stationary until deliberate start/resume establishes a new command generation |
 | 7 | Press the hardware e-stop with the software stack frozen | Motors de-energize via STO — proves the layers are independent |
 
 Items 1–6 inject real faults into a machine that moves if a layer is broken.
@@ -602,12 +654,12 @@ commissioning test.
 |---|---|---|
 | Robot keeps moving after safety node crashes | Stop is a "send true to stop" message — fail-dangerous | Heartbeat permit + DEADLINE event; silence engages the stop (Section 2) |
 | E-stop subscriber never receives the permit | DEADLINE RxO mismatch — publisher offers no (or a longer) deadline | Offer deadline ≤ requested on the publisher; check `ros2 topic info -v` |
-| Planner "wins" against the e-stop's zero command | Both publish the same topic; the subscriber can process commands from both, with no defined priority, so periodic planner commands can supersede a one-shot zero depending on processing timing | Arbitrate through twist_mux; e-stop is a lock at priority 255 (Section 3) |
-| Node publishes `/cmd_vel` directly, bypassing the mux | Producers not remapped; nothing enforces the mux as sole writer | Remap all producers to mux inputs; SROS2: only the mux enclave may publish `/cmd_vel` |
+| Planner "wins" against the e-stop's zero command | Competing writers bypass the stop decision | Mux selects inputs; the final gate fences motion and directly emits the stop (Section 3) |
+| Node publishes `/cmd_vel` directly, bypassing the gate | Producers not remapped; command ownership is unenforced | Remap through mux selection and the final gate; only the gate enclave may publish `/cmd_vel` |
 | Zero command visible on the topic, robot keeps moving | The driver discarded the zero as "no command", the vendor call failed, or a competing publisher overwrote it | Verify all four links — command ownership, driver translation, submission plus remote-acceptance evidence, measured hardware response (Section 3) |
 | Stop clears itself when the flaky link recovers | Stop state derived directly from the live condition | Latch the stop; clear only via reset service that re-checks the condition (Section 5) |
-| Any node can publish the permit topic | No access control, or `ROS_SECURITY_STRATEGY=Permissive` | Enforce mode + default-deny governance + supervisor-only publish grant (Section 4) |
+| Any node can publish the permit topic | Authentication/access control disabled, unsecured fallback, or overbroad grants | Enforce startup, access-control governance and default-deny permissions with supervisor-only permit publication (Section 4) |
 | Spoof test "passes" (spoof succeeds) in the lab | Nodes launched without enclaves fall back to unsecured participants | Launch every node with its enclave (`security.md` §9); make the spoof-must-fail check part of bringup |
-| Robot lurches on reset | Pre-stop command replayed or still latched in a queue | Reset restores permission only; producers must publish fresh commands (LIFESPAN on command topics helps) |
+| Robot lurches on reset | An old goal republishes commands or queued data survives reset | Reset remains stationary; require deliberate start/resume and a new authorized command generation (Section 5) |
 | Late-started dashboard shows "no e-stop" during an incident | State topic is VOLATILE — late joiner missed the latch | `TRANSIENT_LOCAL` durability on `/safety/estop_state` (Section 2) |
 | Operators treat the ROS e-stop as THE e-stop | Software stop presented as safety-rated | Document the hardware chain as the safety function (ISO 13849/IEC 62061); ROS layer is a protective stop only (Section 1) |

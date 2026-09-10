@@ -1,6 +1,6 @@
 # ros2-engineering-skills
 
-Source version: **1.4.0**. See [release notes](CHANGELOG.md#140---2026-09-08) and
+Source version: **1.5.0**. See [release notes](CHANGELOG.md#150---2026-09-10) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -188,7 +188,7 @@ Detailed tables and the 22 recurring pitfalls are retained in
 loaded only when relevant. The [context budget](docs/CONTEXT_BUDGET.md) separates
 byte/line limits from measured, named-tokenizer counts.
 
-The decision router in [SKILL.md](SKILL.md) selects among 25 task-specific
+The decision router in [SKILL.md](SKILL.md) selects among 26 task-specific
 references plus cross-cutting engineering principles.
 Metadata is advertised before activation; the selected body and needed references
 supply the workflow. See [Skill contract](docs/SKILL_CONTRACT.md) for scope,
@@ -200,6 +200,7 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `qos_checker.py` | Compare offered/requested QoS | Compatibility is not delivery quality |
 | `rosbag2_qos_checker.py` | Inspect bag metadata QoS | Static metadata analysis |
 | `launch_validator.py` | Detect selected Python launch defects | Does not start a graph |
+| `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
 | `skill_validate_hook.py` | Inspect source and command strings | Best-effort guard, not a security boundary |
 | `skill_stop_hook.py` | Check changed launch/package/Nav2 files | Advisory, not a complete build |
 | `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions or blocks Stop |
@@ -209,20 +210,16 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `verify_eval_capture.py` | Require complete paired captures with hashes | Integrity, not authenticity or quality |
 | `measure_context.py` | Count the selected body with named tokenizers | Excludes client wrappers and on-demand references |
 
+The JSON `version` emitted by the two validation hooks is the hook-report contract
+version, not the source bundle version. It changes only when that report contract
+changes; standalone utility versions follow the same independent-interface rule.
+
 ## Verification levels
 
-| Level | Evidence |
-|---|---|
-| L0 | Static review |
-| L1 | Unit tests |
-| L2 | Build and launch smoke |
-| L3 | Runtime with simulation or mock hardware |
-| L4 | Powered hardware, actuation disabled or isolated |
-| L5 | Restrained bench motion or supervised fault injection |
-| L6 | Supervised field operation |
-
-A passing test suite is not evidence that a robot is safe to drive. State the
-highest level actually reached and explicitly identify skipped checks.
+The [canonical L0–L6 ladder](references/testing.md#11-verification-levels)
+defines evidence and preconditions from static review through supervised field
+operation. A passing software suite does not establish that a robot is safe to
+drive.
 
 ## CI scope
 
@@ -268,10 +265,10 @@ The default `eval_runner.py` checks whether expected-answer fixtures cover their
 declared criteria. It is not a model benchmark. Lexical coverage is not semantic
 correctness, and a fixture cannot substitute for an unmodified model capture.
 
-`evals/trigger_cases.json` defines 24 activation cases: 10 implicit positives,
-10 implicit negatives, and explicit invocation for four clients.
-`evals/benchmark_suite.json` defines five quality cases with three trials and
-paired skill-on/off runs: 15 pairs, 30 fresh sessions per experiment.
+`evals/trigger_cases.json` defines 33 activation cases: 17 implicit positives,
+12 implicit negatives, and explicit invocation for four clients.
+`evals/benchmark_suite.json` defines seven quality cases with three trials and
+paired skill-on/off runs: 21 pairs, 42 fresh sessions per experiment.
 No fabricated captures or improvement percentages are included.
 
 ```bash

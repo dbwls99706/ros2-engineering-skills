@@ -40,6 +40,26 @@ SIGKILL within bounded waits, including on failed discovery and interruption.
 The runtime container's init reaps orphaned children; host cleanup removes the
 owned container even after failure.
 
+Generated fleet runtime checks use the shipped `scripts/launch_supervisor.py`
+entry point. Its POSIX asyncio signal handler stays active through finalization,
+preventing the default handler from raising `KeyboardInterrupt` between
+dequeueing and executing a callback. Every trial still requires the supervisor to return zero
+within 10 seconds and a zero-exit event for every started child. Diagnostic or
+forced-cleanup exits cannot satisfy those assertions. Startup, parameter loading,
+sibling isolation, discarded transition events, and rapid shutdown remain checked.
+
+`check_launch_signals.py` injects SIGINT at that callback boundary using the
+installed ROS signal manager. The raising-handler negative control must expose
+the lost callback; the shipped supervisor must complete under the same injection.
+The unit regression also delivers real SIGINT during handler installation and
+requires exit 130 without starting the service. The installed CLI controls allow
+10 seconds each for cold imports; their 40-second outer budget includes three
+cases and signal controls. The fleet shutdown deadline remains 10 seconds.
+Native `ros2 launch --show-args` checks
+installed fleet discovery/imports separately. A passing supervised run does not
+claim that native `ros2 launch` shutdown was fixed; see the
+[execution guidance](../references/launch-system.md#supervisor-shutdown-stalls).
+
 Rolling retains the pre-existing source-overlay workaround and explicit
 rclcpp/rclpy initialization, node discovery, and QoS runtime exclusions. Its
 interface and hardware-plugin tests still run. Passing applicable Rolling gates
@@ -55,19 +75,18 @@ installed package versions, exact Rolling overlay revisions, and colcon logs.
 A hard runner termination can prevent final cleanup or artifact upload; missing
 evidence must not be treated as success.
 
-The motivating run at revision `e76cea8` printed passing tests and image-export
-completion, then was cancelled near its 30-minute job limit. That establishes
-that the job did not complete, not which Docker or process defect caused the
-post-export delay. This refactor removes ROS process lifetimes from BuildKit,
-separates actual execution from caching, and retains diagnostic evidence rather
-than asserting an unproven root cause.
-
 The `Required test gates` job requires every declared Test-workflow dependency
 to report success. Failure, cancellation, skip, or a missing result fails the
 summary. Client discovery is a separate workflow and must also be inspected for
 the exact revision. Older commits keep their historical results; a later passing
 commit does not retroactively validate an earlier one. A lone green check is not
 evidence that all workflow suites ran.
+
+Enumerate runs for the exact `head_sha` across **both** `push` and `pull_request`
+events, including every page and relevant attempt. Inspect Test and Client
+discovery in each event. An API limited to one event is not a complete CI
+inventory. Preserve failed attempts when reporting reliability; a successful
+rerun does not erase the first outcome.
 
 Synthetic Docker transport and process-lifecycle regression tests do not execute
 ROS, prove middleware behavior, or benchmark an AI model. The actual distro jobs
