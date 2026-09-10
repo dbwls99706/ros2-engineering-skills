@@ -4,8 +4,6 @@ All notable changes are documented here.
 
 ## 1.5.0 - 2026-09-10
 
-Pending release; date records the latest source update.
-
 - Correct SROS2 participant/enclave semantics, Enforce-only authorization
   checks, certificate lifetime and staged rotation; align image stride, depth,
   camera projection, Foxy quaternion, and Domain ID guidance with upstream.
