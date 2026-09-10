@@ -249,9 +249,14 @@ class LaunchFileVisitor(ast.NodeVisitor):
         # etc.), either on the node itself or pushed by an enclosing group.
         deprecated_name_node = self._get_keyword_value(node, "node_name")
         effective_name_node = name_node or deprecated_name_node
+        # Resolve both legacy aliases together when reviewing a migration.
+        # Treating node_name as a name but dropping node_namespace invents
+        # root-namespace collisions. Constructor compatibility is checked above.
+        effective_ns_node = ns_node if ns_node is not None else self._get_keyword_value(
+            node, "node_namespace")
         name_str = self._get_string_value(effective_name_node) if effective_name_node else None
-        ns_str = self._get_string_value(ns_node) if ns_node else ""
-        ns_is_dynamic = ns_node is not None and ns_str is None
+        ns_str = self._get_string_value(effective_ns_node) if effective_ns_node else ""
+        ns_is_dynamic = effective_ns_node is not None and ns_str is None
         effective_ns = self._effective_namespace(ns_str or "")
         conds = tuple(self._condition_stack)
         own_cond = self._get_keyword_value(node, "condition")

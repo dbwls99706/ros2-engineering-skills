@@ -68,8 +68,8 @@ evals:
       - id: warn-hardcoded-paths
         description: "Must warn about hardcoded paths"
         weight: 0.6
-      - id: identify-duplicate-names
-        description: "Must identify duplicate node names"
+      - id: resolve-node-namespaces
+        description: "Must distinguish node basenames from fully qualified names and namespaces"
         weight: 0.8
     timeout: 60000
     tags: [launch, validation, static-analysis]

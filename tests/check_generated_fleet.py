@@ -173,6 +173,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 faulthandler.register(signal.SIGUSR1, all_threads=True)
+print('Fleet supervisor SIGINT handler:', signal.getsignal(signal.SIGINT), flush=True)
 
 
 {fault}def record(kind, event):

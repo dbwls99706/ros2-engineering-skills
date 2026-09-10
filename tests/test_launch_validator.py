@@ -473,6 +473,34 @@ class TestValidateFile:
         errors = [i for i in issues if i.severity == "error"]
         assert any("Duplicate" in i.message for i in errors)
 
+    def test_legacy_namespace_distinguishes_same_basename(self, tmp_path):
+        source = DUPLICATE_NODES.replace(
+            "name='my_node', output='screen'",
+            "node_name='my_node', node_namespace='/sensors', output='screen'", 1)
+        path = write_launch_file(tmp_path, "legacy_ns.launch.py", source)
+        issues = validate_file(path)
+        assert not any("Duplicate" in issue.message for issue in issues)
+
+    def test_legacy_and_modern_namespaces_can_collide(self, tmp_path):
+        source = DUPLICATE_NODES.replace(
+            "name='my_node', output='screen'",
+            "node_name='my_node', node_namespace='/sensors', output='screen'", 1)
+        source = source.replace(
+            "name='my_node', output='screen'",
+            "name='my_node', namespace='/sensors', output='screen'")
+        path = write_launch_file(tmp_path, "legacy_collision.launch.py", source)
+        issues = validate_file(path)
+        assert any("Duplicate" in issue.message and "sensors" in issue.message
+                   for issue in issues)
+
+    def test_dynamic_legacy_namespace_does_not_prove_collision(self, tmp_path):
+        source = DUPLICATE_NODES.replace(
+            "name='my_node', output='screen'",
+            "node_name='my_node', node_namespace=LaunchConfiguration('ns'), output='screen'", 1)
+        path = write_launch_file(tmp_path, "legacy_dynamic.launch.py", source)
+        issues = validate_file(path)
+        assert not any("Duplicate" in issue.message for issue in issues)
+
     def test_sleep_warned(self, tmp_path):
         path = write_launch_file(tmp_path, "sleep.launch.py", WITH_SLEEP)
         issues = validate_file(path)

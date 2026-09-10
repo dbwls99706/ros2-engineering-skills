@@ -442,12 +442,20 @@ def forward_args(args_dict):
 ```python
 from launch.actions import TimerAction
 
-# Delay perception startup by 3 seconds (wait for drivers to initialize)
+# Stagger perception by 3 seconds; this does not establish driver readiness.
 delayed_perception = TimerAction(
     period=3.0,
     actions=[perception_launch],
 )
 ```
+
+`TimerAction` measures elapsed time, not initialization success. When perception
+depends on a driver, use a bounded service/state readiness check and handle its
+failure before starting the dependent work. Process start alone is also not a
+readiness signal.
+
+Sources: [TimerAction](https://github.com/ros2/launch/blob/3.4.11/launch/launch/actions/timer_action.py),
+[controller manager spawner options](https://github.com/ros-controls/ros2_control/blob/jazzy/controller_manager/doc/userdoc.rst).
 
 ## 9. Launch testing integration
 
@@ -501,6 +509,35 @@ launch_test test/test_driver.launch.py
 
 ## 10. Common failures and fixes
 
+### Supervisor shutdown stalls
+
+Distinguish a supervisor-only signal from a signal to the whole process group.
+Require the supervisor and every started child to exit within the original
+deadline. Children exiting during later forced cleanup do not make that attempt
+successful. Preserve the first timeout and stack trace instead of retrying until
+the gate passes.
+
+In Python, the default SIGINT handler can raise `KeyboardInterrupt` between
+asyncio operations. Python documents that this can leave the event loop unable
+to shut down. ROS launch 3.4.11 catches that exception and resumes the loop while
+its asynchronous signal manager also receives SIGINT. If shutdown is logged but
+no child receives a signal, record the installed launch/Python versions, active
+Python signal handler, thread stacks, and pending event/task state. An idle
+selector alone does not prove which callback was interrupted.
+
+A signal guard belongs to the supervisor that owns the event loop for its whole
+lifetime. Do not install a global handler from an included launch description,
+use `SIG_IGN`, or replace the native CLI only in a test and claim its shutdown
+problem is fixed. Verify a proposed upstream repair against the installed version
+with a deterministic signal-injection regression and unchanged child-exit gates.
+Process shutdown remains separate from a downstream hardware stop mechanism.
+
+Sources: [Python asyncio SIGINT behavior](https://docs.python.org/3.12/library/asyncio-runner.html#handling-keyboard-interruption),
+[ROS launch 3.4.11 signal management](https://github.com/ros2/launch/blob/3.4.11/launch/launch/utilities/signal_management.py),
+[LaunchService.run](https://github.com/ros2/launch/blob/3.4.11/launch/launch/launch_service.py).
+
+### Other launch failures
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | "Package not found" in launch | Package not installed or not sourced | `colcon build`, `source install/setup.bash` |
@@ -509,7 +546,7 @@ launch_test test/test_driver.launch.py
 | Launch argument not passed to included file | Argument not forwarded in `launch_arguments` | Explicitly pass `launch_arguments={...}.items()` |
 | Nodes in wrong namespace | `PushRosNamespace` not wrapping correctly | Use `GroupAction` with `PushRosNamespace` as first element |
 | Event handler never fires | Target action reference mismatch | Ensure the `target_action` variable is the same object, not a copy |
-| Controller spawner exits with error | Controller manager not ready yet | Use `OnProcessExit` to sequence spawner after control_node startup |
+| Controller spawner exits with error | Manager unavailable, or controller load/configure/activate failed | Inspect the exit reason. Use the installed spawner's bounded service-wait options (such as `--controller-manager-timeout`) for manager readiness; inspect controller errors after discovery succeeds. `OnProcessExit` means termination, not startup readiness. |
 | Launch file not found during `ros2 launch` | Missing `data_files` entry in setup.py (Python pkg) or `install(DIRECTORY launch ...)` in CMake | Add install directive in build config |
 
 ---
