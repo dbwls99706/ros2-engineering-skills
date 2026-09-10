@@ -141,10 +141,13 @@ Start from these profiles and adjust per use case:
 These rows are **starting points, not verdicts**. The sensor row matches
 `rmw_qos_profile_sensor_data` (BEST_EFFORT, depth 5), which fits a
 high-rate stream whose consumer only wants the newest sample — but depth
-follows the consumer's tolerance for staleness and its processing time,
-and a sensor whose loss the system cannot detect (a safety-relevant scan,
-a one-shot calibration) belongs on RELIABLE. Decide per data path, then
-record why.
+follows the consumer's tolerance for staleness and its processing time.
+For safety-relevant or one-shot data, assess delivery, loss detection and freshness
+together; RELIABLE may be needed, but cannot make an undetectable failure safe.
+Decide per data path, then record why. For a permit stream, KEEP_LAST(1) can replace
+an unread revocation with a later positive value even with RELIABLE. Keep revocation
+latched at its source until the current stop generation is acknowledged and reset
+is authorized (`references/safety-estop.md` sections 2 and 5).
 
 QoS mismatch is one common cause of "I published but nobody receives."
 Inspect the actual endpoints with `ros2 topic info <topic> -v` before
@@ -152,10 +155,11 @@ changing either side. Matching QoS is necessary for communication, but
 compatibility alone does not prove that the delivered data is timely,
 semantically valid, or safe to act on (Principle 13).
 
-**DEADLINE and LIFESPAN** are critical for safety-critical systems. DEADLINE fires an
-event when no message arrives within the specified period (detect stale data). LIFESPAN
-discards messages older than the specified duration before delivery (prevent acting on
-stale data). See `references/communication.md` section 9 for full API and examples.
+**DEADLINE and LIFESPAN** assist detection and retention control. A missed deadline
+is an event, not execution of a stop, and expiry in DDS does not validate application
+data age. The safety row's numbers are illustrative; derive accepted age and the
+whole stopping budget, and keep a steady-clock application watchdog and independent
+downstream stop. See `references/communication.md` section 9 for the APIs.
 
 ### 7. Naming conventions
 

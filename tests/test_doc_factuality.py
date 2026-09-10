@@ -502,9 +502,12 @@ class TestFaultInjectionSafetyConsistency:
         return _md_section(SAFETY_ESTOP_MD, heading)
 
     def test_isolation_check_requires_safety_conditions(self):
-        section = self._section('Verify the isolation')
+        section = _flat(self._section('Verify the isolation'))
         assert 'Test this as part of CI-on-robot' not in section
-        for needle in ('simulation/HIL', 'operator-approved', 'restrained',
+        # HIL can actuate real hardware; it is not automatically an isolated
+        # simulation. Pin the actuation boundary as well as operator safeguards.
+        for needle in ('actuation disconnected', 'HIL as physical',
+                       'operator-approved', 'restrained',
                        'unattended CI', 'AI agent'):
             assert needle in section, (
                 f'isolation-check section missing safety condition: '

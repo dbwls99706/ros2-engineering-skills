@@ -24,10 +24,13 @@ ROS 2 DDS communication is **unencrypted by default**. Any device on the same ne
 | Attack vector | Impact | Mitigation |
 |---|---|---|
 | Unencrypted DDS traffic | Eavesdropping on sensor data, commands | Enable DDS security (SROS2) or VPN |
-| Unauthorized topic publishing | Spoofed sensor data, rogue commands | SROS2 access control (governance.xml) |
-| Malicious node joining | Full system compromise | SROS2 authentication (mutual TLS) |
+| Unauthorized topic publishing | Spoofed sensor data, rogue commands | DDS permissions grants, with governance enabling access control |
+| Malicious node joining | Unauthorized participant gains access | DDS Security PKI-DH authentication and join access control |
 | DDS discovery sniffing | Map entire robot architecture | Encrypt discovery with SROS2 |
 | Docker image tampering | Supply chain attack | Image signing, pinned base images |
+
+DDS authentication uses the PKI-DH plugin with participant certificates; see the
+[ROS 2 DDS-Security design](https://design.ros2.org/articles/ros2_dds_security.html).
 | Rosdep/pip dependency confusion | Malicious package injection | Use official repos, verify checksums |
 | Physical access to robot | Firmware tampering, key extraction | Secure boot, encrypted storage, HSM |
 | Parameter service abuse | Alter node behavior at runtime | Restrict parameter services in permissions.xml |
@@ -568,7 +571,12 @@ in Kilted), security is handled via Zenoh's own TLS configuration, NOT SROS2.
 If you switch to Zenoh without configuring Zenoh TLS, your system is unprotected
 even with `ROS_SECURITY_ENABLE=true`.
 
-**Testing:** `ROS_SECURITY_STRATEGY=Permissive` first (logs violations but does not block), then `Enforce` with auto-generated broad permissions to catch missing enclaves.
+**Testing:** use `ROS_SECURITY_STRATEGY=Enforce` with the intended governance and
+permissions on an isolated non-actuating system. Test both allowed and denied
+operations. `Permissive` allows initialization to fall back to unsecured operation
+when security artifacts are unavailable; it is not a log-only mode for access
+control violations. Valid secured participants remain subject to DDS permissions.
+See the [rcl security initialization path](https://github.com/ros2/rcl/blob/jazzy/rcl/src/rcl/security.c).
 
 **Production:** `ROS_SECURITY_STRATEGY=Enforce` with hand-crafted minimal permissions (principle of least privilege).
 
@@ -620,7 +628,7 @@ ENV ROS_SECURITY_STRATEGY=Enforce
 | Performance drops 50%+ | Full encryption on high-bandwidth topics | Use `SIGN` protection for sensor streams in governance.xml |
 | Service calls timeout with security | Access control denying request/reply topics | Check permissions.xml includes both `rq/...Request` and `rr/...Reply` patterns |
 | "Inconsistent security policy" | governance.xml format error or unsigned | Validate against OMG XSD schema; re-sign with `openssl smime -sign` |
-| ros2 CLI tools cannot see topics | CLI process has no security enclave | Create an enclave for the CLI tool or use `Permissive` mode for debugging |
+| ros2 CLI tools cannot see topics | CLI identity or permissions do not allow access | Give the CLI its own enclave and the required narrow grants; inspect authentication and permission errors |
 | Nodes start but topics have no data | Permissions allow subscribe but deny publish (or vice versa) | Check both publish and subscribe rules for every topic |
 | "PKCS7 signature verification failed" | permissions.p7s signed with wrong CA key | Re-sign with the same CA key used to create the keystore |
 | Lifecycle transitions fail | Missing permissions for lifecycle service topics | Add `rq/...change_stateRequest` and `rr/...change_stateReply` to permissions |

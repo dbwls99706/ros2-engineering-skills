@@ -59,6 +59,31 @@ files read, tools/tests executed, latency and measured tokens/cost. An unavailab
 metric is unknown, not zero. Stop once the preregistered criteria and required gates
 are met; the purpose is measurable task value, not making the skill unavoidable.
 
+### Codex delegation and corrective steering
+
+When a Codex task is delegated, pass the applicable scope, user constraints,
+authorized side effects, required validation and completion boundary with the
+specific subtask. Give each worker clear file ownership and the relevant current
+evidence. At integration, check its actual changes and results against those
+requirements; a worker's completion message does not establish that they survived
+the handoff. This does not require delegation or repeating the entire repository
+instructions for a small task.
+
+For an instruction-following study, retain the requirement as supplied, any user
+correction, the affected artifact, and whether it was resolved. Distinguish repeated
+corrections about one incident from independent failures, and check for stale SOPs,
+missing context, and tool failures before attributing the result to a model.
+Report observed task outcomes separately from subjective satisfaction and usage.
+Cached input is part of input usage; token totals alone do not measure useful work,
+cost, or compliance.
+
+Brad Groux's [Astra Field Study](https://github.com/BradGroux/astra-field-study)
+motivates these checks through a self-selected observational case, not a matched
+GPT-version comparison. Its proposed causes remain untested. It provides no
+evidence about Claude or other clients. Use the measurement distinctions where
+relevant; do not import its collection workflow or upload conversation history as
+part of ordinary ROS work.
+
 ## Manifest format
 
 New experiments should use schema 2 below. Schema 1 remains readable for existing
