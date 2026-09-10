@@ -15,6 +15,4 @@ be ignored."
 
 ## Question
 
-Separate the metrics and evidence strengths. Explain what each observation can support,
-what it cannot prove, and what additional measurements would determine whether there is
-an extrinsic, plane-fit, localization, or navigation-clearance problem.
+Are either of these conclusions justified? What would you do next?

@@ -19,7 +19,8 @@ start at 0.1.0. Third-party versions must never be changed as part of a bundle b
 
 ## Finalize one release change
 
-1. Verify the exact release-branch head. Require successful Test and Client
+1. Finalize the changelog date and pending status in the release change, then
+   verify the exact release-branch head. Require successful Test and Client
    discovery workflows on that SHA; earlier runs are not substitutes. If a release
    claim depends on model behavior, capture each named scenario in the actual
    client/model, run judge mode with `--require-complete`, and manually review each

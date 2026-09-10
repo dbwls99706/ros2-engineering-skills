@@ -58,28 +58,16 @@ constraints and lookup routes, not a checklist to execute on every request.
    A validator does not authorize execution. Missing dependencies, cancelled commands,
    skipped checks, and partial output are not passes. Fix failures without deleting
    tests or weakening assertions to obtain a green result.
-6. **Turn blockers into a resolution plan.** Do not repeat the same blocker with
-   no new evidence. Separate code changes, measurements, and operator decisions;
-   define the next test's independent variable, evidence, pass/fail criterion,
-   and stop condition. A count target is not proof that observations are
-   independent.
-7. **Separate permission from proof.** For physical tests, track authorization
-   validity, envelope, attempt budget, technical evidence, supervised-test readiness,
-   and operational readiness separately. Authorization never raises a verification
-   level. Do not ask again for an unchanged, unexpired, and unrevoked approval with attempts
-   remaining. Renew after expiry, revocation, exhaustion, or an envelope change.
-   Execution authority is separate: user authorization does not override product,
-   client, site, or safety policy or client tool permissions. If physical actuation
-   is reserved to an operator, give the operator-ready bounded next action instead
-   of pretending authorization is missing. Recheck readiness before execution;
-   a failed or uncertain command does not authorize an unbounded retry. Details:
-   `references/evidence-progression.md`.
-8. **Finish at the requested boundary.** Complete authorized edits and checks,
-   not just a plan. When commit/push is requested, verify the remote ref equals
-   the intended commit; writing a file or creating a blob is not a push. Report
-   actual results and limits, then stop once acceptance criteria and required
-   gates are satisfied. Do not repeat unchanged checks without a reason or turn
-   a software test into an unrequested hardware experiment.
+6. **Resolve engineering uncertainty.** Separate code changes, measurements, and
+   operator decisions, with a bounded next test and an explicit stop condition.
+   Gate provenance, measurement independence, and recovery decisions are detailed
+   in `references/evidence-progression.md`.
+7. **Separate permission from proof.** Physical-test authorization, execution
+   authority, technical readiness, and observed evidence are distinct; an approval
+   neither raises a verification level nor overrides client, product, site, or
+   safety policy.
+   Follow `references/evidence-progression.md` section 2 for approval validity,
+   attempt limits, and operator-only execution, and section 5 for recovery.
 
 ## Decision router
 
@@ -152,30 +140,16 @@ path crosses a trust boundary or owns hardware.
 
 ## Verification levels
 
-For claims about ROS behavior or hardware readiness, identify the level actually
-reached. Each level answers a different question; confidence does not transfer
-to an untested level. For prose-only edits, report the relevant checks without
-enumerating unrelated ROS or hardware levels.
-
-| Level | What ran | What it proves |
-|---|---|---|
-| L0 | Static review | The code/config reads correctly; nothing was executed |
-| L1 | Unit tests | Isolated logic, no ROS graph, no real time |
-| L2 | Build + launch smoke | It compiles, nodes start, plugins/params load |
-| L3 | Runtime, robot disconnected | Graph, QoS, TF and rates on sim or mock hardware |
-| L4 | Hardware powered, no actuation | Real provenance, params, TF and driver state — motors disabled/isolated |
-| L5 | Controlled motion / fault injection | Bounded commissioning tests with appropriate containment, operator present; high-risk faults require restraint |
-| L6 | Supervised field operation | The behavior in its real duty cycle |
-
-Never write an L0–L2 result in L4+ language. Passing software tests does not
-establish that hardware is safe to drive. Report unperformed checks when they
-limit the requested claim or are required by the project. Level definitions
-and required evidence: `references/testing.md` section 11.
+Use `references/testing.md` section 11 for the canonical L0–L6 definitions,
+required evidence, and physical-test preconditions when making ROS behavior or
+hardware-readiness claims. Never write an L0–L2 result in L4+ language:
+passing software tests does not establish that hardware is safe to drive.
 
 ## Bundled tools and client integration
 
-Use `--help` before choosing flags. These tools do not import or execute the
-user's launch file merely to inspect it:
+Use `--help` before choosing flags. The validators inspect files statically.
+`launch_supervisor.py` executes a launch file and starts real processes; use it
+only for an authorized launch.
 
 | Task | Bundled utility |
 |---|---|

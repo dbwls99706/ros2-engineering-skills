@@ -1,6 +1,6 @@
 # ros2-engineering-skills
 
-Source version: **1.5.0**. See [release notes](CHANGELOG.md#150---2026-09-08) and
+Source version: **1.5.0**. See [release notes](CHANGELOG.md#150---2026-09-10) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -216,18 +216,10 @@ changes; standalone utility versions follow the same independent-interface rule.
 
 ## Verification levels
 
-| Level | Evidence |
-|---|---|
-| L0 | Static review |
-| L1 | Unit tests |
-| L2 | Build and launch smoke |
-| L3 | Runtime with simulation or mock hardware |
-| L4 | Powered hardware, actuation disabled or isolated |
-| L5 | Restrained bench motion or supervised fault injection |
-| L6 | Supervised field operation |
-
-A passing test suite is not evidence that a robot is safe to drive. State the
-highest level actually reached and explicitly identify skipped checks.
+The [canonical L0–L6 ladder](references/testing.md#11-verification-levels)
+defines evidence and preconditions from static review through supervised field
+operation. A passing software suite does not establish that a robot is safe to
+drive.
 
 ## CI scope
 
@@ -273,10 +265,10 @@ The default `eval_runner.py` checks whether expected-answer fixtures cover their
 declared criteria. It is not a model benchmark. Lexical coverage is not semantic
 correctness, and a fixture cannot substitute for an unmodified model capture.
 
-`evals/trigger_cases.json` defines 28 activation cases: 12 implicit positives,
+`evals/trigger_cases.json` defines 33 activation cases: 17 implicit positives,
 12 implicit negatives, and explicit invocation for four clients.
-`evals/benchmark_suite.json` defines eight quality cases with three trials and
-paired skill-on/off runs: 24 pairs, 48 fresh sessions per experiment.
+`evals/benchmark_suite.json` defines seven quality cases with three trials and
+paired skill-on/off runs: 21 pairs, 42 fresh sessions per experiment.
 No fabricated captures or improvement percentages are included.
 
 ```bash

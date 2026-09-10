@@ -28,12 +28,12 @@ ROS 2 DDS communication is **unencrypted by default**. Any device on the same ne
 | Malicious node joining | Unauthorized participant gains access | DDS Security PKI-DH authentication and join access control |
 | DDS discovery sniffing | Map entire robot architecture | Encrypt discovery with SROS2 |
 | Docker image tampering | Supply chain attack | Image signing, pinned base images |
-
-DDS authentication uses the PKI-DH plugin with participant certificates; see the
-[ROS 2 DDS-Security design](https://design.ros2.org/articles/ros2_dds_security.html).
 | Rosdep/pip dependency confusion | Malicious package injection | Use official repos, verify checksums |
 | Physical access to robot | Firmware tampering, key extraction | Secure boot, encrypted storage, HSM |
 | Parameter service abuse | Alter node behavior at runtime | Restrict parameter services in permissions.xml |
+
+DDS authentication uses the PKI-DH plugin with participant certificates; see the
+[ROS 2 DDS-Security design](https://design.ros2.org/articles/ros2_dds_security.html).
 
 ### Why DDS domain isolation is not security
 

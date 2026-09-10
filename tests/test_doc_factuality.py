@@ -659,26 +659,23 @@ class TestCiCacheInvalidation:
 
 class TestVerificationLevels:
     """"Tests pass" and "safe to drive" are different levels of evidence.
-    The ladder must stay in the always-loaded file for verification claims,
-    with the detail in testing.md. Order matters as much as
-    presence: a shuffled or duplicated ladder stops being a ladder."""
+    The canonical ladder lives in testing.md; other entries route to it.
+    Order matters: a shuffled or duplicated ladder is a structural defect."""
 
     def _skill_ladder_rows(self):
-        section = _md_section(PRINCIPLES_MD, 'Verification levels')
-        return re.findall(r'^\| (L\d) \|', section, re.M)
+        section = _md_section(TESTING_MD, 'Verification levels')
+        return re.findall(r'^\| \*\*(L\d)\*\*', section, re.M)
 
-    def test_detailed_principles_ladder_is_ordered_and_unique(self):
+    def test_canonical_ladder_is_ordered_and_unique(self):
         rows = self._skill_ladder_rows()
         expected = [f'L{i}' for i in range(7)]
         assert rows == expected, (
-            f'engineering-principles.md verification ladder must be L0..L6 in order, got '
+            f'testing.md verification ladder must be L0..L6 in order, got '
             f'{rows}')
 
-    def test_detailed_principles_forbids_level_inflation(self):
+    def test_detailed_principles_routes_to_canonical_ladder(self):
         section = _md_section(PRINCIPLES_MD, 'Verification levels')
-        assert 'Never write an L0–L2 result in L4+ language' in section, (
-            'engineering-principles.md must forbid reporting static results as hardware '
-            'verification')
+        assert '(testing.md#11-verification-levels)' in section
 
     def test_testing_md_expands_every_level_in_order(self):
         section = _md_section(TESTING_MD, 'Verification levels')

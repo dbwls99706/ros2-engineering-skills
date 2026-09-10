@@ -16,7 +16,4 @@ robot is unsafe."
 
 ## Question
 
-How should you review the gate before changing it or using it to block the next
-commissioning step? State what evidence you need, what claims the current 2.6
-degree result does and does not support, and how a justified threshold revision
-would be validated without rewriting the failed run as a pass.
+How would you respond to the two proposals, and what would you do next?

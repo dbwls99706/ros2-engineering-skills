@@ -51,8 +51,11 @@ sibling isolation, discarded transition events, and rapid shutdown remain checke
 `check_launch_signals.py` injects SIGINT at that callback boundary using the
 installed ROS signal manager. The raising-handler negative control must expose
 the lost callback; the shipped supervisor must complete under the same injection.
-This controlled mechanism does not identify the exact instruction interrupted
-in the earlier Humble/Jazzy failures. Native `ros2 launch --show-args` checks
+The unit regression also delivers real SIGINT during handler installation and
+requires exit 130 without starting the service. The installed CLI controls allow
+10 seconds each for cold imports; their 40-second outer budget includes three
+cases and signal controls. The fleet shutdown deadline remains 10 seconds.
+Native `ros2 launch --show-args` checks
 installed fleet discovery/imports separately. A passing supervised run does not
 claim that native `ros2 launch` shutdown was fixed; see the
 [execution guidance](../references/launch-system.md#supervisor-shutdown-stalls).
@@ -72,13 +75,6 @@ installed package versions, exact Rolling overlay revisions, and colcon logs.
 A hard runner termination can prevent final cleanup or artifact upload; missing
 evidence must not be treated as success.
 
-The motivating run at revision `e76cea8` printed passing tests and image-export
-completion, then was cancelled near its 30-minute job limit. That establishes
-that the job did not complete, not which Docker or process defect caused the
-post-export delay. This refactor removes ROS process lifetimes from BuildKit,
-separates actual execution from caching, and retains diagnostic evidence rather
-than asserting an unproven root cause.
-
 The `Required test gates` job requires every declared Test-workflow dependency
 to report success. Failure, cancellation, skip, or a missing result fails the
 summary. Client discovery is a separate workflow and must also be inspected for
@@ -88,10 +84,9 @@ evidence that all workflow suites ran.
 
 Enumerate runs for the exact `head_sha` across **both** `push` and `pull_request`
 events, including every page and relevant attempt. Inspect Test and Client
-discovery in each event. PR-only API wrappers omit the push runs: revision
-`56f024c` passed its PR Test run while its push Test run failed the Humble fleet
-shutdown gate. The commit therefore did not pass all CI. Preserve both outcomes;
-do not report a later successful rerun as if the first attempt succeeded.
+discovery in each event. An API limited to one event is not a complete CI
+inventory. Preserve failed attempts when reporting reliability; a successful
+rerun does not erase the first outcome.
 
 Synthetic Docker transport and process-lifecycle regression tests do not execute
 ROS, prove middleware behavior, or benchmark an AI model. The actual distro jobs

@@ -33,16 +33,12 @@ def test_proportionate_scope_does_not_weaken_required_checks():
     assert 'read a matching reference only when it resolves a task-specific uncertainty' in body
     assert 'affected behavior and risk, not diff size' in body
     assert 'Preserve mandatory project/CI gates' in body
-    assert 'Complete authorized edits and checks, not just a plan' in body
-    assert 'verify the remote ref equals the intended commit' in body
-    assert 'creating a blob is not a push' in body
-    assert 'Do not repeat unchanged checks without a reason' in body
 
 
 def test_scope_cases_use_the_existing_paired_capture_pipeline():
     suite = json.loads((ROOT / 'evals/benchmark_suite.json').read_text(encoding='utf-8'))
     cases = {case['id']: case for case in suite['cases']}
-    for name in ('scoped-doc-edit', 'scoped-safety-change', 'verified-completion'):
+    for name in ('scoped-doc-edit', 'scoped-safety-change'):
         case = cases[name]
         prompt = (ROOT / 'evals' / case['prompt']).read_text(encoding='utf-8')
         assert '## Scenario' in prompt and '## Question' in prompt
@@ -60,7 +56,8 @@ def test_scope_cases_use_the_existing_paired_capture_pipeline():
 def test_routing_cases_include_shorthand_and_context_only_negatives():
     suite = json.loads((ROOT / 'evals/trigger_cases.json').read_text(encoding='utf-8'))
     cases = {case['id']: case for case in suite['cases']}
-    for name in ('nav2-shorthand', 'control-shorthand'):
+    for name in ('nav2-shorthand', 'control-shorthand', 'simulation', 'realtime',
+                 'sros2', 'micro-ros', 'multi-robot'):
         assert cases[name]['should_trigger'] is True
     for name in ('generic-in-ros-repo', 'ros-mentioned-css'):
         assert cases[name]['should_trigger'] is False

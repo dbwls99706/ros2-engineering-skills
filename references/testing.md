@@ -763,10 +763,8 @@ class TestPerceptionRegression(unittest.TestCase):
 
 ## 11. Verification levels
 
-Everything above produces evidence at some level of confidence, and the levels
-are not interchangeable. `references/engineering-principles.md` Principle 13
-defines the ladder; this section is the working detail — what each level proves,
-what it explicitly does not, and what to cite as evidence.
+This section defines the canonical L0–L6 ladder: what each level proves,
+what it does not, and what to cite as evidence. Levels are not interchangeable.
 
 State the level for claims about ROS behavior or hardware readiness. Report
 unperformed checks when they limit the requested claim or are required by the
@@ -789,8 +787,9 @@ Rules for using the ladder:
   validation passed but nothing was activated, that is L2.
 - **A level does not inherit from the one below.** Passing L1 says nothing about
   L3; passing L3 in simulation says nothing about L4 provenance.
-- **Name skipped levels.** "L1 and L2 pass; L4+ not run — no hardware access" is
-  a complete report. Silence about hardware reads as hardware verification.
+- **Identify limits on the claim.** For a hardware-readiness question, "L1 and
+  L2 pass; L4+ not run — no hardware access" distinguishes tested software from
+  untested hardware.
 - **L5 preconditions are test-specific.** Require an explicitly authorized,
   bounded envelope, an operator, an independent stop path, conservative limits,
   and physical restraint/containment appropriate to the failure mode. The
@@ -803,11 +802,9 @@ Rules for using the ladder:
 - **L6 preconditions are field-specific.** Require the applicable site/product
   procedure, supervised operation, an operator stop path, and recorded evidence
   for the actual duty cycle. L6 is never an unattended CI step.
-- **Authorization and execution authority are separate.** User/operator approval
-  does not override client, product, site, safety, or tool-permission policy. If
-  the active policy reserves physical actuation to an operator, provide the exact
-  operator-ready bounded action and evaluate the resulting evidence rather than
-  asking for the same authorization again (`references/evidence-progression.md`).
+- **Authorization and execution authority are separate.** Apply the authorization,
+  attempt-budget, and operator-handoff rules in
+  [Evidence progression §2](evidence-progression.md#2-authorization-and-readiness-are-separate).
 - **Safety claims cite their weakest link.** A stop path verified at L3 is a
   stop path verified in simulation, however many tests it passed
   (`references/safety-estop.md` §3).

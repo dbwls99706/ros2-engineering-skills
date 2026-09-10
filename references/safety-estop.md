@@ -498,9 +498,16 @@ Key points:
 # From a shell with NO enclave (or a wrong one): both must fail under Enforce
 ros2 topic pub --once /safety/motion_permit std_msgs/msg/Bool '{data: true}'
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{}'
-# Expected: participant fails authentication / permission denied in DDS logs,
-# and `ros2 topic info -v` on the robot shows no new publisher appeared.
+# Expected: local rcl_init rejects missing/invalid enclave security artifacts
+# before participant creation, OR DDS rejects participant/topic access.
+# In either case, an authorized observer must see no unauthorized publisher
+# or delivered command; inspect the failing process and receiver evidence.
 ```
+
+Local rejection is expected when [rcl security directory discovery](https://github.com/ros2/rcl/blob/jazzy/rcl/src/rcl/security.c)
+fails under Enforce: [rcl_init](https://github.com/ros2/rcl/blob/jazzy/rcl/src/rcl/init.c)
+returns before initializing the RMW context. DDS logs are not required for that
+failure path.
 
 Automate this check only with actuation disconnected, such as an isolated simulation.
 Treat HIL as physical whenever it can actuate hardware. On physical hardware, run it as an
@@ -511,6 +518,9 @@ broken, the spoofed permit or `/cmd_vel` goes through. A bringup check that
 the policy is enforced.
 
 ## 5. Recovery and reset semantics
+
+Apply [Evidence progression §5](evidence-progression.md#5-recovery-without-stale-command-replay)
+to the recovery decision. The protocol below implements it at the stop gate.
 
 ### Latch the stop, require a deliberate reset
 

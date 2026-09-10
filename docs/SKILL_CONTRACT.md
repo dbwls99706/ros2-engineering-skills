@@ -51,12 +51,11 @@ not a substitute for host permissions, a sandbox, or a physical safety function.
 Never automatically install dependencies, rewrite history, change a client's
 permissions, publish results, or modify the installed skill while doing a review.
 
-For ROS behavior or hardware-readiness claims, identify the verification level
-and unperformed checks that limit the claim. Prose-only edits need their relevant
-checks, not an inventory of unrelated ROS or hardware levels.
-L0-L2 checks cannot establish powered-hardware or field behavior. Motion and
-fault injection require explicit authorization, conservative limits, an operator,
-and an independent stop path. Requesting a zero command is not measured stopping.
+For ROS behavior or hardware-readiness claims, use the
+[verification ladder](../references/testing.md#11-verification-levels).
+Physical-test authorization and execution follow
+[Evidence progression §2](../references/evidence-progression.md#2-authorization-and-readiness-are-separate);
+stop-path evidence follows [Safety §3](../references/safety-estop.md).
 
 ## Claude protocol adapter
 

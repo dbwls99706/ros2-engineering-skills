@@ -12,7 +12,4 @@ resume now that the pose is fresh.
 
 ## Question
 
-Explain the current state without describing the old failure as if it were still a
-fresh observation. Design a bounded recovery path, including what must be verified
-before clearing or transitioning the latch and what should happen to the pre-loss
-navigation command.
+How would you answer the operator and proceed from this state?

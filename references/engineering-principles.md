@@ -280,25 +280,9 @@ measured hardware response (`references/safety-estop.md` section 3).
 
 ### 13. Verification levels
 
-For claims about ROS behavior or hardware readiness, identify the level actually
-reached. Each level answers a different question; confidence does not transfer
-to an untested level. For prose-only edits, report the relevant checks without
-enumerating unrelated ROS or hardware levels.
-
-| Level | What ran | What it proves |
-|---|---|---|
-| L0 | Static review | The code/config reads correctly; nothing was executed |
-| L1 | Unit tests | Isolated logic, no ROS graph, no real time |
-| L2 | Build + launch smoke | It compiles, nodes start, plugins/params load |
-| L3 | Runtime, robot disconnected | Graph, QoS, TF and rates on sim or mock hardware |
-| L4 | Hardware powered, no actuation | Real provenance, params, TF and driver state — motors disabled/isolated |
-| L5 | Controlled motion / fault injection | Bounded commissioning tests with appropriate containment, operator present; high-risk faults require restraint |
-| L6 | Supervised field operation | The behavior in its real duty cycle |
-
-Never write an L0–L2 result in L4+ language. Passing software tests does not
-establish that hardware is safe to drive. Report unperformed checks when they
-limit the requested claim or are required by the project. Level definitions
-and required evidence: `references/testing.md` section 11.
+Use [Testing §11](testing.md#11-verification-levels) as the canonical L0–L6
+ladder, including the evidence and preconditions for each level. A software
+result does not establish hardware readiness.
 
 ## Common anti-patterns
 

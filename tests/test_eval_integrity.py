@@ -113,6 +113,24 @@ def test_malformed_yaml_fails_without_traceback(suite, payload):
     assert 'Traceback' not in result.stderr
 
 
+@pytest.mark.parametrize('value', ['2026-09-01', '2026-09-01T12:30:00Z'])
+def test_iso_metadata_has_identical_quoted_and_unquoted_scope(suite, value):
+    root, config = suite
+    original = yaml.safe_dump(config)
+    capture(root)
+    scopes = []
+    for spelling in (value, json.dumps(value)):
+        (root / 'eval.yaml').write_text(
+            original + 'reviewed_on: ' + spelling + '\n', encoding='utf-8')
+        loaded = runner.load_eval_config(root)
+        assert loaded['reviewed_on'] == value
+        report = runner.run_parity_test(loaded, str(root))
+        scopes.append(report['scope_sha256'])
+    assert scopes[0] == scopes[1]
+    # The manifest loader must not mutate PyYAML's shared SafeLoader.
+    assert not isinstance(yaml.safe_load(value), str)
+
+
 def test_duplicate_eval_names_are_rejected(suite):
     root, config = suite
     config['evals'].append(copy.deepcopy(config['evals'][0]))

@@ -563,7 +563,7 @@ Examples:
   %(prog)s --pub reliable,volatile,keep_last,1 --sub reliable,volatile,keep_last,1
   %(prog)s --preset sensor
   %(prog)s --preset command
-  %(prog)s --pub reliable,volatile,keep_last,1,100,0,automatic,0 \
+  %(prog)s --pub reliable,volatile,keep_last,1,100,0,automatic,0 \\
            --sub reliable,volatile,keep_last,1,50,0,automatic,0 --json
 
 Extended format: reliability,durability,history,depth,deadline_ms,

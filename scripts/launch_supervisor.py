@@ -32,6 +32,12 @@ def run_service(service):
     interrupted = False
     handler_installed = False
 
+    def latch_interrupt(signum, frame):
+        nonlocal interrupted
+        # Record a prestart signal before the event loop can dispatch its fd.
+        # Never raise or call launch from the Python signal handler.
+        interrupted = True
+
     def request_shutdown():
         nonlocal interrupted
         interrupted = True
@@ -54,11 +60,16 @@ def run_service(service):
         await loop.shutdown_default_executor()
 
     try:
-        # asyncio installs a non-raising Python handler and a wakeup fd. ROS
-        # AsyncSafeSignalManager forwards to that fd, retaining both callbacks.
-        # KeyboardInterrupt must not discard a ready callback between pop/run.
-        loop.add_signal_handler(signal.SIGINT, request_shutdown)
-        handler_installed = True
+        # Install the wakeup fd and synchronous latch as one transition. A
+        # pending SIGINT is delivered after both are ready, before run() starts.
+        # ROS AsyncSafeSignalManager forwards to the fd during launch execution.
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        try:
+            loop.add_signal_handler(signal.SIGINT, request_shutdown)
+            handler_installed = True
+            signal.signal(signal.SIGINT, latch_interrupt)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         try:
             return loop.run_until_complete(run())
         finally:

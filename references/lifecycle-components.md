@@ -236,7 +236,8 @@ cleanup/reconfigure and active shutdown, not just the first activation.
 ### Exception-safe cleanup for resource owners
 
 [`rclcpp::TimerBase::cancel()` can throw](https://github.com/ros2/rclcpp/blob/jazzy/rclcpp/include/rclcpp/timer.hpp).
-Calling it unguarded inside `halt() noexcept` can invoke `std::terminate` before
+Calling it unguarded inside a project-defined cleanup function such as
+`halt() noexcept` (not an rclcpp API) can invoke `std::terminate` before
 a later stop transmission or transport close is attempted. One `try` block
 around the entire cleanup sequence also skips later steps after the first
 exception.

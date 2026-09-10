@@ -2,7 +2,23 @@
 
 All notable changes are documented here.
 
-## Unreleased
+## 1.5.0 - 2026-09-10
+
+Pending release; date records the latest source update.
+
+- Centralize verification levels in the testing reference and keep authorization
+  details in evidence progression. Remove repository-connector incidents and the
+  unrelated Git completion benchmark from the domain skill.
+- Add simulation, real-time, SROS2, micro-ROS, and fleet routing scenarios; remove
+  rubric hints from progression questions. These are evaluation inputs, not
+  measured activation or model-quality results.
+- Repair the security threat table and multiline QoS help example; accept quoted
+  and unquoted ISO dates consistently in evaluation metadata.
+- Ship a POSIX launch supervisor that preserves ready callbacks across SIGINT
+  and records an interrupt before launch starts. Exercise real signals and real
+  ROS CLI argument parsing; preserve the fleet shutdown deadline and child checks.
+- Correct launch namespace resolution, permit-generation/reset guidance, SROS2
+  rejection outcomes, and exception-safe lifecycle teardown guidance.
 
 - Correct quaternion normalization and IMU covariance guidance against upstream
   definitions; execute the normalization example in regression tests.
@@ -18,8 +34,6 @@ All notable changes are documented here.
   claims, and physical-test authorization tracking to physical tests. Keep
   prose-only reports proportional without weakening required checks or stop proof.
 
-## 1.5.0 - 2026-09-08
-
 - Fail fleet verification on completed service errors, cancelled/empty/late
   replies, and exhausted readiness budgets; retry only unanswered read requests
   and retire their pending futures on all exit paths.
@@ -32,9 +46,8 @@ All notable changes are documented here.
   lost-response and persistent-failure regression cases.
 
 - Make environment discovery, reference reading, and local validation proportional
-  to the task while retaining mandatory CI and physical-safety boundaries. Verify
-  remote branch state before claiming an authorized commit/push is complete.
-- Add task-scope and completion cases to the paired capture suite, expand routing
+  to the task while retaining mandatory CI and physical-safety boundaries.
+- Add task-scope cases to the paired capture suite, expand routing
   negatives, and document controlled model/skill-upgrade comparisons.
 - Reject FIFOs and other non-regular capture inputs without blocking; bound reads
   and verify artifact hashes and text from one snapshot.

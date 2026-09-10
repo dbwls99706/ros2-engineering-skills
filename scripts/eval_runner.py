@@ -138,6 +138,9 @@ def load_eval_config(eval_dir):
         return result
 
     UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+    # YAML implicitly types ISO dates/timestamps. Keep manifest metadata JSON
+    # compatible, with the same spelling and hash as an explicitly quoted value.
+    UniqueLoader.add_constructor('tag:yaml.org,2002:timestamp', UniqueLoader.construct_scalar)
     config_path = _resolve_within(eval_dir, 'eval.yaml')
     try:
         if config_path is None:

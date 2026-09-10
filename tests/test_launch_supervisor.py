@@ -120,10 +120,11 @@ def test_prestart_stop_does_not_start_the_service(monkeypatch):
     loop = asyncio.new_event_loop()
     install = loop.add_signal_handler
     events = []
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
 
     def install_with_pending_stop(signum, callback):
         install(signum, callback)
-        loop.call_soon(callback)
+        os.kill(os.getpid(), signum)
 
     class Service:
         async def run_async(self):
@@ -138,6 +139,7 @@ def test_prestart_stop_does_not_start_the_service(monkeypatch):
     assert run_service(Service()) == 130
     assert events == ['shutdown']
     assert loop.is_closed()
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
 
 
 def test_preserves_an_existing_idle_loop():
@@ -161,6 +163,7 @@ def test_preserves_an_existing_idle_loop():
 def test_handler_setup_failure_still_closes_owned_loop(monkeypatch):
     loop = asyncio.new_event_loop()
     prior = signal.getsignal(signal.SIGINT)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
 
     def fail(*args):
         raise NotImplementedError('unsupported signal backend')
@@ -171,6 +174,7 @@ def test_handler_setup_failure_still_closes_owned_loop(monkeypatch):
         run_service(object())
     assert loop.is_closed()
     assert signal.getsignal(signal.SIGINT) is prior
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
 
 
 @pytest.mark.parametrize('argument', ['--help', '--version', '/missing/launch.py'])

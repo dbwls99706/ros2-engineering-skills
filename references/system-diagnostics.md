@@ -150,8 +150,8 @@ WebSocket loop). This is where the same failure keeps being reintroduced:
   dropout into a permanent one.
 - **State on reconnect.** After the link returns, decide explicitly what is
   stale: latched topics need republishing, lifecycle nodes may need
-  reactivation, and any command received before the drop must be discarded
-  rather than replayed (`references/safety-estop.md` §5).
+  reactivation, and buffered commands require the
+  [recovery policy](evidence-progression.md#5-recovery-without-stale-command-replay).
 
 A bridge node is a resource-owning node in the sense of
 `references/engineering-principles.md` Principle 9 — lifecycle transitions give

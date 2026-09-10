@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -339,6 +340,20 @@ class TestCLI:
     def test_no_args_shows_help(self):
         result = run_script()
         assert result.returncode != 0
+
+    def test_multiline_help_example_can_be_copied_and_run(self):
+        help_text = run_script('--help').stdout
+        example = help_text.split('Examples:\n', 1)[1].split('\n\n', 1)[0]
+        lines = example.splitlines()[-2:]
+        assert lines[0].endswith('\\')
+        assert lines[1].lstrip().startswith('--sub ')
+        argv = shlex.split('\n'.join(lines).replace('\\\n', ''))
+        result = run_script(*argv[1:])
+        assert result.returncode == 1
+        report = json.loads(result.stdout)
+        assert report['compatible'] is False
+        assert report['publisher']['deadline_ms'] == 100.0
+        assert report['subscriber']['deadline_ms'] == 50.0
 
     def test_preset_rejects_pub_sub(self):
         # --preset must not silently discard user-supplied profiles

@@ -1,4 +1,4 @@
-"""Regression checks for evidence-driven progression rules."""
+"""Structural checks for evidence-driven progression references and fixtures."""
 
 from pathlib import Path
 import re
@@ -20,7 +20,7 @@ def read(path):
 
 
 def flat(path):
-    """Collapse Markdown wrapping so prose regressions test meaning, not layout."""
+    """Collapse wrapping for structural text checks; these do not test semantics."""
     return ' '.join(read(path).split())
 
 
@@ -33,20 +33,15 @@ def test_selected_contract_reviews_gate_provenance():
     body = flat(SKILL)
     assert 'Validate gates, not only outcomes' in body
     assert 'do not assume a gate is valid merely because it already exists in code' in body
-    assert 'Turn blockers into a resolution plan' in body
     assert 'Separate permission from proof' in body
-    assert 'unchanged, unexpired, and unrevoked' in body
     assert '`references/evidence-progression.md`' in body
 
 
-def test_authorization_and_execution_authority_are_separate():
+def test_selected_contract_routes_physical_test_policy():
     body = flat(SKILL)
-    assert 'Execution authority is separate' in body
-    assert 'does not override product, client, site, or safety policy' in body
-    assert 'client tool permissions' in body
-    assert 'physical actuation is reserved to an operator' in body
-    assert 'operator-ready bounded next action' in body
-    assert 'pretending authorization is missing' in body
+    assert 'execution authority' in body
+    assert 'operator-only execution' in body
+    assert '`references/evidence-progression.md` section 2' in body
 
 
 def test_progression_reference_keeps_both_gate_failure_modes():
@@ -196,8 +191,7 @@ def test_repeatability_is_not_confused_with_independent_accuracy():
 
 
 def test_l5_description_covers_controlled_trials_without_reclassifying_all_as_field_use():
-    for path in (SKILL, ROOT / 'references/engineering-principles.md', TESTING):
-        assert 'Controlled motion / fault injection' in read(path)
+    assert 'Controlled motion / fault injection' in read(TESTING)
     assert 'software geofence alone is not equivalent to physical restraint' in flat(TESTING)
 
 

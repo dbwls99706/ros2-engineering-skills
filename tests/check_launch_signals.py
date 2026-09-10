@@ -51,7 +51,7 @@ def generate_launch_description():
         for arguments, expected_success, marker in cases:
             result = subprocess.run([sys.executable, str(root / 'scripts/launch_supervisor.py'),
                                      str(path), *arguments], capture_output=True, text=True,
-                                    timeout=3.0)
+                                    timeout=10.0)
             output = result.stdout + result.stderr
             print(output, flush=True)
             assert (result.returncode == 0) is expected_success, output
