@@ -4,8 +4,8 @@ All notable changes are documented here.
 
 ## 1.5.1 - 2026-09-16
 
-Source changes prepared for review; no tag or GitHub Release is published by
-this branch. Release verification remains subject to `docs/RELEASING.md`.
+Source bundle version 1.5.1. Tag `v1.5.1` and the GitHub Release are not
+published; publishing remains a separate step in `docs/RELEASING.md`.
 
 - Require controls for self-built diagnostics before interpreting missing evidence;
   separate agreement with an implementation from independent physical truth and
