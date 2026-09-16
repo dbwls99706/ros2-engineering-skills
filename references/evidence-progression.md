@@ -68,6 +68,21 @@ inspection, simulation, isolated measurements, or the authorized change process.
 Freeze revised acceptance criteria before collecting confirmation data; retain the
 failed run and test the revised rule on new data rather than fitting it to that run.
 
+### Accepted and rejected changes
+
+For either decision, record the requirement, measured metric, denominator and
+region/population, baseline and candidate, uncertainty, preservation constraints,
+and result. Explain why that metric answers the requirement. A door-region count
+cannot settle a person-removal requirement without a justified relationship.
+Record which quantities remain unmeasured; a rejection on the wrong quantity is
+not a settled decision about the requirement. Reopen that decision without
+silently deleting the earlier result or deploying the candidate.
+
+Check both the desired effect and collateral regressions. A cleanup that removes
+more target points but erases required static structure is not a success. Define
+acceptance and preservation criteria before confirmation; retain failing cases
+and use independent confirmation data as described above.
+
 ## 2. Authorization and readiness are separate
 
 Do not compress all of the following into one `approved` Boolean:
@@ -179,6 +194,12 @@ accounted for, but do not remove a common calibration bias or establish global
 accuracy. Vary geometry or use an independent reference when the hypothesis needs
 it. Do not demand arbitrary novelty or count adjacent frames as independent proof.
 
+Before subset or ordering sweeps, establish the whole-pipeline semantics using
+`references/artifact-lineage.md` section 4. A set-only flag alone is insufficient.
+Even when final-result dominance is proven, bounded prefix tests can locate when
+new contributions occur. State that question instead of promising a better final
+result from a subset that the established semantics already rule out.
+
 ## 4. Current observation vs latched failure
 
 A current healthy sample and a latched historical failure can both be true.
@@ -251,6 +272,37 @@ skew, or poor conditioning can make orientation estimates noisier than individua
 range precision suggests. State what the acceptance threshold is actually testing
 before comparing a measured number with it.
 
+### Self-built diagnostics are measurement instruments
+
+A ray test, angular neighborhood, derived statistic, or custom comparator is not
+an independent oracle merely because it is separate code. State its measured
+property, units, frames, sampling assumptions, approximations, and tolerance.
+Before relying on an absence claim, run positive controls where that property is
+known to be present under representative sampling and geometry. When a looser
+tolerance can create false positives, also test known negative controls. Record
+control provenance, sample counts, expected answers, and observed errors alongside
+the finding. Missing or failing controls leave the absence claim unvalidated.
+
+A system's own decisions can be a differential reference for reproducing its
+behavior, not independent physical ground truth. Establish that its labels mean
+the property being tested: a removed point is not automatically a known ray
+intersection, and a retained point is not automatically a known absence. Use
+independently labelled data or analytically known synthetic cases when physical
+correctness is the claim; disclose their coverage limits.
+
+Choose diagnostic resolution from geometry, sampling, and uncertainty, then
+check sensitivity over a justified range. Observed nearest-return spacing is not
+by itself the sensor's nominal angular resolution. A narrower neighborhood may
+miss observations, while a wider one may count unrelated rays. Do not widen until
+everything passes, or treat detecting both positive and negative cases as
+validation. Freeze the justified settings before independent confirmation.
+
+Report an uncalibrated zero as "not detected by this diagnostic under these
+settings," not "no observation exists." Keep the measured output, narrow or
+retract the causal conclusion, and define a bounded calibration test. A failed
+instrument invalidates the inference; it does not by itself prove the opposite
+physical claim. A passing control only supports its tested scope.
+
 ## 7. User observations as evidence
 
 Do not promote an operator observation directly to ground truth, but do not throw
@@ -308,6 +360,29 @@ Recovery evidence: <what re-establishes continuity/state>
 Previous command: invalidated / explicitly governed by tested resume protocol
 ```
 
+### Offline findings and retractions
+
+Report the exact inputs, diagnostic/control validity, comparison rule, and scope
+of an offline result directly; L0-L6 is not a substitute for those details. Exact
+output reproduction does not establish physical correctness or hardware readiness.
+See `references/artifact-lineage.md` for saved map/bag evidence.
+
+The root reporting shape is optional, not a mandatory output schema. When an
+established claim is invalidated, distinguish that correction from an unresolved
+question. For example:
+
+```text
+Retracted: <prior claim and record location>
+Reason and evidence: <failed control, contradictory result, or invalid assumption>
+Replacement: <narrower supported claim, or unknown>
+Affected conclusions: <decisions/documents corrected or still needing review>
+Remaining: <genuinely unresolved question and bounded next test>
+```
+
+Preserve the original record and link its correction; do not silently rewrite
+history, revive a rejected inference in a later summary, or invent a retraction
+when none occurred. This is prose reporting guidance, not a hook JSON change.
+
 ## 9. Common failures and fixes
 
 | Failure | Why it is wrong | Better approach |
@@ -326,7 +401,8 @@ Previous command: invalidated / explicitly governed by tested resume protocol
 
 ---
 
-**See also:** `references/testing.md` for L0-L6 evidence levels,
+**See also:** `references/artifact-lineage.md` for offline ROS data provenance,
+`references/testing.md` for L0-L6 evidence levels,
 `references/safety-estop.md` for stop/reset semantics,
 `references/system-diagnostics.md` for cross-layer failure timelines,
 and `references/sensor-integration.md` for calibration and timestamp mechanics.

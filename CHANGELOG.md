@@ -2,6 +2,30 @@
 
 All notable changes are documented here.
 
+## 1.5.1 - 2026-09-16
+
+Source changes prepared for review; no tag or GitHub Release is published by
+this branch. Release verification remains subject to `docs/RELEASING.md`.
+
+- Require controls for self-built diagnostics before interpreting missing evidence;
+  separate agreement with an implementation from independent physical truth and
+  check false positives when broadening a detector.
+- Record requirement-linked metrics for rejected as well as accepted gate changes,
+  including preservation constraints and the limits of the observed dataset.
+- Route offline ROS map/bag investigations to artifact-lineage guidance: distinguish
+  backend execution, caller adoption, saved output, content equality, and historical
+  ancestry; compare identities or multisets rather than only counts.
+- Qualify subset/order optimizations with whole-pipeline semantics. A set-only flag
+  alone proves neither subset dominance nor order independence; retain useful
+  prefix attribution tests and an executable synthetic counterexample.
+- Keep offline verification scoped to the actual claim, without a new readiness
+  ladder. Record retractions when needed and correct dependent conclusions while
+  preserving the original evidence and optional reporting format.
+- Add four synthetic review scenarios and structural/counterexample regressions.
+  These are evaluation inputs, not measured model improvements or a reproduction
+  of a production recording. Existing CLI, hook-report, and CI contracts remain
+  unchanged.
+
 ## 1.5.0 - 2026-09-10
 
 - Correct SROS2 participant/enclave semantics, Enforce-only authorization

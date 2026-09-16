@@ -1,6 +1,6 @@
 # ros2-engineering-skills
 
-Source version: **1.5.0**. See [release notes](CHANGELOG.md#150---2026-09-10) and
+Source version: **1.5.1**. See [release notes](CHANGELOG.md#151---2026-09-16) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -188,7 +188,7 @@ Detailed tables and the 22 recurring pitfalls are retained in
 loaded only when relevant. The [context budget](docs/CONTEXT_BUDGET.md) separates
 byte/line limits from measured, named-tokenizer counts.
 
-The decision router in [SKILL.md](SKILL.md) selects among 26 task-specific
+The decision router in [SKILL.md](SKILL.md) selects among 27 task-specific
 references plus cross-cutting engineering principles.
 Metadata is advertised before activation; the selected body and needed references
 supply the workflow. See [Skill contract](docs/SKILL_CONTRACT.md) for scope,
@@ -279,6 +279,11 @@ Missing data, incomplete pairs, reused sessions/artifacts, and hash mismatches
 fail this check. A valid capture still needs trace-authenticity review and semantic
 grading. See [capture workflow](docs/EVIDENCE_CAPTURE.md) and the existing
 [eval workflow](docs/EVAL_WORKFLOW.md).
+
+The separate [diagnostic review suite](evals/diagnostics/README.md) preregisters
+four synthetic offline-analysis cases with three paired trials each. Its controls,
+artifact-lineage questions, and state-semantics counterexample are evaluation
+inputs, not measured model improvements or a replay of a production recording.
 
 ## Safety, contribution, and maintenance
 

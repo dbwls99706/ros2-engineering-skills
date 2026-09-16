@@ -2,7 +2,7 @@
 name: ros2-engineering-skills
 description: >
   ROS 2 engineering: rclcpp/rclpy, colcon/ament, launch, QoS/DDS, tf2/URDF,
-  ros2_control, Nav2, MoveIt 2, sensors, runtime provenance, and hardware safety.
+  ros2_control, Nav2, MoveIt 2, sensors, runtime/artifact provenance, and hardware safety.
   Use for development, review, debugging, and ROS 1 migration to ROS 2.
   Not for general C++/Python, unrelated middleware, or web/mobile tasks.
 license: Apache-2.0
@@ -12,7 +12,7 @@ compatibility: >
   target ROS 2 environment. Claude plugin hooks are client-specific.
 metadata:
   author: dbwls99706
-  version: "1.5.0"
+  version: "1.5.1"
   repository: "https://github.com/dbwls99706/ros2-engineering-skills"
 ---
 
@@ -49,6 +49,9 @@ constraints and lookup routes, not a checklist to execute on every request.
    what a gate measures, why it exists, its source, uncertainty or error budget,
    and its clearing condition. Never relax a gate merely because a run failed,
    but do not assume a gate is valid merely because it already exists in code.
+   Validate self-built diagnostics with positive controls before relying on absence
+   claims; check false positives when relevant. Record requirement-linked metrics
+   for accepted and rejected changes. See `references/evidence-progression.md`.
 5. **Change and verify.** A fix request authorizes in-scope local edits and
    relevant non-destructive validation, not unrelated deployment. Match checks
    to affected behavior and risk, not diff size: a stop-limit YAML edit is not a
@@ -60,6 +63,8 @@ constraints and lookup routes, not a checklist to execute on every request.
    tests or weakening assertions to obtain a green result.
 6. **Resolve engineering uncertainty.** Separate code changes, measurements, and
    operator decisions, with a bounded next test and an explicit stop condition.
+   Check whole-pipeline semantics before subset/order sweeps; a set-only flag alone
+   does not prove subset dominance or order independence.
    Gate provenance, measurement independence, and recovery decisions are detailed
    in `references/evidence-progression.md`.
 7. **Separate permission from proof.** Physical-test authorization, execution
@@ -86,9 +91,10 @@ constraints and lookup routes, not a checklist to execute on every request.
 | Camera, LiDAR, PCL, cv_bridge, depth | `references/perception.md` |
 | Sensor drivers, clock sync, extrinsics | `references/sensor-integration.md` |
 | Unit/integration tests, launch_testing, CI | `references/testing.md` |
-| Threshold provenance, authorization, blocked work, recovery evidence | `references/evidence-progression.md` |
+| Gate provenance, diagnostic validity, authorization, recovery evidence | `references/evidence-progression.md` |
 | Debugging, tracing, profiling, rosbag2, CLI | `references/debugging.md` |
 | Which install, configuration, or publisher actually runs | `references/runtime-provenance.md` |
+| Offline ROS map/bag post-processing, saved artifact lineage | `references/artifact-lineage.md` |
 | Faults across ROS, network, bridge, and driver layers | `references/system-diagnostics.md` |
 | Docker, cross-compilation, deployment, OTA | `references/deployment.md` |
 | Bringup, udev, boot sequence, watchdogs | `references/system-bringup.md` |
@@ -144,6 +150,8 @@ Use `references/testing.md` section 11 for the canonical L0–L6 definitions,
 required evidence, and physical-test preconditions when making ROS behavior or
 hardware-readiness claims. Never write an L0–L2 result in L4+ language:
 passing software tests does not establish that hardware is safe to drive.
+For offline analysis, state input scope, diagnostic validity, and artifact comparison
+explicitly. Do not force those claims onto a hardware-readiness ladder.
 
 ## Bundled tools and client integration
 
@@ -175,3 +183,6 @@ Evidence: <observed input, actual command/result, or source>
 Verification: <level reached and exact scope>
 Remaining: <unexecuted checks, uncertainty, or required authorization>
 ```
+
+When a prior claim is invalidated, add `Retracted: <claim, reason, replacement
+and evidence>`; preserve the original record and correct dependent conclusions.

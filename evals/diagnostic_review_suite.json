@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "purpose": "Preregistered synthetic diagnostic and artifact review cases, not model results. All criteria require semantic review.",
+  "trials": 3,
+  "cases": [
+    {
+      "id": "diagnostic-controls",
+      "prompt": "diagnostics/prompts/diagnostic-controls.md",
+      "criteria": [
+        "Withdraw the unsupported absence-to-route conclusion while preserving its record and identifying affected decisions.",
+        "Recognize the narrow diagnostic misses known positives and the wide diagnostic has false positives; neither justifies the claimed absence or physical coverage.",
+        "Separate reproduction of cleanup decisions from independently known ray geometry; removed and retained labels are not automatically physical ground truth.",
+        "Propose representative positive and negative controls with geometry- and uncertainty-based settings, bounded sensitivity checks and independent confirmation; do not widen until everything passes.",
+        "Keep the physical cause unresolved and report diagnostic scope instead of claiming the opposite conclusion is proven."
+      ]
+    },
+    {
+      "id": "artifact-adoption",
+      "prompt": "diagnostics/prompts/artifact-adoption.md",
+      "criteria": [
+        "Distinguish helper execution from caller selection and saved-output adoption; retain the acceptance failure and check the saved artifact read-only.",
+        "Identify equal counts with unequal removed-ID sets; compare both differences on the same input universe.",
+        "Treat resampled radius matches as approximate and account for duplicate multiplicity and identity loss.",
+        "Do not infer historical ancestry from coordinate equality without processing records; state the missing lineage evidence.",
+        "Distinguish different binary bytes from tested behavioral equivalence on one corpus, without a universal equivalence or hardware-readiness claim."
+      ]
+    },
+    {
+      "id": "subset-semantics",
+      "prompt": "diagnostics/prompts/subset-semantics.md",
+      "criteria": [
+        "Explain why fixed contributions, a fixed universe and a monotone final union make A subset-dominant, duplicate-idempotent and order-independent.",
+        "Compute B outputs as {0}, {4,5}, and {4,5}; reject a general subset-dominance or order-independence claim based only on a set-only flag.",
+        "Check whole-pipeline preprocessing, poses, grid, adaptive choices, resets and final query before transferring the proof to another implementation.",
+        "Keep bounded prefix tests for marginal contribution, cost or sufficiency even when a subset cannot beat A on final removal count."
+      ]
+    },
+    {
+      "id": "rejected-metric",
+      "prompt": "diagnostics/prompts/rejected-metric.md",
+      "criteria": [
+        "Reopen B because the doorway rejection did not measure the requirement; preserve and correct the earlier record rather than treating it as settled.",
+        "Report target and preservation metrics with denominators: A=20% and 0.1%, B=30% and 0.15%, C=95% and 30%.",
+        "Reject C under the stated 1% static-deletion constraint rather than optimizing only person removal.",
+        "Treat B as supported on the exploratory recording, not confirmed for all maps; freeze criteria and require independent confirmation.",
+        "Do not deploy a map or claim physical safety from offline results; distinguish retracted decisions from remaining uncertainty."
+      ]
+    }
+  ]
+}
