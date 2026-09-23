@@ -12,7 +12,7 @@ compatibility: >
   target ROS 2 environment. Claude plugin hooks are client-specific.
 metadata:
   author: dbwls99706
-  version: "1.5.1"
+  version: "1.6.0"
   repository: "https://github.com/dbwls99706/ros2-engineering-skills"
 ---
 
@@ -109,8 +109,11 @@ constraints and lookup routes, not a checklist to execute on every request.
 For cross-cutting design decisions, QoS starting-point tables, distribution
 feature differences, migration notes, or recurring pitfalls, read the relevant
 section of `references/engineering-principles.md`. Do not preload that entire
-reference for a narrow task. Apply security and stop-path checks whenever a data
-path crosses a trust boundary or owns hardware.
+reference for a narrow task. When several rows apply (for example, a camera
+pipeline spans perception, communication QoS, and launch), first search each
+reference's second-level (`##`) headings and read only the matching sections.
+Apply security and stop-path checks whenever a data path crosses a trust
+boundary or owns hardware.
 
 ## High-impact checks
 
@@ -165,6 +168,7 @@ only for an authorized launch.
 | Inspect a launch file or directory statically | `scripts/launch_validator.py` |
 | Run an authorized launch (POSIX) | `scripts/launch_supervisor.py` |
 | Compare declared offered/requested QoS | `scripts/qos_checker.py` |
+| Audit QoS declarations across a package (static) | `scripts/qos_audit.py` |
 | Inspect rosbag2 QoS metadata | `scripts/rosbag2_qos_checker.py` |
 | Inspect a proposed tool command/edit | `scripts/skill_validate_hook.py` |
 | Review workspace findings after a task | `scripts/skill_stop_hook.py` |
