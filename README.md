@@ -1,6 +1,6 @@
 # ros2-engineering-skills
 
-Source version: **1.5.1**. See [release notes](CHANGELOG.md#151---2026-09-16) and
+Source version: **1.6.0**. See [release notes](CHANGELOG.md#160---2026-09-23) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -180,6 +180,15 @@ the CI matrix targets 3.10 through 3.14. Consult the run for the exact revision'
 results. Runtime dependencies are in `requirements.txt`; development dependencies
 are separate. Build and runtime checks additionally require the target ROS stack.
 
+## Where the guidance lives
+
+| Path | Role |
+|---|---|
+| `SKILL.md`, `references/`, `docs/` | The guidance itself: router, task references, contracts |
+| `scripts/` | User-facing static checkers and helpers (table below) |
+| `.claude-plugin/`, `hooks/`, `agents/`, `install.sh`, `install.ps1` | Client and installation integration |
+| `tests/`, `evals/`, `.github/` | Development and verification of this repository |
+
 ## What is included
 
 The selected `SKILL.md` contains a short operating contract and task router.
@@ -198,6 +207,7 @@ permission boundaries, protocol behavior, and context-budget limitations.
 |---|---|---|
 | `create_package.py` | Generate package scaffolds | Build in the target distribution |
 | `qos_checker.py` | Compare offered/requested QoS | Compatibility is not delivery quality |
+| `qos_audit.py` | Pair QoS declarations across a package by topic and type | Static; unresolved values are never guessed |
 | `rosbag2_qos_checker.py` | Inspect bag metadata QoS | Static metadata analysis |
 | `launch_validator.py` | Detect selected Python launch defects | Does not start a graph |
 | `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
