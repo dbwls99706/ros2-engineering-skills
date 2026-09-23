@@ -115,7 +115,7 @@ def _standard(name: str) -> AuditProfile:
         "sensor_data": (KEEP_LAST, 5, BEST_EFFORT, VOLATILE),
         "services_default": (KEEP_LAST, 10, RELIABLE, VOLATILE),
         "parameters": (KEEP_LAST, 1000, RELIABLE, VOLATILE),
-        "parameter_events": (KEEP_ALL, 1000, RELIABLE, VOLATILE),
+        "parameter_events": (KEEP_LAST, 1000, RELIABLE, VOLATILE),
     }
     if name == "system_default":
         return AuditProfile(SYSTEM_DEFAULT, None, SYSTEM_DEFAULT, SYSTEM_DEFAULT,
@@ -247,20 +247,26 @@ class Evaluation:
 
 
 def project_to_checker(profile: AuditProfile, label: str = "") -> Optional[QoSProfile]:
-    """Return a qos_checker profile only when the projection is lossless.
+    """Return a qos_checker profile only for a compatibility-preserving projection.
 
     Every enum policy must be concrete. Unspecified durations map to 0, which
-    qos_checker and rmw_dds_common both treat as "no deadline/lease".
+    qos_checker and rmw_dds_common both treat as "no deadline/lease". A KEEP_ALL
+    profile without a depth gets a 0 sentinel: the projection is not lossless,
+    but KEEP_ALL depth never takes part in the compatibility decision.
     """
     if (profile.reliability in UNDETERMINED or profile.durability in UNDETERMINED
-            or profile.liveliness in UNDETERMINED or profile.history in UNDETERMINED
-            or profile.depth is None):
+            or profile.liveliness in UNDETERMINED or profile.history in UNDETERMINED):
         return None
+    depth = profile.depth
+    if depth is None:
+        if profile.history != KEEP_ALL:
+            return None
+        depth = 0
     return QoSProfile(
         reliability=Reliability(profile.reliability),
         durability=Durability(profile.durability),
         history=History(profile.history),
-        depth=profile.depth,
+        depth=depth,
         label=label,
         deadline_ms=profile.deadline_ms or 0,
         lifespan_ms=profile.lifespan_ms or 0,
@@ -596,8 +602,12 @@ class PythonExtractor:
                 # deadline, lifespan, liveliness_lease_duration and others are
                 # not parsed in this version; never assume their values.
                 raise Unresolved(f"QoSProfile argument '{key}' is not parsed")
-        if profile.history == KEEP_ALL and "depth" not in given:
-            profile.depth = None
+        # rclpy (Humble+) raises InvalidQoSProfileException for an explicit
+        # KEEP_LAST without depth; otherwise an omitted depth keeps the
+        # rmw default, which KEEP_ALL ignores.
+        if "history" in given and "depth" not in given and profile.history == KEEP_LAST:
+            raise Unresolved("invalid QoSProfile: KEEP_LAST without depth "
+                             "(rclpy raises InvalidQoSProfileException)")
         return profile
 
     def _policy(self, policy: str, node: ast.AST, scope: _Scope, line: int) -> str:
@@ -929,10 +939,7 @@ class CppExtractor:
 def find_yaml_candidates(path: str, text: str) -> list:
     """List qos_overrides keys. They are candidates only: whether a launch file
     loads the file and the node allows the override is not established."""
-    try:
-        documents = list(yaml.safe_load_all(text))
-    except yaml.YAMLError:
-        return []
+    documents = list(yaml.safe_load_all(text))  # YAMLError is handled by scan()
     candidates: list = []
 
     def walk(node: Any, trail: list) -> None:
@@ -986,17 +993,24 @@ class AuditReport:
             "confirmed_compatible": pair_count("confirmed", COMPATIBLE),
             "potential_pairs": sum(1 for p in self.pairs if p["relation"] == "potential"),
             "not_evaluated_pairs": sum(1 for p in self.pairs if p["compatibility"] is None),
-            "confirmed_type_conflicts": sum(1 for c in self.type_conflicts if c["relation"] == "confirmed"),
-            "potential_type_conflicts": sum(1 for c in self.type_conflicts if c["relation"] == "potential"),
+            "confirmed_type_conflicts": sum(1 for c in self.type_conflicts
+                                            if c["relation"] == "confirmed" and c["status"] == "definite"),
+            "possible_type_conflicts": sum(1 for c in self.type_conflicts
+                                           if c["relation"] != "confirmed" or c["status"] != "definite"),
             "unresolved_endpoints": len(self.unresolved),
+            "incomplete_files": len(self.skipped),
         }
 
     def exit_code(self, strict: bool) -> int:
         c = self.counts()
         if c["confirmed_incompatible"] or c["confirmed_type_conflicts"]:
             return 1
+        # Anything the audit could not establish fails only in strict mode:
+        # skipped or unparsed files, unresolved endpoints (paired or not),
+        # potential or unevaluated pairs, and indeterminate results.
         if strict and (c["confirmed_indeterminate"] or c["potential_pairs"] or c["not_evaluated_pairs"]
-                       or c["potential_type_conflicts"] or c["unresolved_endpoints"]):
+                       or c["possible_type_conflicts"] or c["unresolved_endpoints"]
+                       or c["incomplete_files"]):
             return 1
         return 0
 
@@ -1023,9 +1037,12 @@ def scan(root: Path) -> AuditReport:
             if path.stat().st_size > MAX_FILE_BYTES:
                 report.skipped.append({"file": display, "reason": f"larger than {MAX_FILE_BYTES} bytes"})
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_bytes().decode("utf-8")
         except OSError as exc:
             report.skipped.append({"file": display, "reason": f"unreadable: {exc.strerror}"})
+            continue
+        except UnicodeDecodeError:
+            report.skipped.append({"file": display, "reason": "not valid UTF-8"})
             continue
         report.scanned_files += 1
         if suffix in PY_SUFFIXES:
@@ -1039,33 +1056,49 @@ def scan(root: Path) -> AuditReport:
         elif suffix in CPP_SUFFIXES:
             if "create_publisher" in text or "create_subscription" in text:
                 report.endpoints.extend(CppExtractor(display, text).run())
-        elif HAS_YAML and "qos_overrides" in text:
-            report.yaml_candidates.extend(find_yaml_candidates(display, text))
+        elif "qos_overrides" in text:
+            if not HAS_YAML:
+                report.skipped.append({"file": display,
+                                       "reason": "PyYAML not installed; qos_overrides not parsed"})
+                continue
+            try:
+                report.yaml_candidates.extend(find_yaml_candidates(display, text))
+            except yaml.YAMLError as exc:
+                mark = getattr(exc, "problem_mark", None)
+                line = mark.line + 1 if mark is not None else None
+                report.skipped.append({"file": display, "reason": f"YAML parse error (line {line})"})
     pair_endpoints(report)
     return report
 
 
 def pair_endpoints(report: AuditReport) -> None:
+    # Unresolved is a state, not a bucket: an endpoint with any unresolved
+    # field is listed there and still takes part in grouping and pairing.
+    report.unresolved = [e for e in report.endpoints if e.reasons]
+    dynamic = [e for e in report.endpoints if e.topic_kind == "dynamic"]
     groups: dict = {}
     for endpoint in report.endpoints:
-        if endpoint.topic_kind == "dynamic" or endpoint.msg_type is None:
-            report.unresolved.append(endpoint)
-            continue
-        groups.setdefault((endpoint.topic_kind, endpoint.topic), []).append(endpoint)
+        if endpoint.topic_kind != "dynamic":
+            groups.setdefault((endpoint.topic_kind, endpoint.topic), []).append(endpoint)
 
-    for (topic_kind, topic), members in sorted(groups.items()):
+    for (topic_kind, topic), group in sorted(groups.items()):
         relation = "confirmed" if topic_kind == "absolute" else "potential"
+        members = [e for e in group if e.msg_type is not None]
+        unknown_type = [e for e in group if e.msg_type is None]
         pubs = [e for e in members if e.kind == "publisher"]
         subs = [e for e in members if e.kind == "subscription"]
         pub_types = {e.msg_type for e in pubs}
         sub_types = {e.msg_type for e in subs}
         common = pub_types & sub_types
         if pubs and subs and not common:
+            incomplete = _type_set_gaps(unknown_type, dynamic, pub_types, sub_types)
             report.type_conflicts.append({
                 "relation": relation, "topic": topic,
+                "status": "unresolved" if incomplete else "definite",
                 "publisher_types": sorted(pub_types), "subscription_types": sorted(sub_types),
-                "locations": [e.location for e in members],
-                "detail": "type conflict: no matching type in scanned scope",
+                "locations": [e.location for e in group],
+                "detail": ("possible type conflict: type set incomplete (" + "; ".join(incomplete) + ")"
+                           if incomplete else "type conflict: no matching type in scanned scope"),
             })
             continue
         if common and len(pub_types | sub_types) > 1:
@@ -1083,6 +1116,24 @@ def pair_endpoints(report: AuditReport) -> None:
                 if pub.msg_type != sub.msg_type:
                     continue
                 report.pairs.append(_pair(relation, topic, pub, sub))
+
+
+def _type_set_gaps(unknown_type: list, dynamic: list, pub_types: set, sub_types: set) -> list:
+    """Explain why an empty type intersection may not be final.
+
+    An endpoint on this topic with an unresolved type, or a dynamic-topic
+    endpoint whose type could complete the intersection, may be the missing
+    match. Downgrading on any such dynamic endpoint is an intended
+    false-negative tradeoff: a definite conflict must not rest on guesses.
+    """
+    gaps = [f"{e.kind} {e.location} has unresolved type" for e in unknown_type]
+    for e in dynamic:
+        could_match = (e.msg_type is None
+                       or (e.kind == "publisher" and e.msg_type in sub_types)
+                       or (e.kind == "subscription" and e.msg_type in pub_types))
+        if could_match:
+            gaps.append(f"dynamic-topic {e.kind} {e.location} may publish or subscribe here")
+    return gaps
 
 
 def _pair(relation: str, topic: str, pub: Endpoint, sub: Endpoint) -> dict:
@@ -1150,7 +1201,8 @@ def print_report(report: AuditReport, strict: bool) -> None:
     if report.type_conflicts:
         print("\nType conflicts:")
         for c in report.type_conflicts:
-            print(f"  [{c['relation'].upper()}] {c['topic']}: publishers {c['publisher_types']} "
+            print(f"  [{c['relation'].upper()}/{c['status'].upper()}] {c['topic']}: "
+                  f"publishers {c['publisher_types']} "
                   f"vs subscriptions {c['subscription_types']}")
             print(f"      {c['detail']}; at {', '.join(c['locations'])}")
     if report.multi_type_topics:
@@ -1175,7 +1227,7 @@ def print_report(report: AuditReport, strict: bool) -> None:
         for c in report.yaml_candidates:
             print(f"  {c['file']}: {c['topic']} {c['entity']} {c['policies']}")
     if report.skipped:
-        print("\nSkipped files:")
+        print("\nSkipped files (incomplete scan):")
         for s in report.skipped:
             print(f"  {s['file']}: {s['reason']}")
 
@@ -1192,7 +1244,8 @@ def main(argv: Optional[list] = None) -> int:
 Exit codes:
   0  no confirmed QoS incompatibility and no confirmed type conflict
   1  confirmed QoS incompatibility or confirmed type conflict
-     (with --strict: also potential pairs, unresolved endpoints, or indeterminate results)
+     (with --strict: also potential pairs, unresolved endpoints, indeterminate results,
+     possible type conflicts, or skipped/unparsed files)
   2  usage error or unreadable input path
 
 Pairs are confirmed only for identical absolute topics with the same message
@@ -1204,7 +1257,7 @@ YAML qos_overrides are listed as candidates and never applied.
     parser.add_argument("path", help="package, workspace, or source file to scan")
     parser.add_argument("--json", action="store_true", help="output JSON")
     parser.add_argument("--strict", action="store_true",
-                        help="also fail on potential, unresolved, or indeterminate results")
+                        help="also fail on potential, unresolved, indeterminate, or incomplete-scan results")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args(argv)
 
@@ -1212,8 +1265,11 @@ YAML qos_overrides are listed as candidates and never applied.
     if not root.exists():
         print(f"Error: path not found: {args.path}", file=sys.stderr)
         return 2
-    if root.is_dir() and not os.access(root, os.R_OK | os.X_OK):
-        print(f"Error: directory not readable: {args.path}", file=sys.stderr)
+    # The root the user named must be readable; only files found beneath a
+    # directory root are reported as incomplete instead.
+    needed = os.R_OK | os.X_OK if root.is_dir() else os.R_OK
+    if not os.access(root, needed):
+        print(f"Error: path not readable: {args.path}", file=sys.stderr)
         return 2
 
     report = scan(root)

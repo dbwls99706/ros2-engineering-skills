@@ -17,10 +17,13 @@ Source bundle version 1.6.0. Release publication follows
 - Evaluate compatibility with Humble `rmw_dds_common` semantics as compatible,
   incompatible, or indeterminate. SYSTEM_DEFAULT/UNKNOWN policies and unspecified
   durations are preserved, never replaced with concrete values.
-- Report dynamic topics, unparsed QoS arguments, C++ QoS variables, and
-  distro-sensitive policies such as BEST_AVAILABLE as unresolved. List YAML
-  `qos_overrides` as unapplied candidates. `--strict` also fails on potential,
-  unresolved, or indeterminate results.
+- Report dynamic topics, unparsed QoS arguments, C++ QoS variables, invalid rclpy
+  profiles (KEEP_LAST without depth), and distro-sensitive policies such as
+  BEST_AVAILABLE as unresolved. A type conflict is definite only when no
+  unresolved-type or dynamic-topic endpoint could complete the type sets.
+- List YAML `qos_overrides` as unapplied candidates. Skipped, non-UTF-8, or
+  unparsable files are reported as an incomplete scan. `--strict` also fails on
+  potential, unresolved, indeterminate, or incomplete-scan results.
 - Route multi-reference questions through section headings, and add a README map
   separating guidance, tools, client integration, and repository verification.
 

@@ -481,6 +481,8 @@ class N(Node):
         write(tmp_path, "bad.py", "def broken(:\n    self.create_publisher(\n")
         code, data = audit(tmp_path)
         assert code == 0 and "parse error" in data["skipped_files"][0]["reason"]
+        assert data["summary"]["incomplete_files"] == 1
+        assert audit(tmp_path, "--strict")[0] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -556,7 +558,9 @@ void f() {{
 """)
         code, data = audit(tmp_path)
         assert reason in data["unpaired"][0]["unresolved"][0]
+        assert data["summary"]["unresolved_endpoints"] == 1
         assert code == 0
+        assert audit(tmp_path, "--strict")[0] == 1
 
     def test_dynamic_topic_and_alias_type(self, tmp_path):
         write(tmp_path, "node.hpp", """
@@ -610,9 +614,24 @@ camera:
     def test_yaml_candidate_alone_does_not_fail_strict(self, tmp_path):
         write(tmp_path, "qos.yaml", "n:\n  ros__parameters:\n    qos_overrides:\n      /a:\n"
                                     "        subscription:\n          depth: 3\n")
-        write(tmp_path, "broken.yaml", "qos_overrides: [unclosed\n")
         code, data = audit(tmp_path, "--strict")
         assert code == 0 and len(data["yaml_override_candidates"]) == 1
+
+    def test_broken_override_yaml_is_incomplete(self, tmp_path):
+        write(tmp_path, "broken.yaml", "qos_overrides: [unclosed\n")
+        write(tmp_path, "unrelated.yaml", "other: [unclosed\n")
+        code, data = audit(tmp_path)
+        [skipped] = data["skipped_files"]
+        assert skipped["file"] == "broken.yaml" and "YAML parse error" in skipped["reason"]
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
+
+    def test_missing_pyyaml_is_incomplete(self, tmp_path, monkeypatch):
+        write(tmp_path, "qos.yaml", "n:\n  qos_overrides:\n    /a:\n      publisher:\n        depth: 1\n")
+        monkeypatch.setattr(qos_audit, "HAS_YAML", False)
+        code, data = audit(tmp_path)
+        assert data["summary"]["incomplete_files"] == 1
+        assert "PyYAML" in data["skipped_files"][0]["reason"]
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
 
     def test_excluded_dirs_and_size_limit(self, tmp_path, monkeypatch):
         body = py_node(explicit("BEST_EFFORT"), explicit())
@@ -677,6 +696,134 @@ class N(Node):
         code = qos_audit.main([str(tmp_path), "--json", "--strict"])
         data = json.loads(capsys.readouterr().out)
         assert data["strict"] is True and data["exit_code"] == code == 1
+
+
+class TestReviewRegressions:
+    """Contracts: incomplete scans and unresolved endpoints fail only --strict;
+    only a definite type conflict fails the default run."""
+
+    def test_skipped_file_is_default_zero_strict_one(self, tmp_path, monkeypatch):
+        write(tmp_path, "node.py", py_node(explicit(), explicit()), PY_HEADER)
+        write(tmp_path, "big.py", "x = 1\n" * 10)
+        monkeypatch.setattr(qos_audit, "MAX_FILE_BYTES", 40)
+        code, data = audit(tmp_path)
+        assert data["summary"]["incomplete_files"] >= 1
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
+
+    def test_non_utf8_source_is_incomplete(self, tmp_path):
+        (tmp_path / "latin.py").write_bytes(b"# caf\xe9\nself.create_publisher(Image, '/a', 10)\n")
+        code, data = audit(tmp_path)
+        assert data["skipped_files"][0]["reason"] == "not valid UTF-8"
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
+
+    def test_unreadable_single_file_root_is_exit_2(self, tmp_path, monkeypatch, capsys):
+        path = write(tmp_path, "node.py", py_node("10", "10"), PY_HEADER)
+        monkeypatch.setattr(qos_audit.os, "access", lambda *_: False)
+        assert qos_audit.main([str(path)]) == 2
+        assert "not readable" in capsys.readouterr().err
+
+    def test_unpaired_endpoint_with_unresolved_qos_fails_strict(self, tmp_path):
+        write(tmp_path, "node.cpp", """
+void f() { create_publisher<std_msgs::msg::String>("/s", qos); }
+""")
+        code, data = audit(tmp_path)
+        [endpoint] = data["unpaired"]
+        assert data["unresolved"] == [endpoint]
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
+
+    def test_paired_endpoint_with_unresolved_qos_stays_in_topology(self, tmp_path):
+        write(tmp_path, "node.cpp", """
+void f() {
+  create_publisher<std_msgs::msg::String>("/s", qos);
+  create_subscription<std_msgs::msg::String>("/s", 10, cb);
+}
+""")
+        _, data = audit(tmp_path)
+        [pair] = pairs(data)
+        assert pair["compatibility"] is None
+        assert data["summary"]["unresolved_endpoints"] == 1
+
+    def test_complete_type_sets_conflict_is_definite(self, tmp_path):
+        write(tmp_path, "node.py", py_node("10", "10", topic="/camera", sub_type="LaserScan"), PY_HEADER)
+        code, data = audit(tmp_path)
+        assert data["type_conflicts"][0]["status"] == "definite"
+        assert code == 1
+
+    def test_unresolved_type_blocks_definite_conflict(self, tmp_path):
+        write(tmp_path, "node.py", """
+class N(Node):
+    def __init__(self, msg_cls):
+        self.create_publisher(Image, '/camera', 10)
+        self.create_subscription(LaserScan, '/camera', self.cb, 10)
+        self.create_subscription(msg_cls, '/camera', self.cb, 10)
+""", PY_HEADER)
+        code, data = audit(tmp_path)
+        [conflict] = data["type_conflicts"]
+        assert conflict["status"] == "unresolved"
+        assert "unresolved type" in conflict["detail"]
+        assert data["summary"]["confirmed_type_conflicts"] == 0
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
+
+    def test_dynamic_endpoint_downgrades_conflict_intended_false_negative(self, tmp_path):
+        write(tmp_path, "node.py", """
+class N(Node):
+    def __init__(self, name):
+        self.create_publisher(Image, '/camera', 10)
+        self.create_subscription(LaserScan, '/camera', self.cb, 10)
+        self.create_subscription(Image, name, self.cb, 10)
+""", PY_HEADER)
+        code, data = audit(tmp_path)
+        assert data["type_conflicts"][0]["status"] == "unresolved"
+        assert "dynamic-topic" in data["type_conflicts"][0]["detail"]
+        assert code == 0
+
+    def test_dynamic_endpoint_of_unrelated_type_keeps_conflict_definite(self, tmp_path):
+        write(tmp_path, "node.py", """
+class N(Node):
+    def __init__(self, name):
+        self.create_publisher(Image, '/camera', 10)
+        self.create_subscription(LaserScan, '/camera', self.cb, 10)
+        self.create_subscription(String, name, self.cb, 10)
+""", PY_HEADER)
+        code, data = audit(tmp_path)
+        assert data["type_conflicts"][0]["status"] == "definite" and code == 1
+
+    def test_parameter_events_is_keep_last_1000(self, tmp_path):
+        write(tmp_path, "node.py", """
+from rclpy.qos import qos_profile_parameter_events
+
+class N(Node):
+    def __init__(self):
+        self.create_publisher(String, '/py', qos_profile_parameter_events)
+""", PY_HEADER)
+        write(tmp_path, "node.cpp", """
+void f() { create_publisher<std_msgs::msg::String>("/cpp", rclcpp::ParameterEventsQoS()); }
+""")
+        report = scan(tmp_path)
+        for endpoint in report.endpoints:
+            assert (endpoint.qos.history, endpoint.qos.depth) == ("keep_last", 1000)
+
+    def test_keep_last_without_depth_is_invalid(self, tmp_path):
+        write(tmp_path, "node.py", py_node("QoSProfile(history=HistoryPolicy.KEEP_LAST)", "10"), PY_HEADER)
+        endpoint = scan(tmp_path).endpoints[0]
+        assert endpoint.qos is None
+        assert "KEEP_LAST without depth" in endpoint.reasons[0]
+
+    def test_keep_all_without_depth_keeps_default_and_projects(self, tmp_path):
+        qos = ("QoSProfile(history=HistoryPolicy.KEEP_ALL, reliability=ReliabilityPolicy.RELIABLE, "
+               "durability=DurabilityPolicy.VOLATILE, liveliness=LivelinessPolicy.AUTOMATIC)")
+        write(tmp_path, "node.py", py_node(qos, qos), PY_HEADER)
+        _, data = audit(tmp_path)
+        assert scan(tmp_path).endpoints[0].qos.depth == 10
+        assert pairs(data)[0]["compatibility"] == COMPATIBLE
+
+    def test_keep_all_depth_sentinel_does_not_change_result(self):
+        unknown_depth = concrete(history="keep_all", depth=None)
+        assert project_to_checker(unknown_depth).depth == 0
+        for depth in (None, 0, 1, 1000):
+            pub = concrete(history="keep_all", depth=depth)
+            assert evaluate(pub, concrete()).status == COMPATIBLE
+            assert evaluate(pub, concrete(durability="transient_local")).status == INCOMPATIBLE
 
 
 class TestRepositoryControls:
