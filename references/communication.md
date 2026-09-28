@@ -653,6 +653,11 @@ ros2 topic info /cmd_vel -v
 ros2 topic echo /rosout --qos-reliability reliable --field msg | grep -i "incompatible"
 ```
 
+Before running anything, `scripts/qos_audit.py <package>` statically pairs
+declared publishers and subscriptions by topic and message type across rclpy and
+rclcpp sources. It reports unresolved or RMW-default-dependent results instead of
+guessing; confirm the running graph with `ros2 topic info -v`.
+
 ## 10. DDS configuration
 
 **Default RMW:** every current release — Humble, Jazzy, Kilted, Lyrical, and

@@ -210,6 +210,7 @@ jobs:
         run: |
           python scripts/create_package.py --version
           python scripts/qos_checker.py --version
+          python scripts/qos_audit.py --version
           python scripts/launch_validator.py --version
       - name: Validate plugin JSON
         run: |

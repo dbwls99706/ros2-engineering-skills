@@ -2,6 +2,37 @@
 
 All notable changes are documented here.
 
+## 1.6.0 - 2026-09-28
+
+Source bundle version 1.6.0. Release publication follows
+`docs/RELEASING.md`.
+
+- Add `scripts/qos_audit.py` (0.1.0), a static audit that pairs rclpy (AST) and
+  rclcpp (lexical) publisher/subscription declarations by topic and canonical
+  `pkg/msg/Type` across a package or workspace.
+- Pair only identical absolute topics as confirmed; identical relative or private
+  literals are potential; `/scan` and `scan` are never merged. A topic whose
+  publisher and subscription types share nothing is a type conflict; extra types
+  alongside a common one are a multi-type warning.
+- Evaluate compatibility with Humble `rmw_dds_common` semantics as compatible,
+  incompatible, or indeterminate. SYSTEM_DEFAULT/UNKNOWN policies and unspecified
+  durations are preserved, never replaced with concrete values.
+- Report dynamic topics, unparsed QoS arguments, C++ QoS variables, invalid rclpy
+  profiles (KEEP_LAST without depth), and distro-sensitive policies such as
+  BEST_AVAILABLE as unresolved. A type conflict is definite only when no
+  unresolved-type or dynamic-topic endpoint could complete the type sets.
+- Report a pair as indeterminate, keeping the declared result as a baseline, when an
+  endpoint enables `qos_overriding_options` or passes C++ options the audit cannot
+  track. Message types and QoS profiles resolve only through unconditional imports
+  placed before use in the enclosing scope; the two-interface rclcpp free functions
+  are parsed, and an ambiguous overload stays unresolved.
+- List YAML `qos_overrides` as unapplied candidates. Skipped, non-UTF-8, or
+  unparsable files and unreadable directories are reported as an incomplete scan.
+  `--strict` also fails on potential, unresolved, indeterminate, or incomplete-scan
+  results.
+- Route multi-reference questions through section headings, and add a README map
+  separating guidance, tools, client integration, and repository verification.
+
 ## 1.5.1 - 2026-09-16
 
 Source bundle version 1.5.1. Release publication follows
