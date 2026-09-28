@@ -469,7 +469,7 @@ class N(Node):
         self.create_publisher(String, '/a', 10, qos_overriding_options=opts)
 """, PY_HEADER)
         report = scan(tmp_path)
-        assert "override" in report.endpoints[0].notes[0]
+        assert report.endpoints[0].override_reason.startswith("runtime QoS override enabled")
 
     def test_unparsed_duration_argument_is_unresolved(self, tmp_path):
         write(tmp_path, "node.py", py_node("QoSProfile(depth=1, deadline=Duration(seconds=1))", "10"),
@@ -824,6 +824,264 @@ void f() { create_publisher<std_msgs::msg::String>("/cpp", rclcpp::ParameterEven
             pub = concrete(history="keep_all", depth=depth)
             assert evaluate(pub, concrete()).status == COMPATIBLE
             assert evaluate(pub, concrete(durability="transient_local")).status == INCOMPATIBLE
+
+
+OVERRIDE_HEADER = PY_HEADER + "from rclpy.qos_overriding_options import QoSOverridingOptions\n"
+
+
+class TestSecondReviewRegressions:
+    """Overrides, hidden subtrees, rclcpp overloads, and import scope never
+    produce a confirmed result from something the audit cannot see."""
+
+    def _override_node(self, value: str) -> str:
+        return f"""
+class N(Node):
+    def __init__(self):
+        self.create_publisher(Image, '/image', qos_profile_sensor_data, qos_overriding_options={value})
+        self.create_subscription(Image, '/image', self.cb, 10)
+"""
+
+    def test_python_override_makes_pair_indeterminate_with_baseline(self, tmp_path):
+        write(tmp_path, "node.py", self._override_node("QoSOverridingOptions.with_default_policies()"),
+              OVERRIDE_HEADER)
+        code, data = audit(tmp_path)
+        [pair] = pairs(data)
+        assert pair["compatibility"] == INDETERMINATE
+        assert pair["reasons"] == ["runtime QoS override enabled on publisher node.py:11"]
+        baseline = pair["declared_baseline"]
+        assert baseline["status"] == INCOMPATIBLE and "RELIABILITY" in baseline["issues"][0]
+        assert set(baseline) == {"status", "issues", "warnings", "reasons"}
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
+
+    def test_python_override_none_keeps_confirmed_result(self, tmp_path):
+        write(tmp_path, "node.py", self._override_node("None"), OVERRIDE_HEADER)
+        code, data = audit(tmp_path)
+        assert pairs(data)[0]["compatibility"] == INCOMPATIBLE
+        assert pairs(data)[0]["declared_baseline"] is None
+        assert code == 1
+
+    def test_indeterminate_baseline_keeps_its_reasons(self, tmp_path):
+        write(tmp_path, "node.py", """
+class N(Node):
+    def __init__(self):
+        self.create_publisher(Image, '/image', qos_profile_system_default, qos_overriding_options=o)
+        self.create_subscription(Image, '/image', self.cb, 10)
+""", PY_HEADER)
+        _, data = audit(tmp_path)
+        baseline = pairs(data)[0]["declared_baseline"]
+        assert baseline["status"] == INDETERMINATE and baseline["reasons"]
+
+    def test_unresolved_qos_outranks_override(self, tmp_path):
+        write(tmp_path, "node.cpp", """
+void f() {
+  create_publisher<std_msgs::msg::String>("/a", qos_variable, options);
+  create_subscription<std_msgs::msg::String>("/a", 10, cb);
+}
+""")
+        _, data = audit(tmp_path)
+        [pair] = pairs(data)
+        assert pair["compatibility"] is None and pair["declared_baseline"] is None
+        assert any("options not tracked" in r for r in pair["reasons"])
+
+    @pytest.mark.parametrize("options,overridable", [
+        ("options", True),
+        ("make_options()", True),
+        ("flag ? a : b", True),
+        ("rclcpp::PublisherOptions()", False),
+        ("rclcpp::PublisherOptionsWithAllocator<std::allocator<void>>()", False),
+        ("PublisherOptions()", False),
+        ("{}", False),
+    ])
+    def test_cpp_options_argument(self, tmp_path, options, overridable):
+        write(tmp_path, "node.cpp", f"""
+void f() {{
+  create_publisher<std_msgs::msg::String>("/a", rclcpp::QoS(1).best_effort(), {options});
+  create_subscription<std_msgs::msg::String>("/a", rclcpp::QoS(1).reliable(), cb,
+      rclcpp::SubscriptionOptionsWithAllocator<std::allocator<void>>());
+}}
+""")
+        code, data = audit(tmp_path)
+        [pair] = pairs(data)
+        if overridable:
+            assert pair["compatibility"] == INDETERMINATE
+            assert pair["reasons"][0].endswith("options not tracked; may carry qos_overriding_options")
+            assert pair["declared_baseline"]["status"] == INCOMPATIBLE and code == 0
+        else:
+            assert pair["compatibility"] == INCOMPATIBLE and code == 1
+
+    def test_override_text_output(self, tmp_path, capsys):
+        write(tmp_path, "node.py", self._override_node("o"), OVERRIDE_HEADER)
+        qos_audit.main([str(tmp_path)])
+        out = capsys.readouterr().out
+        assert "[INDETERMINATE] /image" in out
+        assert "reason: runtime QoS override enabled on publisher" in out
+        assert "declared baseline: INCOMPATIBLE" in out
+        assert "issue: INCOMPATIBLE RELIABILITY" in out
+
+    def test_unreadable_subdirectory_is_incomplete(self, tmp_path, monkeypatch):
+        write(tmp_path, "ok/node.py", py_node(explicit(), explicit()), PY_HEADER)
+        write(tmp_path, "hidden/node.py", py_node(explicit("BEST_EFFORT"), explicit()), PY_HEADER)
+        real_walk = os.walk
+
+        def walk(top, onerror=None, **kwargs):
+            for dirpath, dirnames, filenames in real_walk(top, onerror=onerror, **kwargs):
+                if "hidden" in dirnames:
+                    dirnames.remove("hidden")
+                    onerror(PermissionError(13, "Permission denied", os.path.join(dirpath, "hidden")))
+                yield dirpath, dirnames, filenames
+
+        monkeypatch.setattr(qos_audit.os, "walk", walk)
+        code, data = audit(tmp_path)
+        assert data["skipped_files"] == [{"file": "hidden", "reason": "unreadable directory: Permission denied"}]
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
+
+    def test_walk_error_without_filename(self, tmp_path, monkeypatch):
+        write(tmp_path, "node.py", py_node("10", "10"), PY_HEADER)
+
+        def walk(top, onerror=None, **kwargs):
+            onerror(OSError("listing failed"))
+            return iter(())
+
+        monkeypatch.setattr(qos_audit.os, "walk", walk)
+        _, data = audit(tmp_path)
+        assert data["skipped_files"][0]["file"] == "<unknown directory>"
+
+    def test_two_interface_free_function_overload(self, tmp_path):
+        write(tmp_path, "sub.hpp", """
+void f() {
+  sub_ = rclcpp::create_subscription<sensor_msgs::msg::Image>(
+      parameters_interface, topics_interface, "/image", rclcpp::SensorDataQoS(), cb);
+  pub_ = rclcpp::create_publisher<sensor_msgs::msg::Image>(node, "/image", rclcpp::QoS(1).reliable());
+}
+""")
+        _, data = audit(tmp_path)
+        [pair] = pairs(data)
+        assert pair["topic"] == "/image" and data["unresolved"] == []
+        # Both sides leave liveliness at SYSTEM_DEFAULT, so the pair is indeterminate.
+        assert pair["compatibility"] == INDETERMINATE
+
+    def test_free_function_with_dynamic_topic_is_ambiguous(self, tmp_path):
+        write(tmp_path, "sub.hpp", """
+void f() { rclcpp::create_subscription<sensor_msgs::msg::Image>(a, b, topic, qos, cb); }
+""")
+        _, data = audit(tmp_path)
+        assert "overload ambiguous" in data["unresolved"][0]["unresolved"][0]
+
+    def test_parameter_shadowing_import_is_unresolved(self, tmp_path):
+        write(tmp_path, "node.py", """
+class N(Node):
+    def __init__(self, Image):
+        self.create_subscription(Image, '/image', self.cb, 10)
+        self.create_publisher(LaserScan, '/image', 10)
+""", PY_HEADER)
+        code, data = audit(tmp_path)
+        shadowed = next(e for e in data["unresolved"] if e["kind"] == "subscription")
+        assert shadowed["msg_type"] is None
+        assert data["summary"]["confirmed_type_conflicts"] == 0
+        assert code == 0
+
+    def test_import_in_other_function_is_unresolved(self, tmp_path):
+        write(tmp_path, "node.py", """
+def a(node):
+    from sensor_msgs.msg import Image
+    node.create_publisher(Image, '/a', 10)
+
+def b(node):
+    node.create_publisher(Image, '/b', 10)
+""")
+        report = scan(tmp_path)
+        types = {e.topic: e.msg_type for e in report.endpoints}
+        assert types == {"/a": "sensor_msgs/msg/Image", "/b": None}
+
+    def test_module_import_in_nested_function_resolves(self, tmp_path):
+        write(tmp_path, "node.py", """
+from sensor_msgs.msg import Image
+
+def outer(node):
+    def inner():
+        node.create_publisher(Image, '/a', 10)
+    return inner
+""")
+        assert scan(tmp_path).endpoints[0].msg_type == "sensor_msgs/msg/Image"
+
+    def test_enclosing_local_binding_is_not_bypassed(self, tmp_path):
+        write(tmp_path, "node.py", """
+from sensor_msgs.msg import Image
+
+def outer(node, Image):
+    def inner():
+        node.create_publisher(Image, '/a', 10)
+    return inner
+""")
+        assert scan(tmp_path).endpoints[0].msg_type is None
+
+    def test_try_except_import_is_unresolved(self, tmp_path):
+        write(tmp_path, "node.py", """
+try:
+    from fast_msgs.msg import Image
+except ImportError:
+    from sensor_msgs.msg import Image
+
+def f(node):
+    node.create_publisher(Image, '/a', 10)
+""")
+        assert scan(tmp_path).endpoints[0].msg_type is None
+
+    def test_conditional_import_is_unresolved(self, tmp_path):
+        write(tmp_path, "node.py", """
+def f(node, use_sensor):
+    if use_sensor:
+        from sensor_msgs.msg import Image
+    node.create_publisher(Image, '/image', 10)
+""")
+        assert scan(tmp_path).endpoints[0].msg_type is None
+
+    def test_function_import_after_use_is_unresolved(self, tmp_path):
+        write(tmp_path, "node.py", """
+def f(node):
+    node.create_publisher(Image, '/image', 10)
+    from sensor_msgs.msg import Image
+""")
+        assert scan(tmp_path).endpoints[0].msg_type is None
+
+    def test_module_call_before_import_is_unresolved(self, tmp_path):
+        write(tmp_path, "node.py", """
+node.create_publisher(Image, '/image', 10)
+from sensor_msgs.msg import Image
+""")
+        assert scan(tmp_path).endpoints[0].msg_type is None
+
+    def test_function_called_before_later_module_import_is_unresolved(self, tmp_path):
+        write(tmp_path, "node.py", """
+def f():
+    node.create_publisher(Image, '/image', 10)
+
+f()
+from sensor_msgs.msg import Image
+""")
+        assert scan(tmp_path).endpoints[0].msg_type is None
+
+    def test_module_import_before_function_resolves(self, tmp_path):
+        write(tmp_path, "node.py", """
+from sensor_msgs.msg import Image
+import rclpy.qos as q
+
+def f(node):
+    node.create_publisher(Image, '/image', q.qos_profile_sensor_data)
+""")
+        endpoint = scan(tmp_path).endpoints[0]
+        assert endpoint.msg_type == "sensor_msgs/msg/Image" and endpoint.qos.source == "sensor_data"
+
+    def test_conditional_qos_profile_import_is_unresolved(self, tmp_path):
+        write(tmp_path, "node.py", """
+from sensor_msgs.msg import Image
+if flag:
+    from rclpy.qos import qos_profile_sensor_data
+
+def f(node):
+    node.create_publisher(Image, '/image', qos_profile_sensor_data)
+""")
+        assert scan(tmp_path).endpoints[0].qos is None
 
 
 class TestRepositoryControls:

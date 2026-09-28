@@ -201,6 +201,8 @@ class Endpoint:
     qos: Optional[AuditProfile] = None
     reasons: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    # Why runtime QoS overrides may replace the declared profile, if they may.
+    override_reason: Optional[str] = None
 
     @property
     def location(self) -> str:
@@ -213,6 +215,8 @@ class Endpoint:
             "topic_kind": self.topic_kind, "msg_type": self.msg_type,
             "qos": self.qos.to_dict() if self.qos else None,
             "unresolved": list(self.reasons), "notes": list(self.notes),
+            "overridable": self.override_reason is not None,
+            "override_reason": self.override_reason,
         }
 
 
@@ -363,6 +367,9 @@ class _Scope:
         self.simple: dict = {}  # name -> (value, line) for top-level single Assign
         self.params: set = set()
         self.declared: set = set()  # global / nonlocal
+        # name -> [(target or None, line)] for imports that are direct body
+        # statements; imports nested in if/try/for/with are conditional.
+        self.direct_imports: dict = {}
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             args = node.args
             for arg in args.posonlyargs + args.args + args.kwonlyargs:
@@ -379,11 +386,35 @@ class _Scope:
                 elif (isinstance(stmt, ast.AnnAssign) and stmt.value is not None
                         and isinstance(stmt.target, ast.Name)):
                     self.simple.setdefault(stmt.target.id, []).append((stmt.value, stmt.lineno))
+                elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                    for name, target in _import_bindings(stmt):
+                        self.direct_imports.setdefault(name, []).append((target, stmt.lineno))
         for child in _scope_nodes(node):
             for name in _bound_names(child):
                 self.assign_counts[name] = self.assign_counts.get(name, 0) + 1
             if isinstance(child, (ast.Global, ast.Nonlocal)):
                 self.declared.update(child.names)
+
+    def import_target(self, name: str, line: int) -> Optional[str]:
+        """Return the module path a name is bound to by an import, or None.
+
+        Imports are executed bindings: every binding of the name in the scope
+        must be a direct (unconditional) import of the same target, placed
+        before the use. Line order is required at module level too, because
+        call order is not tracked.
+        """
+        if name in self.params or name in self.declared:
+            return None
+        count = self.assign_counts.get(name, 0)
+        if count == 0:
+            return self.parent.import_target(name, line) if self.parent is not None else None
+        entries = self.direct_imports.get(name, [])
+        targets = {target for target, _ in entries}
+        if len(entries) != count or len(targets) != 1 or None in targets:
+            return None
+        if min(import_line for _, import_line in entries) >= line:
+            return None
+        return next(iter(targets))
 
     def lookup(self, name: str, line: int) -> ast.AST:
         if name in self.params or name in self.declared:
@@ -417,6 +448,23 @@ def _scope_nodes(scope: ast.AST):
         stack.extend(ast.iter_child_nodes(node))
 
 
+def _import_bindings(node: ast.AST):
+    """Yield (bound name, dotted target or None) for an import statement."""
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            if alias.asname:
+                yield alias.asname, alias.name
+            else:
+                head = alias.name.split(".")[0]
+                yield head, head
+    elif isinstance(node, ast.ImportFrom):
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            known = node.module is not None and node.level == 0
+            yield alias.asname or alias.name, f"{node.module}.{alias.name}" if known else None
+
+
 def _bound_names(node: ast.AST):
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         yield node.name
@@ -433,27 +481,7 @@ class PythonExtractor:
     def __init__(self, path: str, source: str):
         self.path = path
         self.tree = ast.parse(source, filename=path)
-        self.imports = self._collect_imports()
         self.endpoints: list = []
-
-    def _collect_imports(self) -> dict:
-        found: dict = {}
-        for node in ast.walk(self.tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.asname:
-                        found.setdefault(alias.asname, set()).add(alias.name)
-                    else:
-                        head = alias.name.split(".")[0]
-                        found.setdefault(head, set()).add(head)
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                for alias in node.names:
-                    if alias.name == "*":
-                        continue
-                    found.setdefault(alias.asname or alias.name, set()).add(
-                        f"{node.module}.{alias.name}")
-        # A name imported with two different meanings is ambiguous.
-        return {name: next(iter(targets)) for name, targets in found.items() if len(targets) == 1}
 
     def run(self) -> list:
         self._visit(self.tree, None)
@@ -484,7 +512,7 @@ class PythonExtractor:
                 self._visit_class(child, module_scope)
 
     def _resolve(self, node: ast.AST, scope: _Scope, line: int, depth: int = 0) -> ast.AST:
-        if isinstance(node, ast.Name) and node.id not in self.imports:
+        if isinstance(node, ast.Name) and scope.import_target(node.id, line) is None:
             if depth > 8:
                 raise Unresolved(f"name '{node.id}' resolution is too deep")
             return self._resolve(scope.lookup(node.id, line), scope, line, depth + 1)
@@ -508,11 +536,12 @@ class PythonExtractor:
         args: dict = dict(zip(order, call.args))
         for keyword in call.keywords:
             args[keyword.arg or ""] = keyword.value
-        if "qos_overriding_options" in args:
-            endpoint.notes.append("qos_overriding_options set: parameters may override the declared QoS")
+        overriding = args.get("qos_overriding_options")
+        if overriding is not None and not (isinstance(overriding, ast.Constant) and overriding.value is None):
+            endpoint.override_reason = f"runtime QoS override enabled on {kind} {endpoint.location}"
 
         type_node = args.get("msg_type")
-        endpoint.msg_type = self._msg_type(type_node) if type_node is not None else None
+        endpoint.msg_type = self._msg_type(type_node, scope, call.lineno) if type_node is not None else None
         if endpoint.msg_type is None:
             endpoint.reasons.append("message type not statically resolvable")
 
@@ -536,19 +565,20 @@ class PythonExtractor:
         except Unresolved as exc:
             endpoint.reasons.append(f"QoS: {exc}")
 
-    def _expand(self, dotted: str) -> str:
-        """Replace an imported alias at the head of a dotted name."""
+    @staticmethod
+    def _expand(dotted: str, scope: _Scope, line: int) -> str:
+        """Replace an imported name at the head of a dotted name."""
         head, _, rest = dotted.partition(".")
-        target = self.imports.get(head)
+        target = scope.import_target(head, line)
         if target is None:
             return dotted
         return target + ("." + rest if rest else "")
 
-    def _msg_type(self, node: ast.AST) -> Optional[str]:
+    def _msg_type(self, node: ast.AST, scope: _Scope, line: int) -> Optional[str]:
         dotted = _dotted(node)
-        if dotted is None or dotted.partition(".")[0] not in self.imports:
+        if dotted is None or scope.import_target(dotted.partition(".")[0], line) is None:
             return None
-        parts = self._expand(dotted).split(".")
+        parts = self._expand(dotted, scope, line).split(".")
         if len(parts) == 3 and parts[1] == "msg":
             return f"{parts[0]}/msg/{parts[2]}"
         return None
@@ -562,7 +592,7 @@ class PythonExtractor:
             return profile
         dotted = _dotted(node)
         if dotted is not None:
-            dotted = self._expand(dotted)
+            dotted = self._expand(dotted, scope, line)
             last = dotted.split(".")[-1]
             if last in PY_STANDARD_PROFILES:
                 return _standard(PY_STANDARD_PROFILES[last])
@@ -576,7 +606,7 @@ class PythonExtractor:
                     raise Unresolved(f"{DISTRO_SENSITIVE}: QoSPresetProfiles.{parts[-2]}")
             raise Unresolved(f"unrecognized QoS expression {dotted}")
         if isinstance(node, ast.Call) and _dotted(node.func) is not None:
-            func = self._expand(_dotted(node.func) or "").split(".")[-1]
+            func = self._expand(_dotted(node.func) or "", scope, line).split(".")[-1]
             if func == "QoSProfile":
                 return self._qos_profile_call(node, scope, line)
         raise Unresolved("QoS expression is not statically resolvable")
@@ -615,7 +645,7 @@ class PythonExtractor:
         dotted = _dotted(node)
         if dotted is None or "." not in dotted:
             raise Unresolved(f"{policy} is not an enum member")
-        dotted = self._expand(dotted)
+        dotted = self._expand(dotted, scope, line)
         cls, member = dotted.split(".")[-2:]
         if cls not in PY_POLICY_CLASSES[policy]:
             raise Unresolved(f"{policy} uses {dotted}")
@@ -690,6 +720,43 @@ def tokenize_cpp(source: str) -> list:
     return tokens
 
 
+def _is_string_literal(tokens: list) -> bool:
+    return bool(tokens) and all(t.kind == "string" for t in tokens)
+
+
+DEFAULT_OPTIONS_TYPES = {"PublisherOptions", "PublisherOptionsWithAllocator",
+                         "SubscriptionOptions", "SubscriptionOptionsWithAllocator"}
+
+
+def _is_default_options(tokens: list) -> bool:
+    """True only for `{}` or a default-constructed rclcpp options type.
+
+    Accepts an optional `rclcpp::` prefix and a balanced (possibly nested)
+    template argument list, e.g. PublisherOptionsWithAllocator<std::allocator<void>>().
+    """
+    texts = [t.text for t in tokens]
+    if texts == ["{", "}"]:
+        return True
+    pos = 2 if texts[:2] == ["rclcpp", "::"] else 0
+    if pos >= len(texts) or texts[pos] not in DEFAULT_OPTIONS_TYPES:
+        return False
+    pos += 1
+    if pos < len(texts) and texts[pos] == "<":
+        depth = 0
+        while pos < len(texts):
+            if texts[pos] == "<":
+                depth += 1
+            elif texts[pos] == ">":
+                depth -= 1
+                if depth == 0:
+                    break
+            pos += 1
+        else:
+            return False
+        pos += 1
+    return texts[pos:] == ["(", ")"]
+
+
 def _int_literal(text: str) -> Optional[int]:
     digits = text.replace("'", "").rstrip("uUlLzZ")
     return int(digits) if digits.isdigit() else None
@@ -722,8 +789,20 @@ class CppExtractor:
             free_function = i >= 2 and toks[i - 1].text == "::" and toks[i - 2].text == "rclcpp"
             args = self._split_args(template_end + 2, call_end)
             if free_function:
-                args = args[1:]
+                # rclcpp offers (node, topic, ...) and (parameters_interface,
+                # topics_interface, topic, ...); only a literal topic tells them apart.
+                if len(args) > 1 and _is_string_literal(args[1]):
+                    args = args[1:]
+                elif len(args) > 2 and _is_string_literal(args[2]):
+                    args = args[2:]
+                else:
+                    endpoint.reasons.append("rclcpp free-function overload ambiguous (topic not a literal)")
+                    continue
             self._fill(endpoint, toks[i + 2:template_end], args)
+            options_index = 2 if kind == "publisher" else 3
+            if len(args) > options_index and not _is_default_options(args[options_index]):
+                endpoint.override_reason = (f"{kind} {endpoint.location}: options not tracked; "
+                                            "may carry qos_overriding_options")
         return endpoints
 
     def _match_angle(self, start: int) -> Optional[int]:
@@ -777,7 +856,7 @@ class CppExtractor:
         if endpoint.msg_type is None:
             endpoint.reasons.append("message type not statically resolvable")
         topic = None
-        if args and args[0] and all(t.kind == "string" for t in args[0]):
+        if args and _is_string_literal(args[0]):
             topic = "".join(t.text for t in args[0])
         _set_topic(endpoint, topic)
         if len(args) < 2:
@@ -1015,11 +1094,21 @@ class AuditReport:
         return 0
 
 
-def iter_files(root: Path):
+def iter_files(root: Path, report: "AuditReport"):
     if root.is_file():
         yield root
         return
-    for dirpath, dirnames, filenames in os.walk(root):
+
+    def on_error(exc: OSError) -> None:
+        # A subtree that cannot be listed is an incomplete scan, never silence.
+        name = exc.filename
+        try:
+            shown = Path(name).relative_to(root).as_posix() if name else "<unknown directory>"
+        except ValueError:
+            shown = str(name)
+        report.skipped.append({"file": shown, "reason": f"unreadable directory: {exc.strerror or exc}"})
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
         dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_DIRS)
         for name in sorted(filenames):
             yield Path(dirpath) / name
@@ -1028,7 +1117,7 @@ def iter_files(root: Path):
 def scan(root: Path) -> AuditReport:
     report = AuditReport(str(root))
     base = root if root.is_dir() else root.parent
-    for path in iter_files(root):
+    for path in iter_files(root, report):
         suffix = path.suffix.lower()
         if suffix not in PY_SUFFIXES | CPP_SUFFIXES | YAML_SUFFIXES:
             continue
@@ -1142,13 +1231,25 @@ def _pair(relation: str, topic: str, pub: Endpoint, sub: Endpoint) -> dict:
         "publisher": pub.location, "subscription": sub.location,
         "compatibility": None, "issues": [], "warnings": [], "reasons": [],
     }
+    overrides = [e.override_reason for e in (pub, sub) if e.override_reason]
     if pub.qos is None or sub.qos is None:
+        # An unparsed declared QoS is a stronger uncertainty than a possible
+        # override; keep it as not evaluated and carry the override reason.
         missing = [e for e in (pub, sub) if e.qos is None]
-        pair["reasons"] = [f"{e.kind} {e.location}: " + "; ".join(e.reasons) for e in missing]
+        pair["reasons"] = [f"{e.kind} {e.location}: " + "; ".join(e.reasons) for e in missing] + overrides
+        pair["declared_baseline"] = None
         return pair
     result = evaluate(pub.qos, sub.qos)
+    if overrides:
+        # Runtime overrides may replace the declared profile, so the declared
+        # result is kept as a baseline and never reported as confirmed.
+        pair.update(compatibility=INDETERMINATE, reasons=overrides, declared_baseline={
+            "status": result.status, "issues": result.issues,
+            "warnings": result.warnings, "reasons": result.reasons,
+        })
+        return pair
     pair.update(compatibility=result.status, issues=result.issues,
-                warnings=result.warnings, reasons=result.reasons)
+                warnings=result.warnings, reasons=result.reasons, declared_baseline=None)
     return pair
 
 
@@ -1157,7 +1258,9 @@ def _pair(relation: str, topic: str, pub: Endpoint, sub: Endpoint) -> dict:
 # ---------------------------------------------------------------------------
 
 BOUNDARY = ("Static declarations only: remapping, namespaces, launch parameters, runtime "
-            "QoS overrides, and RMW defaults are not observed. Confirm with `ros2 topic info -v`.")
+            "QoS overrides, and RMW defaults are not observed. Endpoints that may accept "
+            "QoS overrides are reported as indeterminate with their declared baseline. "
+            "Confirm with `ros2 topic info -v`.")
 
 
 def report_to_dict(report: AuditReport, strict: bool) -> dict:
@@ -1197,6 +1300,12 @@ def print_report(report: AuditReport, strict: bool) -> None:
                 print(f"      reason: {line}")
             for line in p["warnings"]:
                 print(f"      warning: {line}")
+            baseline = p.get("declared_baseline")
+            if baseline:
+                print(f"      declared baseline: {baseline['status'].upper()}")
+                for key, label in (("issues", "issue"), ("reasons", "reason"), ("warnings", "warning")):
+                    for line in baseline[key]:
+                        print(f"        {label}: {line}")
 
     if report.type_conflicts:
         print("\nType conflicts:")
@@ -1217,11 +1326,11 @@ def print_report(report: AuditReport, strict: bool) -> None:
         print("\nUnresolved endpoints (not inferred):")
         for e in report.unresolved:
             print(f"  {e.kind} at {e.location}: {'; '.join(e.reasons)}")
-    notes = [e for e in report.endpoints if e.notes]
+    notes = [e for e in report.endpoints if e.notes or e.override_reason]
     if notes:
         print("\nNotes:")
         for e in notes:
-            print(f"  {e.location}: {'; '.join(e.notes)}")
+            print(f"  {e.location}: {'; '.join(e.notes + ([e.override_reason] if e.override_reason else []))}")
     if report.yaml_candidates:
         print("\nYAML QoS override candidates (not applied; load and node acceptance unverified):")
         for c in report.yaml_candidates:

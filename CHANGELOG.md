@@ -2,7 +2,7 @@
 
 All notable changes are documented here.
 
-## 1.6.0 - 2026-09-23
+## 1.6.0 - 2026-09-28
 
 Source bundle version 1.6.0. Release publication follows
 `docs/RELEASING.md`.
@@ -21,9 +21,15 @@ Source bundle version 1.6.0. Release publication follows
   profiles (KEEP_LAST without depth), and distro-sensitive policies such as
   BEST_AVAILABLE as unresolved. A type conflict is definite only when no
   unresolved-type or dynamic-topic endpoint could complete the type sets.
+- Report a pair as indeterminate, keeping the declared result as a baseline, when an
+  endpoint enables `qos_overriding_options` or passes C++ options the audit cannot
+  track. Message types and QoS profiles resolve only through unconditional imports
+  placed before use in the enclosing scope; the two-interface rclcpp free functions
+  are parsed, and an ambiguous overload stays unresolved.
 - List YAML `qos_overrides` as unapplied candidates. Skipped, non-UTF-8, or
-  unparsable files are reported as an incomplete scan. `--strict` also fails on
-  potential, unresolved, indeterminate, or incomplete-scan results.
+  unparsable files and unreadable directories are reported as an incomplete scan.
+  `--strict` also fails on potential, unresolved, indeterminate, or incomplete-scan
+  results.
 - Route multi-reference questions through section headings, and add a README map
   separating guidance, tools, client integration, and repository verification.
 
