@@ -796,6 +796,12 @@ class CppExtractor:
                 elif len(args) > 2 and _is_string_literal(args[2]):
                     args = args[2:]
                 else:
+                    # Keep what is certain (the template message type) and drop
+                    # only what depends on the unknown overload: topic, QoS, options.
+                    endpoint.msg_type = self._msg_type(toks[i + 2:template_end])
+                    if endpoint.msg_type is None:
+                        endpoint.reasons.append("message type not statically resolvable")
+                    _set_topic(endpoint, None)
                     endpoint.reasons.append("rclcpp free-function overload ambiguous (topic not a literal)")
                     continue
             self._fill(endpoint, toks[i + 2:template_end], args)

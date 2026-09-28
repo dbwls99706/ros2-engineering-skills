@@ -965,7 +965,32 @@ void f() {
 void f() { rclcpp::create_subscription<sensor_msgs::msg::Image>(a, b, topic, qos, cb); }
 """)
         _, data = audit(tmp_path)
-        assert "overload ambiguous" in data["unresolved"][0]["unresolved"][0]
+        [endpoint] = data["unresolved"]
+        assert endpoint["msg_type"] == "sensor_msgs/msg/Image"
+        assert endpoint["unresolved"] == ["dynamic topic",
+                                          "rclcpp free-function overload ambiguous (topic not a literal)"]
+
+    def _camera_conflict_with_ambiguous(self, tmp_path, ambiguous_type):
+        write(tmp_path, "node.cpp", f"""
+void f() {{
+  create_publisher<sensor_msgs::msg::Image>("/camera", 10);
+  create_subscription<sensor_msgs::msg::LaserScan>("/camera", 10, cb);
+  rclcpp::create_subscription<{ambiguous_type}>(node, topic_name, rclcpp::QoS(10), cb);
+}}
+""")
+
+    def test_ambiguous_cpp_dynamic_unrelated_type_keeps_conflict_definite(self, tmp_path):
+        self._camera_conflict_with_ambiguous(tmp_path, "std_msgs::msg::String")
+        code, data = audit(tmp_path)
+        assert data["type_conflicts"][0]["status"] == "definite"
+        assert code == 1
+
+    def test_ambiguous_cpp_dynamic_matching_type_downgrades_conflict(self, tmp_path):
+        self._camera_conflict_with_ambiguous(tmp_path, "sensor_msgs::msg::Image")
+        code, data = audit(tmp_path)
+        [conflict] = data["type_conflicts"]
+        assert conflict["status"] == "unresolved" and "dynamic-topic subscription" in conflict["detail"]
+        assert code == 0 and audit(tmp_path, "--strict")[0] == 1
 
     def test_parameter_shadowing_import_is_unresolved(self, tmp_path):
         write(tmp_path, "node.py", """
