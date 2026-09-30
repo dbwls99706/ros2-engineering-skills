@@ -9,7 +9,7 @@ for completed answers, and turns human verdicts into paired outcomes.
 Subcommands:
     init         Create an experiment directory with a manifest skeleton and order
     add-run      Record one finished session (output, trace, status) into a slot
-    status       Show filled slots and the next runs in preregistered order
+    status       Show filled slots and the next runs in the frozen run order
     grade-sheet  Write blinded sheets and a grades.json template for reviewers
     score        Combine grades and the manifest into per-pair, per-criterion outcomes
 
@@ -195,7 +195,7 @@ def load_order(exp_dir, manifest, suite):
                 'sequence': build_order(suite, manifest['order_seed'])}
     if recorded != expected:
         fail('order.json does not match the order derived from the recorded seed; '
-             'the preregistered order was edited')
+             'the frozen run order was edited')
     return expected['sequence']
 
 
@@ -312,15 +312,21 @@ def parse_loaded(value):
     return {'true': True, 'false': False, 'unknown': None}[value]
 
 
-def import_artifact(exp_dir, source, destination, allow_empty):
+def prepare_artifact(exp_dir, source, destination, allow_empty):
+    """Read and validate an artifact without writing anything.
+
+    Returns (destination, data, manifest_entry). Every input check for a run
+    happens through this function before any file is copied, so a validation
+    refusal leaves runs/ and the manifest unchanged.
+    """
     data = vec.read_regular_bytes(Path(source))
     text = data.decode('utf-8')
     if not allow_empty and not text.strip():
         fail('Artifact must not be blank: ' + str(source))
     if destination.exists():
         fail('Artifact already recorded: ' + str(destination))
-    destination.write_bytes(data)
-    return {'path': destination.relative_to(exp_dir).as_posix(), 'sha256': sha256_bytes(data)}
+    entry = {'path': destination.relative_to(exp_dir).as_posix(), 'sha256': sha256_bytes(data)}
+    return destination, data, entry
 
 
 def cmd_add_run(args):
@@ -358,18 +364,21 @@ def cmd_add_run(args):
     expected = next_pending(order, manifest)
     expected_key = (expected['case_id'], expected['trial'], expected['condition']) if expected else None
     if expected_key != key and out_of_order is None:
-        fail('Out of preregistered order: next slot is %s, got %s. Record a deliberate deviation '
+        fail('Out of frozen run order: next slot is %s, got %s. Record a deliberate deviation '
              'with --out-of-order <reason>; it is kept as protocol contamination'
              % (expected_key, key))
     if expected_key == key and out_of_order is not None:
         fail('--out-of-order given but %s is the next slot in order' % (key,))
     stem = '%s-t%d-%s' % (args.case, args.trial, args.condition)
     runs_dir = exp_dir / 'runs'
-    trace = import_artifact(exp_dir, args.trace, runs_dir / (stem + '.trace.txt'), allow_empty=False)
-    output = None
+    pending = [prepare_artifact(exp_dir, args.trace, runs_dir / (stem + '.trace.txt'), allow_empty=False)]
     if args.output is not None:
-        destination = runs_dir / (stem + '.output.md')
-        output = import_artifact(exp_dir, args.output, destination, allow_empty=True)
+        pending.append(prepare_artifact(exp_dir, args.output, runs_dir / (stem + '.output.md'),
+                                        allow_empty=True))
+    for destination, data, _ in pending:
+        destination.write_bytes(data)
+    trace = pending[0][2]
+    output = pending[1][2] if len(pending) == 2 else None
     run = {
         'case_id': args.case, 'trial': args.trial, 'condition': args.condition,
         'session_id': session_id, 'skill_loaded': loaded,
@@ -619,7 +628,7 @@ def build_parser():
     add.add_argument('--contaminated', default=None,
                      help='reason the session broke protocol (e.g. read the rubric)')
     add.add_argument('--out-of-order', default=None,
-                     help='reason this slot is recorded ahead of the preregistered order; '
+                     help='reason this slot is recorded ahead of the frozen seeded order; '
                           'kept as protocol contamination')
     add.set_defaults(func=cmd_add_run)
 

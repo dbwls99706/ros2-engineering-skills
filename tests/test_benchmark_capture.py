@@ -93,7 +93,7 @@ def add_next(exp, tmp_path, extra=(), output=True, capsys=None):
 
 
 def fill_all(exp, tmp_path, capsys, special=None):
-    """Record every slot in the preregistered order; ``special`` overrides a slot."""
+    """Record every slot in the frozen run order; ``special`` overrides a slot."""
     special = special or {}
     while next_slot(exp) is not None:
         slot = next_slot(exp)
@@ -216,7 +216,7 @@ class TestOrder:
         a['condition'], b['condition'] = b['condition'], a['condition']
         (experiment / 'order.json').write_text(json.dumps(order), encoding='utf-8')
         assert bench.main(['status', str(experiment)]) == 2
-        assert 'preregistered order was edited' in capsys.readouterr().err
+        assert 'frozen run order was edited' in capsys.readouterr().err
         case, trial, condition = a['case_id'], a['trial'], a['condition']
         assert add(experiment, tmp_path, case, trial, condition) == 2
         assert manifest(experiment)['runs'] == []
@@ -228,7 +228,7 @@ class TestOrder:
         later = seq[5]
         assert add(experiment, tmp_path, later['case_id'], later['trial'], later['condition']) == 2
         err = capsys.readouterr().err
-        assert 'Out of preregistered order' in err and '--out-of-order' in err
+        assert 'Out of frozen run order' in err and '--out-of-order' in err
         assert manifest(experiment)['runs'] == []
         assert list((experiment / 'runs').iterdir()) == []
 
@@ -297,6 +297,23 @@ class TestAddRun:
         assert add(experiment, tmp_path, case, trial, condition) == 2
         assert 'already recorded' in capsys.readouterr().err
         assert len(manifest(experiment)['runs']) == 1
+
+    @pytest.mark.parametrize('broken', ['missing', 'not_utf8'])
+    def test_invalid_output_leaves_runs_and_manifest_unchanged(self, experiment, tmp_path, capsys, broken):
+        """A valid trace with an invalid output is refused before any file is written."""
+        case, trial, condition = next_slot(experiment)
+        trace, _ = artifacts(tmp_path, 'prevalidate', output=False)
+        answer = tmp_path / 'prevalidate.answer'
+        if broken == 'not_utf8':
+            answer.write_bytes(b'\xff\xfe not text')
+        before = (experiment / 'capture.json').read_bytes()
+        argv = ['add-run', str(experiment), '--case', case, '--trial', str(trial), '--condition', condition,
+                '--trace', str(trace), '--output', str(answer)]
+        assert bench.main(argv) != 0
+        capsys.readouterr()
+        assert (experiment / 'capture.json').read_bytes() == before
+        assert list((experiment / 'runs').iterdir()) == []
+        assert manifest(experiment)['runs'] == []
 
     def test_failed_run_needs_error_and_keeps_null_output(self, experiment, tmp_path, capsys):
         assert add_next(experiment, tmp_path, output=False, extra=['--status', 'timed_out']) == 2

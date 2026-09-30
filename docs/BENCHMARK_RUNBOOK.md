@@ -189,10 +189,11 @@ python3 scripts/benchmark_capture.py add-run /path/exp-2026-10 \
 ```
 
 The helper copies the files into `runs/`, hashes them, stamps `captured_at`,
-and refuses duplicate slots, slots out of the preregistered order, reused
+and refuses duplicate slots, slots out of the frozen run order, reused
 session ids, an OFF run that claims `skill_loaded=true`, a completed run
-without an output, and a failed run without an error. Every check runs before
-any file is copied, so a refused command leaves `runs/` unchanged.
+without an output, and a failed run without an error. Every input check,
+including reading and decoding both artifacts, runs before any file is copied,
+so a validation refusal leaves `runs/` and `capture.json` unchanged.
 
 ## 5. Verify integrity
 
