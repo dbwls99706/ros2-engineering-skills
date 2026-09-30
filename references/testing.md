@@ -808,6 +808,13 @@ Rules for using the ladder:
 - **Safety claims cite their weakest link.** A stop path verified at L3 is a
   stop path verified in simulation, however many tests it passed
   (`references/safety-estop.md` §3).
+- **Separate a harness failure from a behavior failure.** A collection, import,
+  fixture, setup, or missing prerequisite supplied by the test harness means the
+  behavior check did not run; report it as an unperformed check, fix the fixture,
+  then decide about behavior. Do not report it as a robot or node failure, and do
+  not report a repaired fixture as verified behavior. A message the system under
+  test was required to produce and did not is not a fixture problem; that is the
+  behavior under test.
 
 ---
 

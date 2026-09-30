@@ -155,6 +155,17 @@ Supervised-test readiness: ready for the stated L5 trial
 Operational readiness: not established
 ```
 
+### Availability policy and motion permits are separate
+
+A lost telemetry, dashboard, or management link is evidence about that link, not
+by itself about the motion permit. Classify the loss against the documented
+product requirement and operating policy, then separately identify the path that
+owns the motion permit and the final command gate, and verify explicit stop
+delivery and gate behavior as their own evidence (`references/safety-estop.md`
+section 3). A loss that violates the documented availability policy is reported
+as such; an intended degraded mode is not reclassified as a defect merely
+because the link is absent.
+
 ## 3. Repeated blocker to resolution plan
 
 Repeating the same blocker without new evidence is not progress. If the next
