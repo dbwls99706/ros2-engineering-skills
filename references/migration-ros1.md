@@ -203,7 +203,12 @@ Key differences:
 
 ## 4. Launch file conversion
 
-### ROS 1 XML → ROS 2 Python
+### ROS 1 XML → ROS 2 declarative launch (XML example)
+
+The ROS 2 migration guide states that for typical use cases XML and YAML should
+be preferred over Python, and its migration examples are XML. Convert ROS 1 XML
+to ROS 2 XML first; write Python only for launch behavior the frontends cannot
+express (see `references/launch-system.md` section 1).
 
 **ROS 1 (XML):**
 
@@ -231,7 +236,39 @@ Key differences:
 </launch>
 ```
 
-**ROS 2 (Python):**
+**ROS 2 (XML):**
+
+```xml
+<launch>
+  <arg name="robot_name" default="my_robot"/>
+  <arg name="use_sim" default="false"/>
+
+  <node pkg="robot_state_publisher" exec="robot_state_publisher"
+        name="robot_state_publisher" output="screen">
+    <param name="robot_description"
+           value="$(command 'xacro $(find-pkg-share my_robot_description)/urdf/robot.urdf.xacro')"/>
+  </node>
+
+  <node pkg="my_robot_driver" exec="driver_node" name="driver"
+        namespace="$(var robot_name)" output="screen">
+    <param name="serial_port" value="/dev/ttyUSB0"/>
+    <param name="baud_rate" value="115200"/>
+    <!-- The namespace already prefixes relative topics -->
+    <remap from="joint_states" to="/$(var robot_name)/joint_states"/>
+  </node>
+
+  <group if="$(var use_sim)">
+    <include file="$(find-pkg-share my_robot_sim)/launch/simulation.launch.py"/>
+  </group>
+</launch>
+```
+
+Differences from ROS 1: `type` becomes `exec`, `ns` becomes `namespace`,
+`$(arg x)` becomes `$(var x)`, `$(find pkg)` becomes `$(find-pkg-share pkg)`,
+the `command` attribute becomes `value="$(command '...')"`, parameters belong
+to a node, and `<include>` may point at any ROS 2 launch format.
+
+**ROS 2 (Python, when justified):**
 
 ```python
 from launch import LaunchDescription
@@ -298,17 +335,22 @@ def generate_launch_description():
 
 ### Key conversion patterns
 
-| ROS 1 | ROS 2 |
-|---|---|
-| `<arg name="x" default="y"/>` | `DeclareLaunchArgument('x', default_value='y')` |
-| `$(arg x)` | `LaunchConfiguration('x')` |
-| `$(find pkg)` | `FindPackageShare('pkg')` |
-| `<param name="..." value="..."/>` | `parameters=[{'name': value}]` |
-| `<remap from="a" to="b"/>` | `remappings=[('a', 'b')]` |
-| `<group if="...">` | `GroupAction(condition=IfCondition(...))` |
-| `<include file="..."/>` | `IncludeLaunchDescription(...)` |
-| `<node ... type="...">` | `Node(... executable='...')` |
-| `$(arg x)/sub` | `[LaunchConfiguration('x'), '/sub']` |
+| ROS 1 | ROS 2 XML | Python when justified |
+|---|---|---|
+| `<arg name="x" default="y"/>` | `<arg name="x" default="y"/>` | `DeclareLaunchArgument('x', default_value='y')` |
+| `$(arg x)` | `$(var x)` | `LaunchConfiguration('x')` |
+| `$(find pkg)` | `$(find-pkg-share pkg)` | `FindPackageShare('pkg')` |
+| `<param name="..." value="..."/>` | Same, nested inside `<node>` | `parameters=[{'name': value}]` |
+| `<rosparam file="..."/>` | `<param from="..."/>` inside `<node>` | `parameters=['file.yaml']` |
+| `<remap from="a" to="b"/>` | `<remap from="a" to="b"/>` | `remappings=[('a', 'b')]` |
+| `<group if="...">` | `<group if="$(var x)">` | `GroupAction(condition=IfCondition(...))` |
+| `<group ns="ns">` | `<group><push-ros-namespace namespace="ns"/>...</group>` | `GroupAction([PushRosNamespace('ns'), ...])` |
+| `<include file="..."/>` | `<include file="..."/>` with nested `<arg>` | `IncludeLaunchDescription(...)` |
+| `<node ... type="...">` | `<node ... exec="...">` | `Node(... executable='...')` |
+| `$(arg x)/sub` | `$(var x)/sub` | `[LaunchConfiguration('x'), '/sub']` |
+
+Source: [Humble migration guide](https://docs.ros.org/en/humble/How-To-Guides/Migrating-from-ROS1/Migrating-Launch-Files.html),
+[Rolling migration guide](https://github.com/ros2/ros2_documentation/blob/rolling/source/Migration-and-Upgrades/Migrating-from-ROS1/Migrating-Launch-Files.rst).
 
 ## 5. API mapping (rospy → rclpy, roscpp → rclcpp)
 
@@ -540,4 +582,4 @@ self.add_on_set_parameters_callback(parameter_callback)
 
 ---
 
-**See also:** `references/communication.md` for ROS 2 topic/service/action API details, `references/launch-system.md` for XML-to-Python launch file conversion, `references/workspace-build.md` for catkin-to-ament build system migration.
+**See also:** `references/communication.md` for ROS 2 topic/service/action API details, `references/launch-system.md` for launch format selection and cross-format include, `references/workspace-build.md` for catkin-to-ament build system migration.

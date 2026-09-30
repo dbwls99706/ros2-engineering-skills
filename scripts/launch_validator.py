@@ -2,6 +2,9 @@
 """Static analysis for ROS 2 Python launch files (*.launch.py, *_launch.py).
 
 XML (.launch.xml) and YAML (.launch.yaml) launch files are not supported.
+Check XML markup with xmllint or ament_xmllint (well-formedness only), load
+and parse any format with `ros2 launch <pkg> <file> --show-args` or
+`--print` (structural only), and add this static validator for Python.
 
 Usage:
     python launch_validator.py path/to/launch_dir/

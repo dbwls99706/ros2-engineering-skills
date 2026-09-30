@@ -2,6 +2,44 @@
 
 All notable changes are documented here.
 
+## 1.6.1 - 2026-09-30
+
+Source bundle version 1.6.1. Release publication follows
+`docs/RELEASING.md`. Launch best-practice correction prompted by the
+Discourse review of v1.5.0 and verified against ROS 2 documentation, the
+`ros2/launch` implementation, and `ros2_control` behavior.
+
+- Replace the absolute "always use Python launch files" rule in
+  `references/launch-system.md` with declarative-first guidance: prefer XML or
+  YAML for straightforward launch descriptions and use Python when the required
+  behavior cannot be expressed through the frontends or needs lower-level launch
+  APIs, as the ROS 2 migration guide states for typical use cases. Open with a
+  format decision table and the same minimal launch in XML, YAML, and Python;
+  state that launch stays focused on orchestration and that justified Python
+  keeps a declarative, substitution-based description.
+- Show dedicated boolean substitutions (`equals`, `and`, `or`, `not`, `any`,
+  `all`) before `PythonExpression`, note that old or pinned installations may
+  differ, and document `XMLLaunchDescriptionSource`,
+  `YAMLLaunchDescriptionSource`, and `AnyLaunchDescriptionSource` for
+  cross-format includes.
+- State that `OnProcessExit` establishes termination ordering only and does not
+  prove a controller loaded or activated. Gate the spawner chain on
+  `returncode == 0` with `LogInfo` and `Shutdown(reason=...)` on failure, and
+  limit that gate to processes with a failure contract. Show one spawner with
+  several controllers, noting that it is not atomic and that
+  `--activate-as-group` groups activation only.
+- Describe `--show-args`, `--print`, and `ament_xmllint` as load/parse smoke,
+  structural inspection, and XML markup checks; none verifies runtime
+  behavior. `scripts/launch_validator.py` remains Python-only at 0.1.0 and no
+  XML or YAML static validator is added.
+- Rewrite the ROS 1 launch conversion in `references/migration-ros1.md` as
+  ROS 1 XML to ROS 2 XML with a three-column conversion table that keeps the
+  Python API as the justified alternative.
+- Add string-level regression tests for the corrected guidance and register the
+  upstream sources with review dates. The new XML, YAML, and Python examples
+  were reviewed statically; parser smoke not run locally. CI does not execute
+  the reference examples, and no skill on/off model comparison was run.
+
 ## 1.6.0 - 2026-09-28
 
 Source bundle version 1.6.0. Release publication follows

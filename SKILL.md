@@ -12,7 +12,7 @@ compatibility: >
   target ROS 2 environment. Claude plugin hooks are client-specific.
 metadata:
   author: dbwls99706
-  version: "1.6.0"
+  version: "1.6.1"
   repository: "https://github.com/dbwls99706/ros2-engineering-skills"
 ---
 
@@ -82,7 +82,7 @@ constraints and lookup routes, not a checklist to execute on every request.
 | Nodes, executors, callback groups | `references/nodes-executors.md` |
 | Topics, services, actions, interfaces, QoS/DDS | `references/communication.md` |
 | Lifecycle, components, composition | `references/lifecycle-components.md` |
-| Launch files, conditions, event handlers | `references/launch-system.md` |
+| Launch format selection, conditions, event handlers | `references/launch-system.md` |
 | tf2, URDF/xacro, robot_state_publisher | `references/tf2-urdf.md` |
 | ros2_control, hardware interfaces, controllers | `references/hardware-interface.md` |
 | Real-time constraints, memory, jitter | `references/realtime.md` |

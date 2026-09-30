@@ -1190,3 +1190,189 @@ class TestMessageDefinitionFacts:
         assert 'REP-118 depth-image stream' in section
         assert 'encoding strings alone do not assign physical units' in (
             _flat(section))
+
+
+# ---------------------------------------------------------------------------
+# Launch format guidance (v1.6.1)
+#
+# Background (Discourse review of v1.5.0): launch-system.md told agents to
+# "Always use Python launch files for production systems". The ROS 2 migration
+# guide states the opposite for typical use cases (prefer XML/YAML), and the
+# launch format guide reserves Python for flexibility the frontends cannot
+# express. The same section presented an unconditional OnProcessExit chain as
+# proof that a controller spawner had succeeded.
+# ---------------------------------------------------------------------------
+
+LAUNCH_MD = os.path.join(ROOT, 'references', 'launch-system.md')
+MIGRATION_MD = os.path.join(ROOT, 'references', 'migration-ros1.md')
+LAUNCH_VALIDATOR = os.path.join(ROOT, 'scripts', 'launch_validator.py')
+
+
+def _md_h2_section(path, heading):
+    """Like _md_section, but runs to the next '## ' heading so that '###'
+    subsections stay inside the slice."""
+    lines = _lines(path)
+    start = lines.index(heading)
+    in_fence = False
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith('```'):
+            in_fence = not in_fence
+        elif not in_fence and lines[i].startswith('## '):
+            end = i
+            break
+    return '\n'.join(lines[start:end])
+
+
+class TestLaunchFormatGuidance:
+    """Declarative-first guidance must be stated positively and the absolute
+    Python rule must not return."""
+
+    def test_absolute_python_rule_is_gone(self):
+        text = _read(LAUNCH_MD)
+        assert 'Always use Python launch files' not in text
+        assert 'lack the full power' not in text
+
+    def test_first_section_is_format_selection(self):
+        lines = _lines(LAUNCH_MD)
+        assert '1. Launch format selection' in lines
+        assert '## 1. Launch format selection' in lines
+
+    def test_preference_and_frontend_mapping_are_stated(self):
+        section = _md_section(LAUNCH_MD, '## 1. Launch format selection')
+        assert 'Prefer declarative XML or YAML for straightforward launch' in section
+        assert ('Use\nPython when the required launch behavior cannot be expressed '
+                'cleanly through the\ndeclarative frontends' in section)
+        assert ('XML and YAML frontends map to the\nsame underlying launch '
+                'action/substitution model' in section)
+
+    def test_decision_table_routes_both_ways(self):
+        section = _md_section(LAUNCH_MD, '### Format decision table')
+        assert '| Ordinary robot bringup composition | XML/YAML first |' in section
+        assert ('| Low-level launch features not exposed by the frontends '
+                '| Python |' in section)
+        assert 'Weak justification on its own' in section
+
+    def test_minimal_example_exists_in_three_formats(self):
+        section = _md_section(
+            LAUNCH_MD, '### The same minimal launch in three formats')
+        assert '```xml' in section and '```yaml' in section and '```python' in section
+        assert 'exec="driver_node"' in section
+        assert 'exec: driver_node' in section
+        assert "executable='driver_node'" in section
+
+    def test_cross_format_include_sources(self):
+        section = _md_section(LAUNCH_MD, '### IncludeLaunchDescription sources')
+        for name in ('PythonLaunchDescriptionSource', 'XMLLaunchDescriptionSource',
+                     'YAMLLaunchDescriptionSource', 'AnyLaunchDescriptionSource'):
+            assert name in section, name
+        assert 'launch_xml.launch_description_sources' in section
+        assert 'launch_yaml.launch_description_sources' in section
+        assert 'specific subclass when the format is known' in section
+
+    def test_python_expression_is_a_conditioned_fallback(self):
+        table = _md_section(LAUNCH_MD, '### Common substitutions')
+        row = next(line for line in table.splitlines()
+                   if line.startswith('| `PythonExpression('))
+        assert 'when no dedicated substitution exists' in row
+        conditions = _md_section(
+            LAUNCH_MD, '### Compound conditions: dedicated substitutions first')
+        assert 'Prefer dedicated substitutions supported by the target ROS' in conditions
+        assert 'EqualsSubstitution' in conditions and 'AndSubstitution' in conditions
+        assert 'inspect the installed\nlaunch version' in conditions
+        assert '### PythonExpression as the fallback' in _lines(LAUNCH_MD)
+
+    def test_checking_section_states_its_limits_positively(self):
+        section = _md_section(
+            LAUNCH_MD, '### Checking a launch file without running the robot')
+        assert 'load/parse smoke' in section
+        assert 'structural inspection' in section
+        assert 'None of them\nverifies resolved parameter values or runtime behavior' in section
+        assert '--show-args' in section and '--print' in section
+        assert 'XML markup is well-formed; not launch semantics' in section
+        assert 'ships no static validator for XML or YAML' in section
+        python_row = next(line for line in section.splitlines()
+                          if 'launch_validator.py' in line)
+        assert python_row.startswith('| Python |')
+
+    def test_validator_docstring_separates_checks_by_format(self):
+        head = '\n'.join(_lines(LAUNCH_VALIDATOR)[:12])
+        assert 'XML (.launch.xml) and YAML (.launch.yaml) launch files are not supported.' in head
+        assert 'well-formedness only' in head
+        assert '--show-args' in head and 'structural only' in head
+
+    def test_sources_are_technical_only(self):
+        section = _md_h2_section(LAUNCH_MD, '## 1. Launch format selection')
+        assert '**Technical sources:**' in section
+        assert 'Migrating-Launch-Files' in section
+        text = _read(LAUNCH_MD)
+        assert 'Community review context' not in text
+        assert 'discourse.openrobotics.org' not in text
+
+    def test_launch_stays_focused_on_orchestration(self):
+        section = _md_h2_section(LAUNCH_MD, '## 1. Launch format selection')
+        assert 'Keep launch files focused on orchestration' in section
+        assert ('move that logic into nodes or configuration rather than using '
+                'Python merely to\nmake launch programmable' in section)
+        table = _md_section(LAUNCH_MD, '### Format decision table')
+        assert ('| Application logic or substantial computation '
+                '| Move it into a node or configuration, not launch |' in table)
+
+    def test_justified_python_stays_declarative_as_a_guideline(self):
+        section = _md_section(
+            LAUNCH_MD, '### When Python is justified, stay declarative')
+        assert 'launch-time configurable or context-dependent' in section
+        assert 'Eager Python resolution is fine' in section
+        assert 'This is a maintainability guideline, not a lint\nrule.' in section
+
+    def test_migration_reference_is_xml_first(self):
+        lines = _lines(MIGRATION_MD)
+        assert '### ROS 1 XML → ROS 2 declarative launch (XML example)' in lines
+        assert '**ROS 2 (XML):**' in lines
+        assert '**ROS 2 (Python, when justified):**' in lines
+        assert '| ROS 1 | ROS 2 XML | Python when justified |' in lines
+        table = _md_section(MIGRATION_MD, '### Key conversion patterns')
+        assert '`$(var x)`' in table and '`$(find-pkg-share pkg)`' in table
+        assert '<push-ros-namespace' in table
+        see_also = next(line for line in lines if line.startswith('**See also:**'))
+        assert 'launch format selection and cross-format include' in see_also
+        assert 'XML-to-Python' not in see_also
+
+
+class TestOnProcessExitCompletionGate:
+    """OnProcessExit is termination ordering; exit-code gating is limited to
+    processes with a failure contract, and section 7 defers to section 4."""
+
+    def test_canonical_warning_once_in_section_4(self):
+        text = _read(LAUNCH_MD)
+        sentence = ('`OnProcessExit` only establishes process termination ordering. '
+                    'It does not\nprove that the previous controller was successfully '
+                    'loaded or activated.')
+        assert text.count(sentence) == 1
+        assert sentence in _md_section(
+            LAUNCH_MD, '### OnProcessExit — termination ordering, not readiness')
+
+    def test_gate_checks_returncode_and_fails_fast(self):
+        section = _md_section(
+            LAUNCH_MD, '### OnProcessExit — termination ordering, not readiness')
+        assert 'if event.returncode == 0:' in section
+        assert "Shutdown(reason='controller spawner failed')" in section
+        assert "LogInfo(msg='ERROR: joint_state_broadcaster spawner failed')" in section
+        assert 'It is not a general readiness proof' in section
+        assert 'on_exit=after_jsb_spawner' in section
+
+    def test_no_loaded_before_comment_survives(self):
+        for lineno, line in enumerate(_lines(LAUNCH_MD), start=1):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                assert 'after joint_state_broadcaster is loaded' not in stripped, lineno
+                assert 'is up before' not in stripped, lineno
+
+    def test_ros2_control_section_states_non_atomicity_and_defers(self):
+        section = _md_h2_section(LAUNCH_MD, '## 7. Launch for ros2_control')
+        assert ('One spawner avoids launch-level process-exit sequencing, but does '
+                'not make the\nentire multi-controller operation atomic.' in section)
+        assert '`--activate-as-group` groups\nonly the activation step' in section
+        assert 'exit-code-gated `OnProcessExit` handler from section 4' in section
+        assert "arguments=['joint_state_broadcaster', 'arm_controller'," in section
+        assert '--controller-manager-timeout' in section
