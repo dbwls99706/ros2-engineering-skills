@@ -14,7 +14,9 @@ Discourse review of v1.5.0 and verified against ROS 2 documentation, the
   YAML for straightforward launch descriptions and use Python when the required
   behavior cannot be expressed through the frontends or needs lower-level launch
   APIs, as the ROS 2 migration guide states for typical use cases. Open with a
-  format decision table and the same minimal launch in XML, YAML, and Python.
+  format decision table and the same minimal launch in XML, YAML, and Python;
+  state that launch stays focused on orchestration and that justified Python
+  keeps a declarative, substitution-based description.
 - Show dedicated boolean substitutions (`equals`, `and`, `or`, `not`, `any`,
   `all`) before `PythonExpression`, note that old or pinned installations may
   differ, and document `XMLLaunchDescriptionSource`,

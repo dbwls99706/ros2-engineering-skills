@@ -35,6 +35,11 @@ and maintain. A Python launch file is still valid ROS 2; reviewing an existing
 `*.launch.py` does not require converting it. Rewriting pays off when the file
 is a plain node list that a declarative file expresses more clearly.
 
+Keep launch files focused on orchestration and as simple as the system allows.
+If substantial computation or application logic accumulates in a launch file,
+move that logic into nodes or configuration rather than using Python merely to
+make launch programmable.
+
 ### Format decision table
 
 | Launch content | Default choice |
@@ -45,6 +50,20 @@ is a plain node list that a declarative file expresses more clearly.
 | A launch graph that genuinely depends on runtime logic | Python |
 | Actions generated from computation or external data | Python, with the need stated in the file |
 | "Python is more familiar" | Weak justification on its own |
+| Application logic or substantial computation | Move it into a node or configuration, not launch |
+
+### When Python is justified, stay declarative
+
+When Python is justified, keep the launch description declarative where that
+preserves clarity and configurability. Prefer launch-native substitutions for
+values that should remain launch-time configurable or context-dependent, and
+prefer launch conditions or substitutions over Python control flow when they
+express the same orchestration clearly. Eager Python resolution is fine for
+values intentionally fixed while constructing the description. For simple
+graphs, returning `LaunchDescription([...])` directly can improve readability;
+helpers, variables, or `add_action()` are also appropriate when they make a
+larger description clearer. This is a maintainability guideline, not a lint
+rule.
 
 ### The same minimal launch in three formats
 
@@ -137,8 +156,6 @@ behavior is established by the verification levels in `references/testing.md`.
 [Jazzy launch format guide](https://docs.ros.org/en/jazzy/How-To-Guides/Launch-file-different-formats.html),
 [roslaunch XML design](https://design.ros2.org/articles/roslaunch_xml.html),
 [ros2launch options](https://github.com/ros2/launch_ros/blob/humble/ros2launch/ros2launch/command/launch.py).
-**Community review context:** [Discourse thread on v1.5.0](https://discourse.openrobotics.org/t/ros-2-engineering-skills-for-coding-agents-v1-5-0)
-and the ROSCon 2025 talk "Escape Velocity: Smarter, Cleaner ROS 2 Launch Patterns".
 
 ## 2. Launch arguments and substitutions
 

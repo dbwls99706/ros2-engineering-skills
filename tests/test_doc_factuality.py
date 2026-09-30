@@ -1301,11 +1301,29 @@ class TestLaunchFormatGuidance:
         assert 'well-formedness only' in head
         assert '--show-args' in head and 'structural only' in head
 
-    def test_sources_split_technical_from_community(self):
+    def test_sources_are_technical_only(self):
         section = _md_h2_section(LAUNCH_MD, '## 1. Launch format selection')
         assert '**Technical sources:**' in section
-        assert '**Community review context:**' in section
         assert 'Migrating-Launch-Files' in section
+        text = _read(LAUNCH_MD)
+        assert 'Community review context' not in text
+        assert 'discourse.openrobotics.org' not in text
+
+    def test_launch_stays_focused_on_orchestration(self):
+        section = _md_h2_section(LAUNCH_MD, '## 1. Launch format selection')
+        assert 'Keep launch files focused on orchestration' in section
+        assert ('move that logic into nodes or configuration rather than using '
+                'Python merely to\nmake launch programmable' in section)
+        table = _md_section(LAUNCH_MD, '### Format decision table')
+        assert ('| Application logic or substantial computation '
+                '| Move it into a node or configuration, not launch |' in table)
+
+    def test_justified_python_stays_declarative_as_a_guideline(self):
+        section = _md_section(
+            LAUNCH_MD, '### When Python is justified, stay declarative')
+        assert 'launch-time configurable or context-dependent' in section
+        assert 'Eager Python resolution is fine' in section
+        assert 'This is a maintainability guideline, not a lint\nrule.' in section
 
     def test_migration_reference_is_xml_first(self):
         lines = _lines(MIGRATION_MD)
