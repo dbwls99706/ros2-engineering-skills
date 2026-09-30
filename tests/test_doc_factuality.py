@@ -1457,6 +1457,9 @@ class TestRclpySignalCleanup:
         assert 'A sent cleanup command is not a physical stop' in flat
         assert 'Foxy predates `SignalHandlerOptions`' in flat
         assert 'Publishing a stop message alone is not proof that it was delivered' in flat
+        assert 'When `signal_handler_options` is omitted' in flat
+        assert 'installs its own SIGINT and SIGTERM handlers on Humble and later' in flat
+        assert 'terminal SIGINT only' not in _read(EXECUTORS_MD)
 
     def test_example_catches_external_shutdown_and_cleans_once(self):
         section = _md_section(EXECUTORS_MD, '### Shutdown signals and idempotent cleanup')

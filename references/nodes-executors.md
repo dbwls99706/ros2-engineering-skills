@@ -108,7 +108,7 @@ class JointPublisher(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)  # default handlers: terminal SIGINT only; see "Shutdown signals" below
+    rclpy.init(args=args)  # default context + default signal options install SIGINT/SIGTERM handlers (Humble+); see "Shutdown signals" below
     node = JointPublisher()
     try:
         rclpy.spin(node)
@@ -130,8 +130,12 @@ Let the handler record a shutdown request only, end the spin at a normal
 control-flow boundary, and run cleanup once; a repeated signal must not re-enter
 it. A sent cleanup command is not a physical stop; an actuator-owning node still
 needs its downstream watchdog and stop path (`references/safety-estop.md` §3).
-Signal behavior differs by distribution and rclpy version: Foxy predates
-`SignalHandlerOptions`, so check the installed version before relying on it.
+When `signal_handler_options` is omitted (`None`) and the default context is
+initialized, `rclpy.init()` installs its own SIGINT and SIGTERM handlers on
+Humble and later; the explicit pattern below takes signal ownership itself with
+`SignalHandlerOptions.NO`. Signal behavior differs by distribution and rclpy
+version: Foxy predates `SignalHandlerOptions`, so check the installed version
+before relying on it.
 
 ```python
 import signal

@@ -24,8 +24,9 @@ operation; no new tools, no site-specific values, and no measured model results.
 - Add shutdown-signal guidance and an example to `references/nodes-executors.md`:
   handlers record a request only, the spin ends at a control-flow boundary,
   cleanup runs once, `ExternalShutdownException` is a normal exit, and a sent
-  cleanup command is not a physical stop. Mark the original example as
-  terminal-SIGINT-only; note that Foxy predates `SignalHandlerOptions`.
+  cleanup command is not a physical stop. Note that the default context installs
+  SIGINT/SIGTERM handlers on Humble and later and that Foxy predates
+  `SignalHandlerOptions`.
 - State in `references/debugging.md` that a bag still being written is not a
   finalized recording artifact because rosbag2 writes `metadata.yaml` on writer
   close; verify with `ros2 bag info` after a clean stop. Correct the MCAP default
