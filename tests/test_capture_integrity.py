@@ -277,3 +277,11 @@ def test_large_integer_duration_does_not_crash(v2_bundle):
 def test_deeply_nested_manifest_returns_invalid(bundle):
     bundle[0].write_text('{"data":' + '[' * 2000 + '0' + ']' * 2000 + '}')
     assert capture.validate(bundle[0], bundle[1], now=NOW)['status'] == 'invalid'
+
+
+@pytest.mark.parametrize('value,valid', [('verified_checkout', True), ('asserted', True),
+                                         ('guessed', False), (None, False)])
+def test_optional_revision_binding_is_an_enum(v2_bundle, value, valid):
+    v2_bundle[2]['skill_revision_binding'] = value
+    report = check(v2_bundle)
+    assert (report['status'] == 'integrity_valid') is valid

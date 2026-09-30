@@ -279,7 +279,7 @@ correctness, and a fixture cannot substitute for an unmodified model capture.
 `evals/trigger_cases.json` defines 33 activation cases: 17 implicit positives,
 12 implicit negatives, and explicit invocation for four clients.
 `evals/benchmark_suite.json` defines seven quality cases with three trials and
-paired skill-on/off runs: 21 pairs, 42 fresh sessions per experiment.
+paired plugin-on/off runs: 21 pairs, 42 fresh sessions per experiment.
 No fabricated captures or improvement percentages are included.
 
 ```bash
@@ -290,8 +290,9 @@ Missing data, incomplete pairs, reused sessions/artifacts, and hash mismatches
 fail this check. A valid capture still needs trace-authenticity review and semantic
 grading. See [capture workflow](docs/EVIDENCE_CAPTURE.md) and the existing
 [eval workflow](docs/EVAL_WORKFLOW.md). `scripts/benchmark_capture.py` fills the
-manifest, fixes the run order, and builds blinded grading sheets; the procedure for
-an actual run is in [the benchmark runbook](docs/BENCHMARK_RUNBOOK.md).
+manifest, freezes and enforces the run order, and builds blinded grading sheets; the
+procedure for an actual plugin ON/OFF run with Claude Code is in
+[the benchmark runbook](docs/BENCHMARK_RUNBOOK.md).
 
 The separate [diagnostic review suite](evals/diagnostics/README.md) preregisters
 four synthetic offline-analysis cases with three paired trials each. Its controls,

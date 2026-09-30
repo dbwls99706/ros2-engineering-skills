@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Orchestrate a preregistered skill-on/off capture and its blinded grading.
+"""Orchestrate a preregistered plugin-on/off capture and its blinded grading.
 
 This helper does not run a model, grade an answer, or validate a bundle by
 itself. It fills the schema 2 manifest that ``verify_eval_capture.py`` checks,
@@ -13,9 +13,13 @@ Subcommands:
     grade-sheet  Write blinded sheets and a grades.json template for reviewers
     score        Combine grades and the manifest into per-pair, per-criterion outcomes
 
-A skill-on run is a run where the skill was available; ``skill_loaded`` records
-whether activation was actually observed. Failed, timed-out, and contaminated
-runs stay in the inventory and are never re-run silently.
+The treatment is the whole plugin (skill body plus its hooks) being available
+and enabled; ``skill_loaded`` is a per-session diagnostic of whether the skill
+itself was observed to activate. ``skill_revision`` is the skill source revision
+contained in the evaluated plugin bundle. Failed, timed-out, and contaminated
+runs stay in the inventory and are never re-run silently. Every command after
+``init`` refuses to run from a harness checkout that is dirty or differs from
+the recorded ``harness_revision``.
 """
 
 import argparse
@@ -45,8 +49,11 @@ CRITERION_LABEL = re.compile(r'C([1-9][0-9]*)\Z')
 ORDER_ALGORITHM = ('Shuffle the (case, trial) blocks with the seed; inside each block '
                    'assign on-first or off-first from a seeded, balanced list so the '
                    'counts differ by at most one; run each pair adjacently.')
-SCORE_NOTE = ('blinded human grading; single experiment; a case study, not a general '
-              'performance estimate')
+SCORE_NOTE = ('plugin ON/OFF paired benchmark; blinded human grading; single experiment; '
+              'a case study, not a general performance estimate')
+BINDINGS = ('verified_checkout', 'asserted')
+PLUGIN_NAME = 'ros2-engineering'
+MARKETPLACE_NAME = 'ros2-engineering-skills'
 
 
 class UsageError(ValueError):
@@ -167,6 +174,68 @@ def slot_key(run):
     return (run['case_id'], run['trial'], run['condition'])
 
 
+def verify_harness(manifest):
+    """The running helper must be the clean checkout recorded at init."""
+    if git_is_dirty(ROOT):
+        fail('Harness checkout is dirty (untracked files count); restore it before continuing: '
+             + str(ROOT))
+    head = git_head(ROOT)
+    if head != manifest.get('harness_revision'):
+        fail('Harness HEAD %s differs from capture.json.harness_revision %s; check out the '
+             'recorded revision to continue this experiment' % (head, manifest.get('harness_revision')))
+
+
+def load_order(exp_dir, manifest, suite):
+    """Re-derive the order from the seed and refuse an edited order.json."""
+    path = Path(exp_dir) / 'order.json'
+    if not path.is_file():
+        fail('No order.json in ' + str(exp_dir))
+    recorded = vec.parse_object(vec.read_regular_bytes(path))
+    expected = {'seed': manifest['order_seed'], 'algorithm': ORDER_ALGORITHM,
+                'sequence': build_order(suite, manifest['order_seed'])}
+    if recorded != expected:
+        fail('order.json does not match the order derived from the recorded seed; '
+             'the preregistered order was edited')
+    return expected['sequence']
+
+
+def next_pending(order, manifest):
+    done = {slot_key(run) for run in manifest['runs']}
+    for entry in order:
+        if (entry['case_id'], entry['trial'], entry['condition']) not in done:
+            return entry
+    return None
+
+
+def verify_skill_checkout(path, expected_revision=None):
+    """Bind skill_revision to a clean checkout whose manifests name this plugin."""
+    checkout = Path(path).resolve()
+    if git_is_dirty(checkout):
+        fail('Skill checkout is dirty; restore it before recording its revision: ' + str(checkout))
+    head = git_head(checkout)
+    if expected_revision and expected_revision != head:
+        fail('--skill-revision %s does not match the checkout HEAD %s' % (expected_revision, head))
+    marketplace = vec.parse_object(vec.read_regular_bytes(checkout / '.claude-plugin' / 'marketplace.json'))
+    plugin = vec.parse_object(vec.read_regular_bytes(checkout / '.claude-plugin' / 'plugin.json'))
+    entries = marketplace.get('plugins') if isinstance(marketplace.get('plugins'), list) else []
+    listed = next((e for e in entries if isinstance(e, dict) and e.get('name') == PLUGIN_NAME), None)
+    if marketplace.get('name') != MARKETPLACE_NAME or listed is None or listed.get('source') != './':
+        fail('Checkout marketplace.json must name marketplace %s with plugin %s from source "./"'
+             % (MARKETPLACE_NAME, PLUGIN_NAME))
+    if plugin.get('name') != PLUGIN_NAME:
+        fail('Checkout plugin.json must name plugin ' + PLUGIN_NAME)
+    return head
+
+
+def clean_reason(value, option):
+    if value is None:
+        return None
+    reason = value.strip()
+    if not reason:
+        fail(option + ' needs a non-empty reason')
+    return reason
+
+
 # --------------------------------------------------------------------------- init
 
 def cmd_init(args):
@@ -178,14 +247,18 @@ def cmd_init(args):
     for case in suite['cases']:
         critical_labels(case)
         vec.local_file(suite_path.parent, case.get('prompt'))
-    harness_root = Path(args.harness_root).resolve()
-    if git_is_dirty(harness_root):
-        fail('Harness checkout is dirty; commit or stash before starting an experiment: '
-             + str(harness_root))
-    harness_revision = git_head(harness_root)
-    skill_revision = args.skill_revision or harness_revision
-    if not vec.REVISION.fullmatch(skill_revision):
+    if git_is_dirty(ROOT):
+        fail('Harness checkout is dirty (untracked files count); commit or stash before starting '
+             'an experiment: ' + str(ROOT))
+    harness_revision = git_head(ROOT)
+    if args.skill_revision and not vec.REVISION.fullmatch(args.skill_revision):
         fail('skill_revision must be a full 40-character commit SHA')
+    if args.skill_checkout:
+        skill_revision = verify_skill_checkout(args.skill_checkout, args.skill_revision)
+        binding = 'verified_checkout'
+    else:
+        skill_revision = args.skill_revision or harness_revision
+        binding = 'asserted'
     environment = {'os': args.os, 'ros_distro': args.ros_distro, 'rmw': args.rmw,
                    'workspace_revision': args.workspace_revision,
                    'tool_permissions': args.tool_permissions}
@@ -195,6 +268,7 @@ def cmd_init(args):
     manifest = {
         'schema_version': 2,
         'skill_revision': skill_revision,
+        'skill_revision_binding': binding,
         'harness_revision': harness_revision,
         'harness_version': __version__,
         'suite_file': str(suite_path),
@@ -216,14 +290,18 @@ def cmd_init(args):
     save_json(exp_dir / 'order.json', order)
     (exp_dir / 'README.md').write_text(
         '# Benchmark experiment (in progress)\n\n'
-        'This directory is an incomplete skill-on/off capture. It holds no results until\n'
+        'This directory is an incomplete plugin ON/OFF capture. It holds no results until\n'
         'every slot in `order.json` is filled and `verify_eval_capture.py` reports\n'
         '`integrity_valid`. Integrity is not answer quality; see docs/BENCHMARK_RUNBOOK.md.\n\n'
-        '- skill_revision (evaluated plugin source): ' + skill_revision + '\n'
-        '- harness_revision (benchmark tooling): ' + harness_revision + '\n'
+        '- skill_revision (skill source in the evaluated plugin bundle): ' + skill_revision + '\n'
+        '- skill_revision_binding: ' + binding
+        + ('\n' if binding == 'verified_checkout' else
+           ' (not bound to an installed checkout; not for an exact-revision comparison claim)\n')
+        + '- harness_revision (benchmark tooling): ' + harness_revision + '\n'
         '- suite_sha256: ' + manifest['suite_sha256'] + '\n', encoding='utf-8')
     print(json.dumps({'experiment': str(exp_dir), 'slots': len(expected_slots(suite)),
-                      'skill_revision': skill_revision, 'harness_revision': harness_revision,
+                      'skill_revision': skill_revision, 'skill_revision_binding': binding,
+                      'harness_revision': harness_revision,
                       'suite_sha256': manifest['suite_sha256']}, indent=2))
     return 0
 
@@ -248,7 +326,9 @@ def import_artifact(exp_dir, source, destination, allow_empty):
 def cmd_add_run(args):
     exp_dir = Path(args.exp_dir).resolve()
     manifest = load_manifest(exp_dir)
+    verify_harness(manifest)
     suite, suite_path = suite_for(manifest)
+    order = load_order(exp_dir, manifest, suite)
     case = next((c for c in suite['cases'] if c['id'] == args.case), None)
     if case is None:
         fail('Unknown case id: ' + args.case)
@@ -273,6 +353,16 @@ def cmd_add_run(args):
     session_id = args.session_id or str(uuid.uuid4())
     if any(run['session_id'] == session_id for run in manifest['runs']):
         fail('session_id already used; each run needs a fresh session')
+    out_of_order = clean_reason(args.out_of_order, '--out-of-order')
+    contaminated = clean_reason(args.contaminated, '--contaminated')
+    expected = next_pending(order, manifest)
+    expected_key = (expected['case_id'], expected['trial'], expected['condition']) if expected else None
+    if expected_key != key and out_of_order is None:
+        fail('Out of preregistered order: next slot is %s, got %s. Record a deliberate deviation '
+             'with --out-of-order <reason>; it is kept as protocol contamination'
+             % (expected_key, key))
+    if expected_key == key and out_of_order is not None:
+        fail('--out-of-order given but %s is the next slot in order' % (key,))
     stem = '%s-t%d-%s' % (args.case, args.trial, args.condition)
     runs_dir = exp_dir / 'runs'
     trace = import_artifact(exp_dir, args.trace, runs_dir / (stem + '.trace.txt'), allow_empty=False)
@@ -291,8 +381,13 @@ def cmd_add_run(args):
         run['error'] = args.error.strip()
     if args.duration is not None:
         run['duration_seconds'] = args.duration
-    if args.contaminated:
-        run['protocol_contamination'] = args.contaminated.strip()
+    reasons = []
+    if out_of_order is not None:
+        reasons.append('out-of-order: ' + out_of_order)
+    if contaminated is not None:
+        reasons.append(contaminated)
+    if reasons:
+        run['protocol_contamination'] = '; '.join(reasons)
     manifest['runs'].append(run)
     save_json(manifest_path(exp_dir), manifest)
     remaining = len(expected_slots(suite)) - len(manifest['runs'])
@@ -308,8 +403,9 @@ def cmd_add_run(args):
 def status_report(exp_dir):
     exp_dir = Path(exp_dir).resolve()
     manifest = load_manifest(exp_dir)
+    verify_harness(manifest)
     suite, _ = suite_for(manifest)
-    order = vec.parse_object(vec.read_regular_bytes(exp_dir / 'order.json'))['sequence']
+    order = load_order(exp_dir, manifest, suite)
     done = {slot_key(run) for run in manifest['runs']}
     pending = [entry for entry in order
                if (entry['case_id'], entry['trial'], entry['condition']) not in done]
@@ -352,7 +448,9 @@ def blind_assignments(manifest, suite):
 def cmd_grade_sheet(args):
     exp_dir = Path(args.exp_dir).resolve()
     manifest = load_manifest(exp_dir)
+    verify_harness(manifest)
     suite, _ = suite_for(manifest)
+    load_order(exp_dir, manifest, suite)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     key = blind_assignments(manifest, suite)
@@ -410,7 +508,9 @@ def critical_failure(grade_row, critical):
 def cmd_score(args):
     exp_dir = Path(args.exp_dir).resolve()
     manifest = load_manifest(exp_dir)
+    verify_harness(manifest)
     suite, _ = suite_for(manifest)
+    load_order(exp_dir, manifest, suite)
     grades_path = Path(args.grades)
     grades = vec.parse_object(vec.read_regular_bytes(grades_path))
     key_path = Path(args.key) if args.key else grades_path.with_name('key.json')
@@ -463,6 +563,7 @@ def cmd_score(args):
                 entry['critical_failure'][condition] = critical_failure(rows[condition], critical)
             pairs.append(entry)
     report = {'note': SCORE_NOTE, 'skill_revision': manifest['skill_revision'],
+              'skill_revision_binding': manifest.get('skill_revision_binding', 'asserted'),
               'harness_revision': manifest.get('harness_revision'),
               'suite_sha256': manifest['suite_sha256'],
               'summary': {'pairs': len(pairs), 'criterion_outcomes': totals,
@@ -493,9 +594,11 @@ def build_parser():
     init.add_argument('--tool-permissions', required=True,
                       help='tool permission mode shared by both arms')
     init.add_argument('--skill-revision', default=None,
-                      help='40-char SHA of the evaluated plugin source; defaults to the harness HEAD')
-    init.add_argument('--harness-root', default=str(ROOT),
-                      help='checkout that provides this script and the suite (must be clean)')
+                      help='40-char SHA of the skill source in the evaluated plugin bundle; '
+                           'without --skill-checkout it is recorded as asserted')
+    init.add_argument('--skill-checkout', default=None,
+                      help='clean checkout that the ON arm installs as a local marketplace; '
+                           'its HEAD becomes skill_revision (binding: verified_checkout)')
     init.add_argument('--os', default=platform.platform())
     init.add_argument('--ros-distro', default=os.environ.get('ROS_DISTRO') or 'not installed')
     init.add_argument('--rmw', default=os.environ.get('RMW_IMPLEMENTATION') or 'not installed')
@@ -515,6 +618,9 @@ def build_parser():
     add.add_argument('--session-id', default=None)
     add.add_argument('--contaminated', default=None,
                      help='reason the session broke protocol (e.g. read the rubric)')
+    add.add_argument('--out-of-order', default=None,
+                     help='reason this slot is recorded ahead of the preregistered order; '
+                          'kept as protocol contamination')
     add.set_defaults(func=cmd_add_run)
 
     status = sub.add_parser('status', help='show progress and the next runs')

@@ -45,7 +45,8 @@ watchdog-limit change. The two scoped-task cases distinguish unnecessary ritual 
 necessary ROS-specific investigation and completed work; the other five cover
 safety, QoS, lifecycle, and provenance. Speed gains do not excuse regressions. Each
 case preregisters `critical_criteria` (labels `C1..Cn`, possibly empty); only those
-labels decide a critical failure during scoring. The step-by-step procedure is in
+labels decide a critical failure during scoring. The step-by-step procedure for a plugin ON/OFF run, where the treatment is the
+whole plugin and `skill_loaded` is a per-session diagnostic, is in
 [the benchmark runbook](BENCHMARK_RUNBOOK.md).
 For progression changes, also capture the four named progression scenarios in
 `evals/eval.yaml` and manually inspect their critical criteria.

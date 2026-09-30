@@ -152,6 +152,9 @@ def validate(manifest_path, suite_path, now=None):
             nonempty(environment.get(field), 'environment.' + field)
         require(isinstance(manifest.get('generation_parameters'), dict),
                 'generation_parameters must be recorded, even when empty')
+        if 'skill_revision_binding' in manifest:
+            require(manifest['skill_revision_binding'] in ('verified_checkout', 'asserted'),
+                    'skill_revision_binding must be verified_checkout or asserted')
         trials = suite.get('trials')
         require(type(trials) is int and 1 <= trials <= 100, 'Suite trials must be an integer between 1 and 100')
         cases = suite.get('cases')

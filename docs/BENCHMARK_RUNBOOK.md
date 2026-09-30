@@ -1,12 +1,17 @@
-# Benchmark runbook: skill-on/off paired capture
+# Benchmark runbook: plugin ON/OFF paired capture
 
 This runbook turns the preregistered experiment in `evals/benchmark_suite.json`
 into a real capture with Claude Code, then into blinded human grades. It adds
 no model call and produces no numbers by itself. The verifier checks file
 integrity; humans grade answers; `scripts/benchmark_capture.py` connects the two.
 
-The protocol is: 7 cases × 3 trials × {skill on, skill off} = 42 fresh sessions,
-run in a preregistered order, recorded as a schema 2 manifest
+The treatment is the `ros2-engineering` plugin as a whole: its skill body plus
+its `PreToolUse` and `Stop` hooks, available and enabled in the ON arm and
+absent in the OFF arm. A difference between arms is therefore a plugin effect,
+not a skill-body-only effect; `skill_loaded` is a per-session diagnostic, not
+the treatment. The protocol is: 7 cases × 3 trials × {plugin on, plugin off} =
+42 fresh sessions, run in a frozen seeded order generated before the first
+session, recorded as a schema 2 manifest
 (`docs/EVIDENCE_CAPTURE.md`), verified with `scripts/verify_eval_capture.py`,
 graded blind, and reported per pair and per criterion.
 
@@ -21,13 +26,23 @@ Three identifiers are recorded separately and must not be confused:
 
 | Field | Meaning | Source |
 |---|---|---|
-| `skill_revision` | The plugin source being evaluated | The commit the ON arm installs, e.g. the released tag |
+| `skill_revision` | The skill source revision contained in the evaluated plugin bundle | `HEAD` of the checkout the ON arm installs as a local marketplace |
 | `harness_revision` | The tooling that ran the experiment | `HEAD` of the checkout providing `benchmark_capture.py` and the suite |
 | `suite_sha256` | The exact rubric and protocol content | Hash of `evals/benchmark_suite.json` at `init` |
 
 `init` refuses a dirty harness checkout, because `harness_revision` would then
-not describe the code that ran. Pass `--skill-revision` explicitly whenever the
-evaluated plugin is not the harness `HEAD` (it usually is not).
+not describe the code that ran, and every later helper command refuses a
+harness checkout that is dirty or whose `HEAD` differs from the recorded
+`harness_revision`. Pass `--skill-checkout /path/skill-src` so that
+`skill_revision` is taken from the checkout the ON arm actually installs
+(`skill_revision_binding: verified_checkout`). Passing only `--skill-revision`
+records the value as `asserted`. The first published Claude Code benchmark uses
+`verified_checkout` binding; `asserted` binding is not used for an
+exact-revision comparison claim.
+
+`plugin version` is the plugin's release version string; this repository uses
+semver-style versions. `skill_revision` is the exact Git commit SHA. They are
+different values and neither substitutes for the other.
 
 Record the client and model exactly as installed (`claude --version`, the model
 id shown by the client), and the ROS distribution, RMW, and OS. When ROS is not
@@ -50,25 +65,45 @@ bench-config-on/    plugin installed and enabled
 bench-config-off/   plugin never installed
 ```
 
-Set up the ON directory with the README install commands, run under the ON
-configuration:
+Install the ON arm from a clean checkout of the exact revision under test,
+registered as a local marketplace (the marketplace manifest points its plugin
+source at `./`, so the checkout itself is the plugin source):
 
 ```bash
-CLAUDE_CONFIG_DIR=/path/bench-config-on claude plugin marketplace add dbwls99706/ros2-engineering-skills
+git clone https://github.com/dbwls99706/ros2-engineering-skills /path/skill-src
+git -C /path/skill-src checkout --detach <skill_revision>
+CLAUDE_CONFIG_DIR=/path/bench-config-on claude plugin marketplace add /path/skill-src
 CLAUDE_CONFIG_DIR=/path/bench-config-on claude plugin install ros2-engineering@ros2-engineering-skills
-CLAUDE_CONFIG_DIR=/path/bench-config-on claude plugin list --json
 CLAUDE_CONFIG_DIR=/path/bench-config-on claude plugin details ros2-engineering
+CLAUDE_CONFIG_DIR=/path/bench-config-on claude plugin list --json
 ```
+
+Verify the ON installation once, in this order: the checkout is clean
+(`git -C /path/skill-src status --porcelain` prints nothing); its `HEAD` equals
+`skill_revision`; its `.claude-plugin/marketplace.json` names marketplace
+`ros2-engineering-skills` with plugin `ros2-engineering` from source `./`, and
+its `.claude-plugin/plugin.json` names `ros2-engineering`; the local marketplace
+is registered; `claude plugin details ros2-engineering` lists the skill and the
+hooks; `claude plugin list --json` shows the plugin enabled. `init` performs the
+first three checks itself when given `--skill-checkout /path/skill-src`.
+`claude plugin validate /path/skill-src` is a useful extra check where the
+installed CLI provides it; it is not part of the protocol's guarantee.
 
 Never install the plugin under `bench-config-off/`. Before every session, save
 the state of the arm you are about to run:
 
 ```bash
 CLAUDE_CONFIG_DIR=/path/bench-config-<arm> claude plugin list --json > preflight.json
+# ON arm only:
+git -C /path/skill-src status --porcelain >> preflight.json   # must print nothing
+git -C /path/skill-src rev-parse HEAD >> preflight.json       # must equal skill_revision
 ```
 
-The ON preflight must show `ros2-engineering` enabled with its `installPath`
-and a version matching `skill_revision`. The OFF preflight must show no
+The ON preflight must show `ros2-engineering` enabled, a clean skill checkout,
+and a `HEAD` equal to `skill_revision`; if either git check differs, do not run
+the session and restore the environment first. A session that already ran
+against a changed checkout keeps its slot with `--contaminated <reason>`; it is
+not replaced silently. The OFF preflight must show no
 `ros2-engineering` entry of any kind, including skills-directory or synced
 plugins, and neither `~/.claude/skills` (under the OFF config) nor
 `bench-off/.claude/skills` may contain this skill. Prepend the preflight output
@@ -90,14 +125,18 @@ python3 scripts/benchmark_capture.py init /path/exp-2026-10 \
   --client claude-code --client-version "$(claude --version)" \
   --model <model id> --seed 20261001 \
   --workspace-revision neutral-empty-v1 --tool-permissions default \
-  --skill-revision <40-char SHA of the installed plugin source>
+  --skill-checkout /path/skill-src
 ```
 
 This writes `capture.json` (schema 2, no runs yet), `order.json`, `runs/`, and
-a README stating that the experiment is incomplete. `order.json` is the
-preregistered sequence: the 21 `(case, trial)` blocks are shuffled with the
-seed, each block runs its two arms adjacently, and on-first versus off-first is
-balanced 11:10 or 10:11. Follow it exactly; `status` prints the next runs.
+a README stating that the experiment is incomplete. `order.json` is the frozen
+seeded sequence: the 21 `(case, trial)` blocks are shuffled with the seed, each
+block runs its two arms adjacently, and on-first versus off-first is balanced
+11:10 or 10:11. Follow it exactly: `add-run` accepts only the next pending slot,
+and every command re-derives the order from the seed and refuses an edited
+`order.json`. A deliberate deviation must be declared with
+`--out-of-order <reason>`; it is recorded as protocol contamination and scores
+as `unknown`. `status` prints the next runs.
 
 ## 4. Run one session
 
@@ -120,12 +159,16 @@ installed plugin checkout contains `evals/`, so inspect the trace for reads of
 those paths. A contaminated run keeps its slot with `--contaminated <reason>`;
 it is never re-run and replaced.
 
-**Availability is not activation.** The ON arm makes the skill available;
-`--skill-loaded` records what the trace shows for that session: `true` when
-activation is visible (resolved skill path, plugin hook output, or the client's
-activation record), `false` when the trace shows it did not activate, and
-`unknown` when the trace cannot tell. A missed activation is part of the
-skill's measured effect and stays in the inventory.
+**Availability is not activation.** The ON arm makes the plugin available;
+`--skill-loaded` records what the trace shows for that session: `true` only
+when the client trace contains an explicit Skill invocation or load event for
+this skill; `false` when the trace records activation events and none is for
+this skill; `unknown` when only plugin hook activity is visible, when only a
+generic read of `SKILL.md` is visible, or when the trace cannot decide. Plugin
+hook output is evidence that the plugin was available and its `PreToolUse` and
+`Stop` hooks ran; those hooks fire regardless of whether `SKILL.md` was loaded.
+A missed activation is part of the plugin's measured effect and stays in the
+inventory.
 
 Record the run:
 
@@ -146,9 +189,10 @@ python3 scripts/benchmark_capture.py add-run /path/exp-2026-10 \
 ```
 
 The helper copies the files into `runs/`, hashes them, stamps `captured_at`,
-and refuses duplicate slots, reused session ids, an OFF run that claims
-`skill_loaded=true`, a completed run without an output, and a failed run
-without an error.
+and refuses duplicate slots, slots out of the preregistered order, reused
+session ids, an OFF run that claims `skill_loaded=true`, a completed run
+without an output, and a failed run without an error. Every check runs before
+any file is copied, so a refused command leaves `runs/` unchanged.
 
 ## 5. Verify integrity
 
@@ -214,8 +258,16 @@ One experiment is a case study, not a general performance estimate
 (`docs/EVIDENCE_CAPTURE.md`). Report unfavorable pairs with the same prominence
 as favorable ones.
 
+All post-init helper commands refuse a dirty harness checkout or a `HEAD` that
+differs from `capture.json.harness_revision`. Before every ON session, record
+the skill checkout's clean status and `HEAD` in the trace; it must remain equal
+to `skill_revision`. The first published Claude Code benchmark uses
+`verified_checkout` binding; `asserted` binding is not used for an
+exact-revision comparison claim.
+
 ## 9. What this runbook does not establish
 
-It does not prove transcript authenticity, that the plugin activated in every
-ON session, hardware safety, or an effect size beyond the captured pairs. The
+It does not prove transcript authenticity, that the skill activated in every
+ON session, that any difference comes from the skill body rather than the
+plugin's hooks, hardware safety, or an effect size beyond the captured pairs. The
 lexical `eval_runner.py` pipeline is separate and is not used here.
