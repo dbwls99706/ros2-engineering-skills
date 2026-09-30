@@ -1,0 +1,550 @@
+#!/usr/bin/env python3
+"""Orchestrate a preregistered skill-on/off capture and its blinded grading.
+
+This helper does not run a model, grade an answer, or validate a bundle by
+itself. It fills the schema 2 manifest that ``verify_eval_capture.py`` checks,
+fixes the run order before any session starts, builds blinded grading sheets
+for completed answers, and turns human verdicts into paired outcomes.
+
+Subcommands:
+    init         Create an experiment directory with a manifest skeleton and order
+    add-run      Record one finished session (output, trace, status) into a slot
+    status       Show filled slots and the next runs in preregistered order
+    grade-sheet  Write blinded sheets and a grades.json template for reviewers
+    score        Combine grades and the manifest into per-pair, per-criterion outcomes
+
+A skill-on run is a run where the skill was available; ``skill_loaded`` records
+whether activation was actually observed. Failed, timed-out, and contaminated
+runs stay in the inventory and are never re-run silently.
+"""
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+import platform
+import random
+import re
+import subprocess
+import sys
+from pathlib import Path
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import verify_eval_capture as vec  # noqa: E402  (sibling script, no package)
+
+__version__ = "0.1.0"
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SUITE = ROOT / 'evals' / 'benchmark_suite.json'
+CONDITIONS = ('on', 'off')
+STATUSES = ('completed', 'failed', 'timed_out')
+GRADES = ('pass', 'fail', 'abstain')
+CRITERION_LABEL = re.compile(r'C([1-9][0-9]*)\Z')
+ORDER_ALGORITHM = ('Shuffle the (case, trial) blocks with the seed; inside each block '
+                   'assign on-first or off-first from a seeded, balanced list so the '
+                   'counts differ by at most one; run each pair adjacently.')
+SCORE_NOTE = ('blinded human grading; single experiment; a case study, not a general '
+              'performance estimate')
+
+
+class UsageError(ValueError):
+    """A caller mistake that maps to exit code 2."""
+
+
+def fail(message):
+    raise UsageError(message)
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def iso_utc(moment):
+    return moment.replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
+
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def git_output(repo, *args):
+    result = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True,
+                            check=False, timeout=30)
+    if result.returncode != 0:
+        fail('git ' + ' '.join(args) + ' failed in ' + str(repo) + ': ' + result.stderr.strip())
+    return result.stdout
+
+
+def git_head(repo):
+    return git_output(repo, 'rev-parse', 'HEAD').strip()
+
+
+def git_is_dirty(repo):
+    return bool(git_output(repo, 'status', '--porcelain').strip())
+
+
+def load_suite(path):
+    data = vec.read_regular_bytes(path)
+    suite = vec.parse_object(data)
+    if suite.get('schema_version') != 1:
+        fail('Unsupported suite schema')
+    trials = suite.get('trials')
+    cases = suite.get('cases')
+    if type(trials) is not int or trials < 1 or not isinstance(cases, list) or not cases:
+        fail('Suite must declare trials and cases')
+    ids = [case.get('id') for case in cases]
+    if len(set(ids)) != len(ids) or not all(isinstance(i, str) and i for i in ids):
+        fail('Suite case ids must be unique non-empty strings')
+    return suite, data
+
+
+def critical_labels(case):
+    """Return the preregistered critical criterion labels for a case."""
+    if 'critical_criteria' not in case:
+        fail('Case %s has no preregistered critical_criteria field' % case['id'])
+    labels = case['critical_criteria']
+    count = len(case['criteria'])
+    if not isinstance(labels, list) or len(set(labels)) != len(labels):
+        fail('critical_criteria must be a list without duplicates: ' + case['id'])
+    for label in labels:
+        match = CRITERION_LABEL.fullmatch(label) if isinstance(label, str) else None
+        if not match or int(match.group(1)) > count:
+            fail('critical_criteria label out of range for %s: %r' % (case['id'], label))
+    return list(labels)
+
+
+def build_order(suite, seed):
+    rng = random.Random(seed)
+    blocks = [(case['id'], trial) for case in suite['cases']
+              for trial in range(1, suite['trials'] + 1)]
+    rng.shuffle(blocks)
+    half = len(blocks) // 2
+    first = ['on'] * half + ['off'] * half
+    if len(blocks) % 2:
+        first.append(rng.choice(CONDITIONS))
+    rng.shuffle(first)
+    sequence = []
+    for (case_id, trial), lead in zip(blocks, first):
+        for condition in (lead, 'off' if lead == 'on' else 'on'):
+            sequence.append({'sequence': len(sequence) + 1, 'case_id': case_id,
+                             'trial': trial, 'condition': condition})
+    return sequence
+
+
+def manifest_path(exp_dir):
+    return Path(exp_dir) / 'capture.json'
+
+
+def load_manifest(exp_dir):
+    path = manifest_path(exp_dir)
+    if not path.is_file():
+        fail('No capture.json in ' + str(exp_dir) + '; run init first')
+    return vec.parse_object(vec.read_regular_bytes(path))
+
+
+def save_json(path, data):
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + '\n', encoding='utf-8')
+    os.replace(tmp, path)
+
+
+def suite_for(manifest):
+    suite_path = Path(manifest['suite_file'])
+    suite, data = load_suite(suite_path)
+    if sha256_bytes(data) != manifest['suite_sha256']:
+        fail('Suite file changed since init: ' + str(suite_path))
+    return suite, suite_path
+
+
+def expected_slots(suite):
+    return [(case['id'], trial, condition) for case in suite['cases']
+            for trial in range(1, suite['trials'] + 1) for condition in CONDITIONS]
+
+
+def slot_key(run):
+    return (run['case_id'], run['trial'], run['condition'])
+
+
+# --------------------------------------------------------------------------- init
+
+def cmd_init(args):
+    exp_dir = Path(args.exp_dir)
+    if exp_dir.exists() and any(exp_dir.iterdir()):
+        fail('Experiment directory must be empty or absent: ' + str(exp_dir))
+    suite_path = Path(args.suite).resolve()
+    suite, suite_bytes = load_suite(suite_path)
+    for case in suite['cases']:
+        critical_labels(case)
+        vec.local_file(suite_path.parent, case.get('prompt'))
+    harness_root = Path(args.harness_root).resolve()
+    if git_is_dirty(harness_root):
+        fail('Harness checkout is dirty; commit or stash before starting an experiment: '
+             + str(harness_root))
+    harness_revision = git_head(harness_root)
+    skill_revision = args.skill_revision or harness_revision
+    if not vec.REVISION.fullmatch(skill_revision):
+        fail('skill_revision must be a full 40-character commit SHA')
+    environment = {'os': args.os, 'ros_distro': args.ros_distro, 'rmw': args.rmw,
+                   'workspace_revision': args.workspace_revision,
+                   'tool_permissions': args.tool_permissions}
+    for field, value in environment.items():
+        if not value or not value.strip():
+            fail('environment.' + field + ' must be non-empty')
+    manifest = {
+        'schema_version': 2,
+        'skill_revision': skill_revision,
+        'harness_revision': harness_revision,
+        'harness_version': __version__,
+        'suite_file': str(suite_path),
+        'suite_sha256': sha256_bytes(suite_bytes),
+        'client': args.client,
+        'client_version': args.client_version,
+        'model': args.model,
+        'generation_parameters': {},
+        'environment': environment,
+        'order_seed': args.seed,
+        'created_at': iso_utc(utc_now()),
+        'runs': [],
+    }
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    (exp_dir / 'runs').mkdir()
+    save_json(manifest_path(exp_dir), manifest)
+    order = {'seed': args.seed, 'algorithm': ORDER_ALGORITHM,
+             'sequence': build_order(suite, args.seed)}
+    save_json(exp_dir / 'order.json', order)
+    (exp_dir / 'README.md').write_text(
+        '# Benchmark experiment (in progress)\n\n'
+        'This directory is an incomplete skill-on/off capture. It holds no results until\n'
+        'every slot in `order.json` is filled and `verify_eval_capture.py` reports\n'
+        '`integrity_valid`. Integrity is not answer quality; see docs/BENCHMARK_RUNBOOK.md.\n\n'
+        '- skill_revision (evaluated plugin source): ' + skill_revision + '\n'
+        '- harness_revision (benchmark tooling): ' + harness_revision + '\n'
+        '- suite_sha256: ' + manifest['suite_sha256'] + '\n', encoding='utf-8')
+    print(json.dumps({'experiment': str(exp_dir), 'slots': len(expected_slots(suite)),
+                      'skill_revision': skill_revision, 'harness_revision': harness_revision,
+                      'suite_sha256': manifest['suite_sha256']}, indent=2))
+    return 0
+
+
+# ------------------------------------------------------------------------ add-run
+
+def parse_loaded(value):
+    return {'true': True, 'false': False, 'unknown': None}[value]
+
+
+def import_artifact(exp_dir, source, destination, allow_empty):
+    data = vec.read_regular_bytes(Path(source))
+    text = data.decode('utf-8')
+    if not allow_empty and not text.strip():
+        fail('Artifact must not be blank: ' + str(source))
+    if destination.exists():
+        fail('Artifact already recorded: ' + str(destination))
+    destination.write_bytes(data)
+    return {'path': destination.relative_to(exp_dir).as_posix(), 'sha256': sha256_bytes(data)}
+
+
+def cmd_add_run(args):
+    exp_dir = Path(args.exp_dir).resolve()
+    manifest = load_manifest(exp_dir)
+    suite, suite_path = suite_for(manifest)
+    case = next((c for c in suite['cases'] if c['id'] == args.case), None)
+    if case is None:
+        fail('Unknown case id: ' + args.case)
+    if not 1 <= args.trial <= suite['trials']:
+        fail('trial must be between 1 and %d' % suite['trials'])
+    key = (args.case, args.trial, args.condition)
+    if any(slot_key(run) == key for run in manifest['runs']):
+        fail('Slot already recorded: ' + str(key))
+    loaded = parse_loaded(args.skill_loaded)
+    if args.condition == 'off' and loaded is True:
+        fail('A control (off) run cannot report skill_loaded=true')
+    if args.status == 'completed':
+        if args.output is None:
+            fail('--output is required for a completed run')
+        if args.error:
+            fail('--error is only for failed or timed_out runs')
+    else:
+        if not args.error or not args.error.strip():
+            fail('--error is required for a failed or timed_out run')
+    if args.duration is not None and not args.duration >= 0:
+        fail('--duration must be nonnegative')
+    session_id = args.session_id or str(uuid.uuid4())
+    if any(run['session_id'] == session_id for run in manifest['runs']):
+        fail('session_id already used; each run needs a fresh session')
+    stem = '%s-t%d-%s' % (args.case, args.trial, args.condition)
+    runs_dir = exp_dir / 'runs'
+    trace = import_artifact(exp_dir, args.trace, runs_dir / (stem + '.trace.txt'), allow_empty=False)
+    output = None
+    if args.output is not None:
+        destination = runs_dir / (stem + '.output.md')
+        output = import_artifact(exp_dir, args.output, destination, allow_empty=True)
+    run = {
+        'case_id': args.case, 'trial': args.trial, 'condition': args.condition,
+        'session_id': session_id, 'skill_loaded': loaded,
+        'execution_status': args.status, 'captured_at': iso_utc(utc_now()),
+        'prompt_sha256': vec.digest(vec.local_file(suite_path.parent, case['prompt'])),
+        'output': output, 'trace': trace,
+    }
+    if args.status != 'completed':
+        run['error'] = args.error.strip()
+    if args.duration is not None:
+        run['duration_seconds'] = args.duration
+    if args.contaminated:
+        run['protocol_contamination'] = args.contaminated.strip()
+    manifest['runs'].append(run)
+    save_json(manifest_path(exp_dir), manifest)
+    remaining = len(expected_slots(suite)) - len(manifest['runs'])
+    print(json.dumps({'recorded': list(key), 'session_id': session_id,
+                      'execution_status': args.status, 'skill_loaded': loaded,
+                      'protocol_contamination': run.get('protocol_contamination'),
+                      'remaining_slots': remaining}, indent=2))
+    return 0
+
+
+# ------------------------------------------------------------------------- status
+
+def status_report(exp_dir):
+    exp_dir = Path(exp_dir).resolve()
+    manifest = load_manifest(exp_dir)
+    suite, _ = suite_for(manifest)
+    order = vec.parse_object(vec.read_regular_bytes(exp_dir / 'order.json'))['sequence']
+    done = {slot_key(run) for run in manifest['runs']}
+    pending = [entry for entry in order
+               if (entry['case_id'], entry['trial'], entry['condition']) not in done]
+    outcomes = {status: 0 for status in STATUSES}
+    contaminated = 0
+    for run in manifest['runs']:
+        outcomes[run['execution_status']] += 1
+        contaminated += int('protocol_contamination' in run)
+    return {'recorded': len(done), 'total': len(expected_slots(suite)),
+            'remaining': len(pending), 'execution_outcomes': outcomes,
+            'contaminated_runs': contaminated, 'next': pending[:5],
+            'note': 'Integrity and quality are checked separately; see verify_eval_capture.py.'}
+
+
+def cmd_status(args):
+    print(json.dumps(status_report(args.exp_dir), indent=2))
+    return 0
+
+
+# -------------------------------------------------------------------- grade-sheet
+
+def gradable(run):
+    return (run['execution_status'] == 'completed' and run.get('output') is not None
+            and 'protocol_contamination' not in run)
+
+
+def blind_assignments(manifest, suite):
+    """Map every gradable run to a blinded id; the order is seeded and case-local."""
+    key, counter = {}, 0
+    for case in suite['cases']:
+        runs = [run for run in manifest['runs'] if run['case_id'] == case['id'] and gradable(run)]
+        rng = random.Random('%s:%s:%s' % (manifest['order_seed'], manifest['suite_sha256'], case['id']))
+        rng.shuffle(runs)
+        for run in runs:
+            counter += 1
+            key['R%03d' % counter] = run
+    return key
+
+
+def cmd_grade_sheet(args):
+    exp_dir = Path(args.exp_dir).resolve()
+    manifest = load_manifest(exp_dir)
+    suite, _ = suite_for(manifest)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    key = blind_assignments(manifest, suite)
+    grades = {'schema_version': 1, 'values': list(GRADES), 'cases': {}}
+    for case in suite['cases']:
+        ids = [rid for rid, run in key.items() if run['case_id'] == case['id']]
+        labels = ['C%d' % (i + 1) for i in range(len(case['criteria']))]
+        lines = ['# Blind grading sheet: ' + case['id'], '',
+                 'Grade each answer on every criterion as pass, fail, or abstain in',
+                 '`grades.json`. Do not guess which arm produced an answer. Abstain when',
+                 'the answer does not let you decide.', '', '## Criteria', '']
+        lines += ['- %s: %s' % (label, text) for label, text in zip(labels, case['criteria'])]
+        lines += ['', '## Answers', '']
+        for rid in ids:
+            body = (exp_dir / key[rid]['output']['path']).read_text(encoding='utf-8')
+            lines += ['### ' + rid, '', body.rstrip('\n') or '(empty answer)', '', '---', '']
+        (out / ('sheet-' + case['id'] + '.md')).write_text('\n'.join(lines), encoding='utf-8')
+        grades['cases'][case['id']] = {rid: {label: None for label in labels} for rid in ids}
+    save_json(out / 'grades.json', grades)
+    save_json(out / 'key.json', {
+        'warning': 'Do not give this file to graders; it unblinds the sheets.',
+        'assignments': {rid: {'case_id': run['case_id'], 'trial': run['trial'],
+                              'condition': run['condition'], 'session_id': run['session_id']}
+                        for rid, run in key.items()}})
+    excluded = [slot_key(run) for run in manifest['runs'] if not gradable(run)]
+    print(json.dumps({'sheets': len(suite['cases']), 'gradable_runs': len(key),
+                      'excluded_runs': [list(k) for k in excluded],
+                      'note': 'Excluded runs are execution failures or contaminated sessions; '
+                              'score reports them separately.'}, indent=2))
+    return 0
+
+
+# -------------------------------------------------------------------------- score
+
+def criterion_outcome(on_grade, off_grade):
+    if on_grade == 'pass' and off_grade == 'fail':
+        return 'on_better'
+    if on_grade == 'fail' and off_grade == 'pass':
+        return 'off_better'
+    if on_grade in ('pass', 'fail') and on_grade == off_grade:
+        return 'tie'
+    return 'unknown'
+
+
+def critical_failure(grade_row, critical):
+    """True/False when decidable, None when any critical grade is missing or abstain."""
+    if grade_row is None:
+        return None
+    verdicts = [grade_row.get(label) for label in critical]
+    if any(v not in ('pass', 'fail') for v in verdicts):
+        return None
+    return any(v == 'fail' for v in verdicts)
+
+
+def cmd_score(args):
+    exp_dir = Path(args.exp_dir).resolve()
+    manifest = load_manifest(exp_dir)
+    suite, _ = suite_for(manifest)
+    grades_path = Path(args.grades)
+    grades = vec.parse_object(vec.read_regular_bytes(grades_path))
+    key_path = Path(args.key) if args.key else grades_path.with_name('key.json')
+    key = vec.parse_object(vec.read_regular_bytes(key_path))['assignments']
+    by_slot = {slot_key(run): run for run in manifest['runs']}
+    rid_by_slot = {(a['case_id'], a['trial'], a['condition']): rid for rid, a in key.items()}
+    pairs = []
+    totals = {'on_better': 0, 'off_better': 0, 'tie': 0, 'unknown': 0}
+    execution_failures = {'on': 0, 'off': 0}
+    contaminated = {'on': 0, 'off': 0}
+    ungraded_cells = 0
+    for case in suite['cases']:
+        critical = critical_labels(case)
+        labels = ['C%d' % (i + 1) for i in range(len(case['criteria']))]
+        case_grades = grades.get('cases', {}).get(case['id'], {})
+        for trial in range(1, suite['trials'] + 1):
+            entry = {'case_id': case['id'], 'trial': trial, 'criteria': {},
+                     'execution_status': {}, 'protocol_contamination': {},
+                     'critical_failure': {}}
+            rows = {}
+            for condition in CONDITIONS:
+                run = by_slot.get((case['id'], trial, condition))
+                if run is None:
+                    entry['execution_status'][condition] = 'missing'
+                    entry['protocol_contamination'][condition] = None
+                    rows[condition] = None
+                    continue
+                entry['execution_status'][condition] = run['execution_status']
+                entry['protocol_contamination'][condition] = run.get('protocol_contamination')
+                if run['execution_status'] != 'completed':
+                    execution_failures[condition] += 1
+                if 'protocol_contamination' in run:
+                    contaminated[condition] += 1
+                rid = rid_by_slot.get((case['id'], trial, condition))
+                row = case_grades.get(rid) if rid and gradable(run) else None
+                if row is not None:
+                    for label in labels:
+                        value = row.get(label)
+                        if value not in GRADES and value is not None:
+                            fail('Invalid grade %r for %s/%s' % (value, rid, label))
+                        ungraded_cells += int(value is None)
+                rows[condition] = row
+            for label in labels:
+                on_grade = rows['on'].get(label) if rows['on'] else None
+                off_grade = rows['off'].get(label) if rows['off'] else None
+                outcome = criterion_outcome(on_grade, off_grade)
+                entry['criteria'][label] = outcome
+                totals[outcome] += 1
+            for condition in CONDITIONS:
+                entry['critical_failure'][condition] = critical_failure(rows[condition], critical)
+            pairs.append(entry)
+    report = {'note': SCORE_NOTE, 'skill_revision': manifest['skill_revision'],
+              'harness_revision': manifest.get('harness_revision'),
+              'suite_sha256': manifest['suite_sha256'],
+              'summary': {'pairs': len(pairs), 'criterion_outcomes': totals,
+                          'execution_failures': execution_failures,
+                          'contaminated_runs': contaminated, 'ungraded_cells': ungraded_cells},
+              'pairs': pairs}
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------- CLI
+
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--version', action='version', version=__version__)
+    sub = parser.add_subparsers(dest='command', required=True)
+
+    init = sub.add_parser('init', help='create an experiment directory')
+    init.add_argument('exp_dir')
+    init.add_argument('--suite', default=str(DEFAULT_SUITE))
+    init.add_argument('--client', required=True)
+    init.add_argument('--client-version', required=True)
+    init.add_argument('--model', required=True)
+    init.add_argument('--seed', type=int, required=True)
+    init.add_argument('--workspace-revision', required=True,
+                      help='identifier of the neutral workspace used by both arms')
+    init.add_argument('--tool-permissions', required=True,
+                      help='tool permission mode shared by both arms')
+    init.add_argument('--skill-revision', default=None,
+                      help='40-char SHA of the evaluated plugin source; defaults to the harness HEAD')
+    init.add_argument('--harness-root', default=str(ROOT),
+                      help='checkout that provides this script and the suite (must be clean)')
+    init.add_argument('--os', default=platform.platform())
+    init.add_argument('--ros-distro', default=os.environ.get('ROS_DISTRO') or 'not installed')
+    init.add_argument('--rmw', default=os.environ.get('RMW_IMPLEMENTATION') or 'not installed')
+    init.set_defaults(func=cmd_init)
+
+    add = sub.add_parser('add-run', help='record one finished session')
+    add.add_argument('exp_dir')
+    add.add_argument('--case', required=True)
+    add.add_argument('--trial', type=int, required=True)
+    add.add_argument('--condition', choices=CONDITIONS, required=True)
+    add.add_argument('--trace', required=True, help='transcript/tool log; always required')
+    add.add_argument('--output', default=None, help='final answer; required when completed')
+    add.add_argument('--status', choices=STATUSES, default='completed')
+    add.add_argument('--error', default=None)
+    add.add_argument('--duration', type=float, default=None)
+    add.add_argument('--skill-loaded', choices=('true', 'false', 'unknown'), default='unknown')
+    add.add_argument('--session-id', default=None)
+    add.add_argument('--contaminated', default=None,
+                     help='reason the session broke protocol (e.g. read the rubric)')
+    add.set_defaults(func=cmd_add_run)
+
+    status = sub.add_parser('status', help='show progress and the next runs')
+    status.add_argument('exp_dir')
+    status.set_defaults(func=cmd_status)
+
+    sheet = sub.add_parser('grade-sheet', help='write blinded grading sheets')
+    sheet.add_argument('exp_dir')
+    sheet.add_argument('--out', required=True)
+    sheet.set_defaults(func=cmd_grade_sheet)
+
+    score = sub.add_parser('score', help='combine grades into paired outcomes')
+    score.add_argument('exp_dir')
+    score.add_argument('--grades', required=True)
+    score.add_argument('--key', default=None, help='defaults to key.json beside grades')
+    score.set_defaults(func=cmd_score)
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except UsageError as exc:
+        print('error: ' + str(exc), file=sys.stderr)
+        return 2
+    except (OSError, ValueError, KeyError) as exc:
+        print('error: ' + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

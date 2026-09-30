@@ -218,6 +218,7 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `install_skill.py` | Stage and validate knowledge-only installations | No settings changes or hook registration |
 | `eval_runner.py` | Check fixtures or lexically score supplied text | Does not invoke a model or prove semantics |
 | `verify_eval_capture.py` | Require complete paired captures with hashes | Integrity, not authenticity or quality |
+| `benchmark_capture.py` | Fill the paired manifest, fix run order, build blinded grading sheets, score pairs | Orchestration only; runs no model and grades nothing |
 | `measure_context.py` | Count the selected body with named tokenizers | Excludes client wrappers and on-demand references |
 
 The JSON `version` emitted by the two validation hooks is the hook-report contract
@@ -288,7 +289,9 @@ python3 scripts/verify_eval_capture.py /path/to/capture.json --suite evals/bench
 Missing data, incomplete pairs, reused sessions/artifacts, and hash mismatches
 fail this check. A valid capture still needs trace-authenticity review and semantic
 grading. See [capture workflow](docs/EVIDENCE_CAPTURE.md) and the existing
-[eval workflow](docs/EVAL_WORKFLOW.md).
+[eval workflow](docs/EVAL_WORKFLOW.md). `scripts/benchmark_capture.py` fills the
+manifest, fixes the run order, and builds blinded grading sheets; the procedure for
+an actual run is in [the benchmark runbook](docs/BENCHMARK_RUNBOOK.md).
 
 The separate [diagnostic review suite](evals/diagnostics/README.md) preregisters
 four synthetic offline-analysis cases with three paired trials each. Its controls,
