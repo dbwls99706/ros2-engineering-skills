@@ -2,7 +2,7 @@
 
 ## Table of contents
 
-1. Python launch API fundamentals
+1. Launch format selection
 2. Launch arguments and substitutions
 3. Conditional logic
 4. Event handlers
@@ -15,15 +15,69 @@
 
 ---
 
-## 1. Python launch API fundamentals
+## 1. Launch format selection
 
-ROS 2 uses Python launch files (`*.launch.py`) as the primary launch mechanism.
-XML and YAML launch formats exist but lack the full power of Python conditionals
-and event handling. **Always use Python launch files for production systems.**
+ROS 2 launch files start groups of nodes together with their parameters and
+remappings. Three formats are supported: XML (`*.launch.xml`), YAML
+(`*.launch.yaml`), and Python (`*.launch.py`). XML and YAML frontends map to the
+same underlying launch action/substitution model; Python provides direct access
+to that API.
 
-### Minimal launch file
+**Prefer declarative XML or YAML for straightforward launch descriptions. Use
+Python when the required launch behavior cannot be expressed cleanly through the
+declarative frontends or requires lower-level launch APIs.**
+
+The ROS 2 migration guide states that for typical use cases XML and YAML should
+be preferred over Python. The launch format guide leaves the choice to the
+developer and reserves Python for flexibility that XML or YAML cannot achieve.
+The XML design article names the declarative advantages: easier to read, audit,
+and maintain. A Python launch file is still valid ROS 2; reviewing an existing
+`*.launch.py` does not require converting it. Rewriting pays off when the file
+is a plain node list that a declarative file expresses more clearly.
+
+### Format decision table
+
+| Launch content | Default choice |
+|---|---|
+| Nodes, parameters, remappings, namespaces, includes, simple conditions | XML/YAML |
+| Ordinary robot bringup composition | XML/YAML first |
+| Low-level launch features not exposed by the frontends | Python |
+| A launch graph that genuinely depends on runtime logic | Python |
+| Actions generated from computation or external data | Python, with the need stated in the file |
+| "Python is more familiar" | Weak justification on its own |
+
+### The same minimal launch in three formats
+
+```xml
+<!-- launch/driver.launch.xml -->
+<launch>
+  <node pkg="my_robot_driver" exec="driver_node" name="driver"
+        namespace="robot" output="screen">
+    <param name="publish_rate" value="100.0"/>
+    <remap from="joint_states" to="/robot/joint_states"/>
+  </node>
+</launch>
+```
+
+```yaml
+# launch/driver.launch.yaml
+launch:
+  - node:
+      pkg: my_robot_driver
+      exec: driver_node
+      name: driver
+      namespace: robot
+      output: screen
+      param:
+        - name: publish_rate
+          value: 100.0
+      remap:
+        - from: joint_states
+          to: /robot/joint_states
+```
 
 ```python
+# launch/driver.launch.py
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
@@ -43,6 +97,10 @@ def generate_launch_description():
     ])
 ```
 
+The XML frontend passes attribute text through the same parameter type inference
+as Python; the YAML frontend passes the YAML-typed value. Quote a value that must
+stay a string.
+
 ### Key launch entities
 
 | Entity | Purpose | Example |
@@ -56,9 +114,56 @@ def generate_launch_description():
 | `DeclareLaunchArgument` | Declare a user-facing argument | CLI-configurable parameters |
 | `SetEnvironmentVariable` | Set env var for child processes | DDS config, locale |
 
+The XML and YAML frontends expose these as `<node>`, `<include>`, `<group>`,
+`<arg>`, `<set_env>`, and related tags.
+
+### Checking a launch file without running the robot
+
+These checks are a load/parse smoke and a structural inspection. None of them
+verifies resolved parameter values or runtime behavior.
+
+| Format | Check | What it establishes |
+|---|---|---|
+| All | `ros2 launch <pkg> <file> --show-args` | The file is found, loads, and declares the listed arguments |
+| All | `ros2 launch <pkg> <file> --print` | The launch description is built and printed without launching; structural only, and a Python file is executed to build it |
+| XML | `xmllint --noout`, `ament_xmllint` | XML markup is well-formed; not launch semantics |
+| Python | `scripts/launch_validator.py` | Selected static defects in Python launch files (see its docstring) |
+
+This bundle ships no static validator for XML or YAML launch files. Runtime
+behavior is established by the verification levels in `references/testing.md`.
+
+**Technical sources:** [Rolling migration guide](https://github.com/ros2/ros2_documentation/blob/rolling/source/Migration-and-Upgrades/Migrating-from-ROS1/Migrating-Launch-Files.rst),
+[Humble migration guide](https://docs.ros.org/en/humble/How-To-Guides/Migrating-from-ROS1/Migrating-Launch-Files.html),
+[Jazzy launch format guide](https://docs.ros.org/en/jazzy/How-To-Guides/Launch-file-different-formats.html),
+[roslaunch XML design](https://design.ros2.org/articles/roslaunch_xml.html),
+[ros2launch options](https://github.com/ros2/launch_ros/blob/humble/ros2launch/ros2launch/command/launch.py).
+**Community review context:** [Discourse thread on v1.5.0](https://discourse.openrobotics.org/t/ros-2-engineering-skills-for-coding-agents-v1-5-0)
+and the ROSCon 2025 talk "Escape Velocity: Smarter, Cleaner ROS 2 Launch Patterns".
+
 ## 2. Launch arguments and substitutions
 
 ### Declaring and using arguments
+
+```xml
+<launch>
+  <!-- Visible with `ros2 launch <pkg> <file> --show-args` -->
+  <arg name="use_sim_time" default="false" description="Use simulation clock"/>
+  <arg name="robot_name" default="my_robot"
+       description="Name prefix for all nodes and topics"/>
+  <arg name="config"
+       default="$(find-pkg-share my_robot_bringup)/config/params.yaml"
+       description="Path to parameter file"/>
+
+  <node pkg="my_robot_driver" exec="driver_node"
+        name="driver_$(var robot_name)" namespace="$(var robot_name)"
+        output="screen">
+    <param from="$(var config)"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+</launch>
+```
+
+The same description in Python, for cases that need the API:
 
 ```python
 from launch import LaunchDescription
@@ -68,7 +173,6 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
-    # Declare arguments (visible with `ros2 launch <pkg> <file> --show-args`)
     use_sim = DeclareLaunchArgument(
         'use_sim_time', default_value='false',
         description='Use simulation clock')
@@ -99,23 +203,31 @@ def generate_launch_description():
 ```
 
 ```bash
-# Launch with custom arguments
-ros2 launch my_robot_bringup robot.launch.py use_sim_time:=true robot_name:=arm_1
+# Launch with custom arguments (same syntax for every format)
+ros2 launch my_robot_bringup robot.launch.xml use_sim_time:=true robot_name:=arm_1
 ```
 
 ### Common substitutions
 
-| Substitution | Purpose | Example |
+| Python API | XML/YAML frontend | Purpose |
 |---|---|---|
-| `LaunchConfiguration('arg')` | Read a launch argument | Dynamic node config |
-| `FindPackageShare('pkg')` | Get package share directory | Load config/URDF files |
-| `PathJoinSubstitution([...])` | Join path segments | Build file paths |
-| `Command(['cmd', 'args'])` | Run a command and use its output | `xacro` processing |
-| `EnvironmentVariable('VAR')` | Read an environment variable | Robot-specific config |
-| `PythonExpression(['expr'])` | Evaluate Python expression | Complex conditionals |
-| `TextSubstitution(text='...')` | Static text | Fixed strings in expressions |
+| `LaunchConfiguration('arg')` | `$(var arg)` | Read a launch argument |
+| `FindPackageShare('pkg')` | `$(find-pkg-share pkg)` | Package share directory |
+| `PathJoinSubstitution([...])` | `$(find-pkg-share pkg)/config/params.yaml` | Build file paths |
+| `Command(['cmd', 'args'])` | `$(command 'cmd args')` | Run a command and use its output (`xacro`) |
+| `EnvironmentVariable('VAR')` | `$(env VAR default)` | Read an environment variable |
+| `EqualsSubstitution(a, b)` and the boolean substitutions | `$(equals a b)`, `$(and a b)`, ... | Conditions without Python expressions (section 3) |
+| `PythonExpression(['expr'])` | `$(eval 'expr')` | Evaluate a Python expression when no dedicated substitution exists or would be less clear |
+| `TextSubstitution(text='...')` | Plain text | Fixed strings in expressions |
 
 ### URDF/xacro processing
+
+```xml
+<node pkg="robot_state_publisher" exec="robot_state_publisher">
+  <param name="robot_description"
+         value="$(command 'xacro $(find-pkg-share my_robot_description)/urdf/robot.urdf.xacro use_sim:=$(var use_sim_time) robot_name:=$(var robot_name)')"/>
+</node>
+```
 
 ```python
 from launch.substitutions import Command, PathJoinSubstitution
@@ -140,7 +252,13 @@ robot_state_publisher = Node(
 
 ## 3. Conditional logic
 
-### IfCondition / UnlessCondition
+### `if` / `unless` and IfCondition / UnlessCondition
+
+```xml
+<arg name="rviz" default="true"/>
+<node pkg="rviz2" exec="rviz2" args="-d $(var rviz_config)" if="$(var rviz)"/>
+<node pkg="my_robot_monitor" exec="logger_node" unless="$(var rviz)"/>
+```
 
 ```python
 from launch.actions import DeclareLaunchArgument
@@ -164,13 +282,45 @@ headless_logger = Node(
 )
 ```
 
-### PythonExpression for complex conditions
+### Compound conditions: dedicated substitutions first
+
+Prefer dedicated substitutions supported by the target ROS distribution. Use
+`PythonExpression` when the equivalent declarative substitution is unavailable
+or would be less clear. `launch` exports `EqualsSubstitution`,
+`NotEqualsSubstitution`, `AndSubstitution`, `OrSubstitution`, `NotSubstitution`,
+`AnySubstitution`, `AllSubstitution`, and `IfElseSubstitution` on the Humble,
+Jazzy, and Rolling branches, and the frontends expose them as `$(equals ...)`,
+`$(not-equals ...)`, `$(and ...)`, `$(or ...)`, `$(not ...)`, `$(any ...)`, and
+`$(all ...)`. Old or pinned installations may differ; inspect the installed
+launch version when compatibility matters:
+
+```bash
+python3 -c "from launch.substitutions import AndSubstitution, EqualsSubstitution"
+```
+
+```xml
+<!-- Only launch when robot_type is 'arm' -->
+<node pkg="my_robot_arm" exec="arm_node" if="$(equals $(var robot_type) arm)"/>
+```
+
+```python
+from launch.conditions import IfCondition
+from launch.substitutions import AndSubstitution, EqualsSubstitution, LaunchConfiguration
+
+# Only launch when robot_type is 'arm' and simulation is enabled
+condition=IfCondition(AndSubstitution(
+    EqualsSubstitution(LaunchConfiguration('robot_type'), 'arm'),
+    LaunchConfiguration('use_sim_time'),
+))
+```
+
+### PythonExpression as the fallback
 
 ```python
 from launch.conditions import IfCondition
 from launch.substitutions import PythonExpression
 
-# Only launch when robot_type is 'arm' and simulation is enabled
+# Same condition where the dedicated substitutions are unavailable
 condition=IfCondition(PythonExpression([
     "'", LaunchConfiguration('robot_type'), "' == 'arm' and '",
     LaunchConfiguration('use_sim_time'), "' == 'true'"
@@ -179,14 +329,25 @@ condition=IfCondition(PythonExpression([
 
 ## 4. Event handlers
 
-### OnProcessExit — sequenced startup
+### OnProcessExit — termination ordering, not readiness
+
+`OnProcessExit` only establishes process termination ordering. It does not
+prove that the previous controller was successfully loaded or activated. The
+event fires on any exit, including a non-zero one, so an unconditional
+`on_exit=[next_action]` starts the next step after a failure as well.
+
+The event carries the exit code. For a process with a failure contract, such
+as the `controller_manager` spawner, which returns non-zero when load,
+configure, or activate fails, `returncode == 0` is a successful-completion
+gate for that process. It is not a general readiness proof: exit 0 of an
+arbitrary process says nothing about whether a service, topic, or hardware is
+ready.
 
 ```python
-from launch.actions import RegisterEventHandler, ExecuteProcess
+from launch.actions import LogInfo, RegisterEventHandler, Shutdown
 from launch.event_handlers import OnProcessExit
 from launch_ros.actions import Node
 
-# Spawn controller after joint_state_broadcaster is loaded
 spawn_jsb = Node(
     package='controller_manager',
     executable='spawner',
@@ -199,13 +360,27 @@ spawn_arm_controller = Node(
     arguments=['arm_controller'],
 )
 
-delayed_spawn = RegisterEventHandler(
+def after_jsb_spawner(event, context):
+    """Continue only when the spawner reported success; otherwise fail fast."""
+    if event.returncode == 0:
+        return [spawn_arm_controller]
+    return [
+        LogInfo(msg='ERROR: joint_state_broadcaster spawner failed'),
+        Shutdown(reason='controller spawner failed'),
+    ]
+
+gated_spawn = RegisterEventHandler(
     OnProcessExit(
         target_action=spawn_jsb,
-        on_exit=[spawn_arm_controller],
+        on_exit=after_jsb_spawner,
     )
 )
 ```
+
+`launch.actions` has no separate error-logging action, so `LogInfo` carries
+the message and `Shutdown(reason=...)` stops the bringup. The callable form of
+`on_exit` receives `(ProcessExited, LaunchContext)` on Humble, Jazzy, and
+Rolling.
 
 ### OnProcessIO — log monitoring
 
@@ -233,9 +408,43 @@ shutdown_handler = RegisterEventHandler(
 )
 ```
 
+**Technical sources:** [OnProcessExit](https://github.com/ros2/launch/blob/humble/launch/launch/event_handlers/on_process_exit.py),
+[boolean substitutions](https://github.com/ros2/launch/blob/humble/launch/launch/substitutions/boolean_substitution.py).
+
 ## 5. Composing launch files
 
-### IncludeLaunchDescription
+Included files may use any format. The include mechanism is cross-format: an
+XML top-level file can include a Python subsystem launch and the reverse.
+
+```xml
+<!-- launch/robot.launch.xml -->
+<launch>
+  <arg name="use_sim_time" default="false"/>
+  <arg name="map" default=""/>
+
+  <include file="$(find-pkg-share my_robot_driver)/launch/driver.launch.xml">
+    <arg name="serial_port" value="/dev/ttyUSB0"/>
+    <arg name="baud_rate" value="115200"/>
+  </include>
+
+  <include file="$(find-pkg-share my_robot_navigation)/launch/navigation.launch.py">
+    <arg name="use_sim_time" value="$(var use_sim_time)"/>
+    <arg name="map" value="$(var map)"/>
+  </include>
+</launch>
+```
+
+### IncludeLaunchDescription sources
+
+| Source class | Module | Loads |
+|---|---|---|
+| `PythonLaunchDescriptionSource` | `launch.launch_description_sources` | `*.launch.py` |
+| `XMLLaunchDescriptionSource` | `launch_xml.launch_description_sources` | `*.launch.xml` |
+| `YAMLLaunchDescriptionSource` | `launch_yaml.launch_description_sources` | `*.launch.yaml` |
+| `AnyLaunchDescriptionSource` | `launch.launch_description_sources` | Chooses by file extension |
+
+`AnyLaunchDescriptionSource` is convenient, and upstream recommends the
+specific subclass when the format is known.
 
 ```python
 from launch import LaunchDescription
@@ -243,13 +452,14 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
 
 def generate_launch_description():
     driver_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
+        XMLLaunchDescriptionSource(
             PathJoinSubstitution([
                 FindPackageShare('my_robot_driver'),
-                'launch', 'driver.launch.py',
+                'launch', 'driver.launch.xml',
             ])
         ),
         launch_arguments={
@@ -281,22 +491,28 @@ def generate_launch_description():
 
 ### Recommended hierarchy
 
+The format is chosen per file; the extension below is illustrative.
+
 ```text
 my_robot_bringup/
 ├── launch/
-│   ├── robot.launch.py          # Top-level: includes all subsystem launches
-│   ├── simulation.launch.py     # Sim-specific (Gazebo + bridges)
-│   └── rviz.launch.py           # Visualization
+│   ├── robot.launch.xml         # Top-level: includes all subsystem launches
+│   ├── simulation.launch.xml    # Sim-specific (Gazebo + bridges)
+│   └── rviz.launch.xml          # Visualization
 my_robot_driver/
 ├── launch/
-│   └── driver.launch.py         # Self-contained driver launch
+│   └── driver.launch.xml        # Self-contained driver launch
 my_robot_navigation/
 ├── launch/
-│   └── navigation.launch.py     # Self-contained Nav2 launch
+│   └── navigation.launch.py     # Self-contained Nav2 launch (upstream Nav2 ships Python)
 my_robot_perception/
 ├── launch/
-│   └── perception.launch.py     # Self-contained perception pipeline
+│   └── perception.launch.yaml   # Self-contained perception pipeline
 ```
+
+**Technical sources:** [launch_xml sources](https://github.com/ros2/launch/blob/humble/launch_xml/launch_xml/launch_description_sources/__init__.py),
+[launch_yaml sources](https://github.com/ros2/launch/blob/humble/launch_yaml/launch_yaml/launch_description_sources/__init__.py),
+[AnyLaunchDescriptionSource](https://github.com/ros2/launch/blob/humble/launch/launch/launch_description_sources/any_launch_description_source.py).
 
 ## 6. GroupAction for namespacing
 
@@ -370,37 +586,38 @@ def generate_launch_description():
         output='screen',
     )
 
-    # Spawn broadcasters and controllers in order
-    spawn_jsb = Node(
+    # One spawner, controllers listed in start order. The spawner waits for the
+    # manager with a bounded timeout and exits non-zero when any step fails.
+    spawn_controllers = Node(
         package='controller_manager',
         executable='spawner',
-        arguments=['joint_state_broadcaster',
-                   '--controller-manager', '/controller_manager'],
-    )
-
-    spawn_controller = Node(
-        package='controller_manager',
-        executable='spawner',
-        arguments=['arm_controller',
+        arguments=['joint_state_broadcaster', 'arm_controller',
                    '--controller-manager', '/controller_manager',
+                   '--controller-manager-timeout', '30',
                    '--param-file', controller_config],
-    )
-
-    # Ensure joint_state_broadcaster is up before arm_controller
-    delayed_controller = RegisterEventHandler(
-        OnProcessExit(
-            target_action=spawn_jsb,
-            on_exit=[spawn_controller],
-        )
     )
 
     return LaunchDescription([
         rsp,
         control_node,
-        spawn_jsb,
-        delayed_controller,
+        spawn_controllers,
     ])
 ```
+
+One spawner avoids launch-level process-exit sequencing, but does not make the
+entire multi-controller operation atomic. In the default mode each listed
+controller is loaded, configured, and activated in turn, so a failure on a
+later controller leaves the earlier ones active. `--activate-as-group` groups
+only the activation step of the listed controllers, which chained controllers
+need; it does not turn the preceding load and configure steps into a
+transaction. Inspect the spawner exit code and the controller manager state
+after any failure.
+
+When separate spawner processes are required, chain them with the
+exit-code-gated `OnProcessExit` handler from section 4 rather than an
+unconditional `on_exit` list; the caveat stated there applies unchanged.
+
+**Technical sources:** [controller manager spawner options](https://github.com/ros-controls/ros2_control/blob/humble/controller_manager/doc/userdoc.rst).
 
 ## 8. Large system organization
 
@@ -412,18 +629,18 @@ def generate_launch_description():
 
 ```text
 Layer 1 (Subsystem launches):
-  driver.launch.py       → hardware driver nodes
-  perception.launch.py   → cameras, LiDAR, detection
+  driver.launch.xml      → hardware driver nodes
+  perception.launch.yaml → cameras, LiDAR, detection
   navigation.launch.py   → Nav2, localization, mapping
   manipulation.launch.py → MoveIt 2, gripper control
 
 Layer 2 (Robot launch):
-  robot.launch.py        → includes all Layer 1 files
+  robot.launch.xml       → includes all Layer 1 files (any format)
                            → passes arguments down
 
 Layer 3 (Deployment launch):
-  fleet.launch.py        → includes robot.launch.py N times with namespaces
-  simulation.launch.py   → includes robot.launch.py + Gazebo
+  fleet.launch.py        → includes robot.launch.xml N times with namespaces
+  simulation.launch.xml  → includes robot.launch.xml + Gazebo
 ```
 
 ### Launch argument forwarding pattern
