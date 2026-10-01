@@ -1376,3 +1376,148 @@ class TestOnProcessExitCompletionGate:
         assert 'exit-code-gated `OnProcessExit` handler from section 4' in section
         assert "arguments=['joint_state_broadcaster', 'arm_controller'," in section
         assert '--controller-manager-timeout' in section
+
+
+# ---------------------------------------------------------------------------
+# Field-learned guidance (v1.6.2)
+#
+# Background: patterns observed during robot field work that produced wrong
+# conclusions when generalized guidance was missing. Each class pins the
+# generalized rule, not the site-specific incident.
+# ---------------------------------------------------------------------------
+
+EVIDENCE_MD = os.path.join(ROOT, 'references', 'evidence-progression.md')
+SAFETY_MD = os.path.join(ROOT, 'references', 'safety-estop.md')
+PROVENANCE_MD = os.path.join(ROOT, 'references', 'runtime-provenance.md')
+EXECUTORS_MD = os.path.join(ROOT, 'references', 'nodes-executors.md')
+DEBUGGING_MD = os.path.join(ROOT, 'references', 'debugging.md')
+LINEAGE_MD = os.path.join(ROOT, 'references', 'artifact-lineage.md')
+
+
+class TestMotionPermitOwnership:
+    """A lost status link is not, by itself, evidence about the motion permit."""
+
+    def test_evidence_progression_separates_policy_from_permit(self):
+        section = _md_section(EVIDENCE_MD, '### Availability policy and motion permits are separate')
+        flat = _flat(section)
+        assert 'not by itself about the motion permit' in flat
+        assert 'identify the path that owns the motion permit and the final command gate' in flat
+        assert 'an intended degraded mode is not reclassified as a defect' in flat
+        assert 'A loss that violates the documented availability policy is reported as such' in flat
+
+    def test_safety_estop_points_at_permit_owner(self):
+        flat = _flat(_read(SAFETY_MD))
+        assert 'identify which component owns the permit before concluding that motion was or was not allowed' in flat
+        assert flat.count('Acceptance criteria') >= 1
+
+
+class TestDeploymentChronology:
+    """A historical report describes its own moment, not the current installation."""
+
+    def test_four_claims_are_distinguished(self):
+        flat = _flat(_md_section(PROVENANCE_MD, '## 4. Source tree vs installed copy'))
+        assert 'Deployment chronology.' in flat
+        assert 'four different claims' in flat
+        assert 'it is not evidence about the current installation' in flat
+        assert 'does not establish that runtime node or config bytes changed' in flat
+        assert 'a commit alone does not establish that any artifact was deployed' in flat
+        assert 're-read the installed files on the target and record their current hashes' in flat
+
+    def test_checklist_row_reads_current_installation(self):
+        rows = [line for line in _lines(PROVENANCE_MD)
+                if line.startswith('| 11 |') and 'installed on the target right now' in line]
+        assert len(rows) == 1
+        assert 'that the last report or commit describes it' in rows[0]
+
+
+class TestHarnessFailureIsNotBehaviorFailure:
+    """Collection, import, and fixture failures mean the check did not run."""
+
+    def test_rule_is_in_the_ladder_rules(self):
+        section = _md_section(TESTING_MD, '## 11. Verification levels')
+        flat = _flat(section)
+        assert 'Separate a harness failure from a behavior failure.' in flat
+        assert 'missing prerequisite supplied by the test harness' in flat
+        assert 'report it as an unperformed check' in flat
+        assert 'do not report a repaired fixture as verified behavior' in flat
+        assert 'that is the behavior under test' in flat
+        assert section.count('| **L') == 7
+
+
+class TestRclpySignalCleanup:
+    """Signals record a request; cleanup runs once at a control-flow boundary."""
+
+    def test_subsection_states_the_rule(self):
+        section = _md_section(EXECUTORS_MD, '### Shutdown signals and idempotent cleanup')
+        flat = _flat(section)
+        assert 'converge on one idempotent cleanup path' in flat
+        assert 'do not raise an asynchronous exception into a running callback' in flat
+        assert 'Let the handler record a shutdown request only' in flat
+        assert 'a repeated signal must not re-enter it' in flat
+        assert 'A sent cleanup command is not a physical stop' in flat
+        assert 'Foxy predates `SignalHandlerOptions`' in flat
+        assert 'Publishing a stop message alone is not proof that it was delivered' in flat
+        assert 'When `signal_handler_options` is omitted' in flat
+        assert 'installs its own SIGINT and SIGTERM handlers on Humble and later' in flat
+        assert 'terminal SIGINT only' not in _read(EXECUTORS_MD)
+
+    def test_example_catches_external_shutdown_and_cleans_once(self):
+        section = _md_section(EXECUTORS_MD, '### Shutdown signals and idempotent cleanup')
+        assert 'from rclpy.executors import ExternalShutdownException' in section
+        assert 'from rclpy.signals import SignalHandlerOptions' in section
+        assert 'signal_handler_options=SignalHandlerOptions.NO' in section
+        assert 'except ExternalShutdownException:' in section
+        assert 'rclpy.try_shutdown()' in section
+        assert 'publish_stop' not in section
+        assert section.index('cleanup_once()') < section.index('node.destroy_node()')
+
+    def test_failure_table_row_present(self):
+        rows = [line for line in _lines(EXECUTORS_MD) if 'Cleanup skipped or run twice on SIGTERM' in line]
+        assert len(rows) == 1 and 'Record the request in the handler' in rows[0]
+
+
+class TestFinalizedBagCapture:
+    """A bag still being written is not a finalized recording artifact."""
+
+    def test_subsection_and_conditions(self):
+        section = _md_section(DEBUGGING_MD, '### Finalize the recording before you copy or judge it')
+        flat = _flat(section)
+        assert 'not a finalized recording artifact' in flat
+        assert 'writes `metadata.yaml` when the writer closes' in flat
+        assert 'may be incomplete or inconsistent' in flat
+        assert 'per-topic message counts with `ros2 bag info`' in flat
+        assert 'If a recording must survive an interactive SSH disconnect' in flat
+        assert 'nohup' not in flat and 'setsid' not in flat and 'WAL' not in flat
+
+    def test_failure_row_and_mcap_default_agree(self):
+        text = _read(DEBUGGING_MD)
+        assert 'Copied while the recorder was still writing' in text
+        assert 'default format since Iron' in text
+        assert 'default since Jazzy' not in text and 'default in Jazzy+' not in text
+        assert 'MCAP became the default bag format in Iron' in text
+
+
+class TestBlackBoxDecisionEvidence:
+    """A vendor controller's reason is in its own log, aligned by timestamp."""
+
+    def test_paragraph_and_table_row(self):
+        flat = _flat(_md_section(SYSTEM_DIAGNOSTICS_MD, '## 3. Instrument the boundaries'))
+        assert 'Do not infer why it stopped or diverted from the graph alone' in flat
+        assert 'align it with the recorded ROS data by timestamp' in flat
+        assert 'which internal check or transition the log reports as firing' in flat
+        rows = [line for line in _lines(SYSTEM_DIAGNOSTICS_MD)
+                if line.startswith('| Robot stops or diverts; topics show only the effect')]
+        assert len(rows) == 1 and 'timestamp-align the vendor decision log' in rows[0]
+
+
+class TestCounterfactualBaseline:
+    """Replay compares against what the executor actually received."""
+
+    def test_paragraph_keeps_positive_control_and_start_event(self):
+        flat = _flat(_md_section(LINEAGE_MD, '## 2. Backend execution is not artifact adoption'))
+        assert 'what the executor actually received in that execution' in flat
+        assert 'not against the first candidate or an upstream intermediate artifact' in flat
+        assert 'State the event the replay starts from' in flat
+        assert 'reacted to the real trajectory, not the simulated one' in flat
+        assert 'check the instrument and its inputs with a positive control' in flat
+        assert _read(LINEAGE_MD).count('```python') == 1

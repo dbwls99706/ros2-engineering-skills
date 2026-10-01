@@ -128,6 +128,14 @@ Boundary components should also **report degraded, not just failed**: a bridge
 that is reconnecting is materially different from one that is down, and
 consumers can react (stop accepting goals) before the data disappears.
 
+A closed-source controller or planner decides from state you cannot see on ROS
+topics. Do not infer why it stopped or diverted from the graph alone. Obtain its
+own decision, state-machine, or fault log, align it with the recorded ROS data
+by timestamp (same clock check as section 2), and record which internal check or
+transition the log reports as firing, not only that the robot stopped. The
+earliest decision evidence, not the loudest downstream symptom, is the one to
+keep (section 2).
+
 ## 4. Bridge nodes: executors meeting other event loops
 
 The node that owns a boundary usually runs two schedulers at once — a ROS 2
@@ -173,6 +181,7 @@ confirms it before you start changing configuration.
 | Node alive, callbacks stopped | executor blocked by a bridge or vendor call | `py-spy dump` / `gdb` thread backtrace; check callback groups |
 | Everything recovers except one node | error-state lifecycle node or stale latched data | `ros2 lifecycle list`; re-check latched topics after reconnect |
 | Behavior differs after a reconnect | stale config or a duplicate process from the restart | `references/runtime-provenance.md`, "Stale daemon vs real processes" |
+| Robot stops or diverts; topics show only the effect | a vendor controller's internal check fired | timestamp-align the vendor decision log with the bag (section 3) |
 
 ## 6. Common failures and fixes
 

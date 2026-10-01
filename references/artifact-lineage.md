@@ -62,6 +62,17 @@ Matching output on one corpus supports equivalence on that corpus, not every
 input or bit-identical builds. Keep implementation identity and behavioral
 equivalence as separate claims.
 
+A counterfactual replay compares candidates against what the executor actually
+received in that execution, not against the first candidate or an upstream
+intermediate artifact. State the event the replay starts from (dispatch or first
+motion), and stop treating results as evidence once the recorded sensor coverage
+no longer explains the simulated state; recorded people and the environment
+reacted to the real trajectory, not the simulated one. If a replay declares an
+execution impossible that the real system completed without incident, check the
+instrument and its inputs with a positive control
+(`references/evidence-progression.md` section 6) before drawing any conclusion
+about robot behavior.
+
 ## 3. Compare identities, not only counts
 
 Choose the comparison relation before interpreting a result:

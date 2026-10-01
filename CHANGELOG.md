@@ -2,6 +2,45 @@
 
 All notable changes are documented here.
 
+## 1.6.2 - 2026-09-30
+
+Source bundle version 1.6.2. Release publication follows
+`docs/RELEASING.md`. Field-learned guidance corrections generalized from robot
+operation; no new tools, no site-specific values, and no measured model results.
+
+- Separate availability policy from the motion permit in
+  `references/evidence-progression.md`: a lost telemetry, dashboard, or management
+  link is evidence about that link, is classified against the documented policy,
+  and the permit-owning path is identified separately. `references/safety-estop.md`
+  points at the permit owner when a link drops.
+- Add deployment chronology to `references/runtime-provenance.md`: a commit, a
+  build artifact, a deployment event, and the bytes installed now are four claims;
+  an earlier report's hash is not evidence about the current installation, so
+  re-read and re-hash the target after deploying (checklist row 11).
+- Add a verification-ladder rule in `references/testing.md` that a harness,
+  fixture, import, or collection failure means the behavior check did not run and
+  is reported as unperformed, while a required message the system did not produce
+  remains a behavior finding.
+- Add shutdown-signal guidance and an example to `references/nodes-executors.md`:
+  handlers record a request only, the spin ends at a control-flow boundary,
+  cleanup runs once, `ExternalShutdownException` is a normal exit, and a sent
+  cleanup command is not a physical stop. Note that the default context installs
+  SIGINT/SIGTERM handlers on Humble and later and that Foxy predates
+  `SignalHandlerOptions`.
+- State in `references/debugging.md` that a bag still being written is not a
+  finalized recording artifact because rosbag2 writes `metadata.yaml` on writer
+  close; verify with `ros2 bag info` after a clean stop. Correct the MCAP default
+  to Iron onward (Humble stays sqlite3) per `default_storage_id.cpp`.
+- Add black-box controller evidence to `references/system-diagnostics.md`: obtain
+  the vendor decision or fault log and align it with recorded ROS data by
+  timestamp instead of inferring the cause from topics alone.
+- Add counterfactual replay provenance to `references/artifact-lineage.md`: compare
+  against what the executor actually received, state the replay start event, bound
+  results by sensor coverage, and check the instrument with a positive control
+  before concluding about robot behavior.
+- Add string-level regression tests for each rule and register the rclpy and
+  rosbag2 upstream sources with review dates.
+
 ## 1.6.1 - 2026-09-30
 
 Source bundle version 1.6.1. Release publication follows

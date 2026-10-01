@@ -12,7 +12,7 @@ compatibility: >
   target ROS 2 environment. Claude plugin hooks are client-specific.
 metadata:
   author: dbwls99706
-  version: "1.6.1"
+  version: "1.6.2"
   repository: "https://github.com/dbwls99706/ros2-engineering-skills"
 ---
 

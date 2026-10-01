@@ -176,7 +176,9 @@ Two topics, two jobs: `/safety/motion_permit` (heartbeat, gates motion) and
 `/safety/estop_state` (retained status, informs humans and UIs). Retained status is
 not a live permission. A late joiner starts stopped and requires a fresh valid
 permit plus the reset protocol; neither cached status nor a returning heartbeat
-may clear its latch.
+may clear its latch. When a status, telemetry, or management link drops, identify
+which component owns the permit before concluding that motion was or was not
+allowed; see `references/evidence-progression.md` section 2.
 
 ## 3. Command arbitration
 
@@ -362,7 +364,10 @@ failure within the stop budget. A successful switch or deactivation is not proof
 of physical stopping; confirm what the hardware writes and observe the response.
 See `references/hardware-interface.md` for driver cleanup, and the
 [controller-manager interface](https://control.ros.org/jazzy/doc/ros2_control/controller_manager/doc/userdoc.html)
-for switching and fallback limitations.
+for switching and fallback limitations. Process cleanup on a shutdown signal is
+likewise not a hardware stop; the signal-handling pattern in
+`references/nodes-executors.md` §1 ends with the node's downstream watchdog and
+stop path still required.
 
 ## 4. SROS2 e-stop isolation
 

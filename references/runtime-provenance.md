@@ -154,6 +154,15 @@ ament index and `PYTHONPATH` **of whichever interpreter runs them**. Run them
 inside the node's environment — otherwise you are comparing your shell's
 resolution against the source tree and learning nothing about the node.
 
+**Deployment chronology.** A commit, a build artifact, a deployment event, and
+the bytes now installed on the target are four different claims. A hash or
+"deployed" line in an earlier report describes that earlier moment; it is not
+evidence about the current installation. A commit that changed only tests does
+not establish that runtime node or config bytes changed, and a commit alone does
+not establish that any artifact was deployed. After any deployment, re-read the
+installed files on the target and record their current hashes instead of
+reusing the report.
+
 ## 5. Which parameters are actually in effect?
 
 A YAML file on disk is a proposal. The parameter server holds the outcome,
@@ -326,6 +335,7 @@ conclusions come from.
 | 8 | Which endpoints publish `/tf`? | `ros2 topic info /tf -v` + written ownership map | which endpoint sent a *specific* edge (§7), or that the data is fresh |
 | 9 | Is the graph view current? | `--no-daemon`, `ros2 daemon stop/start` | that only one process backs each node name |
 | 10 | Which processes are really alive? | `pgrep -af`, `systemctl status` | that they are all the ones you launched |
+| 11 | What is installed on the target right now? | `sha256sum` on the target's install space (§4) | that the last report or commit describes it |
 
 Limits that apply to the whole checklist, not to single rows:
 

@@ -470,6 +470,19 @@ ros2 bag record -o bounded_bag \
   /scan
 ```
 
+### Finalize the recording before you copy or judge it
+
+A bag that is still being written is not a finalized recording artifact. rosbag2
+writes `metadata.yaml` when the writer closes, so a directory copied while the
+recorder runs may be incomplete or inconsistent. Stop the recorder cleanly, then
+check the finalized metadata, the storage-file inventory, and per-topic message
+counts with `ros2 bag info` before copying or drawing conclusions. If a recording
+must survive an interactive SSH disconnect, decouple the recorder lifetime from
+that session. Check free disk before recording, and, when retained or
+transient-local data matters, match the recorder's QoS to the actual publisher.
+
+Source: [SequentialWriter::close writes the metadata](https://github.com/ros2/rosbag2/blob/humble/rosbag2_cpp/src/rosbag2_cpp/writers/sequential_writer.cpp).
+
 ### Playback
 
 ```bash
@@ -519,7 +532,7 @@ from sensor_msgs.msg import LaserScan
 reader = SequentialReader()
 storage_options = StorageOptions(
     uri='my_bag',
-    storage_id='mcap')  # MCAP is the default format since Jazzy; use 'sqlite3' for Humble compatibility
+    storage_id='mcap')  # MCAP is the default format since Iron; use 'sqlite3' for Humble compatibility
 converter_options = ConverterOptions(
     input_serialization_format='cdr',
     output_serialization_format='cdr')
@@ -537,7 +550,7 @@ while reader.has_next():
 MCAP became the default bag format in Iron (and continues in Jazzy/Kilted/Rolling), replacing SQLite3. It offers faster writes, better compression, and indexed random access.
 
 ```bash
-# Record with MCAP (default in Jazzy+)
+# Record with MCAP (default in Iron+)
 ros2 bag record -a -o my_bag
 
 # Record with compression (recommended for production)
@@ -723,6 +736,7 @@ Fix: Create all subscriptions in constructor/on_configure, never in callbacks
 | `ros2 topic echo` shows nothing | QoS mismatch (echo defaults to RELIABLE) | Use `ros2 topic echo --qos-reliability best_effort` for sensor topics |
 | GDB shows `<optimized out>` for variables | Release build | Build with `-DCMAKE_BUILD_TYPE=Debug` or `RelWithDebInfo` |
 | Bag playback too fast | Missing `--clock` flag | Add `--clock` and set `use_sim_time: true` on nodes |
+| Copied bag has no `metadata.yaml` or fewer messages | Copied while the recorder was still writing | Stop the recorder cleanly; verify with `ros2 bag info`; copy the finalized directory (§5) |
 | rqt_graph shows disconnected nodes | Nodes on different DDS domains | Verify `ROS_DOMAIN_ID` is the same on all machines |
 | valgrind reports leaks in rclcpp | Known ROS 2 library allocations (not true leaks) | Suppress ROS 2 internal allocations, focus on your code |
 

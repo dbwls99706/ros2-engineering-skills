@@ -108,7 +108,7 @@ class JointPublisher(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    rclpy.init(args=args)  # default context + default signal options install SIGINT/SIGTERM handlers (Humble+); see "Shutdown signals" below
     node = JointPublisher()
     try:
         rclpy.spin(node)
@@ -118,6 +118,73 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
 ```
+
+### Shutdown signals and idempotent cleanup
+
+Every signal in the deployment shutdown contract (SIGINT from a terminal or
+launch, SIGTERM from a process manager) should converge on one idempotent
+cleanup path. Do not do cleanup inside the handler and do not raise an
+asynchronous exception into a running callback: the callback stops at an
+arbitrary line, possibly before the stop or posture command it was publishing.
+Let the handler record a shutdown request only, end the spin at a normal
+control-flow boundary, and run cleanup once; a repeated signal must not re-enter
+it. A sent cleanup command is not a physical stop; an actuator-owning node still
+needs its downstream watchdog and stop path (`references/safety-estop.md` §3).
+When `signal_handler_options` is omitted (`None`) and the default context is
+initialized, `rclpy.init()` installs its own SIGINT and SIGTERM handlers on
+Humble and later; the explicit pattern below takes signal ownership itself with
+`SignalHandlerOptions.NO`. Signal behavior differs by distribution and rclpy
+version: Foxy predates `SignalHandlerOptions`, so check the installed version
+before relying on it.
+
+```python
+import signal
+
+import rclpy
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
+from rclpy.signals import SignalHandlerOptions
+
+stop_requested = False
+
+
+def request_stop(signum, frame):
+    global stop_requested
+    stop_requested = True  # record only; no cleanup, no exception
+
+
+def main(args=None):
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+    node = JointPublisher()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    cleaned = False
+
+    def cleanup_once():
+        nonlocal cleaned
+        if cleaned:
+            return
+        cleaned = True
+        # Invoke the application's documented bounded stop/cleanup contract here.
+
+    try:
+        while rclpy.ok() and not stop_requested:
+            executor.spin_once(timeout_sec=0.1)
+    except ExternalShutdownException:
+        pass  # context shut down elsewhere: still a normal exit
+    finally:
+        cleanup_once()
+        executor.remove_node(node)
+        node.destroy_node()
+        rclpy.try_shutdown()
+```
+
+The cleanup routine invokes the application's documented bounded stop/cleanup
+contract. Publishing a stop message alone is not proof that it was delivered or
+that the actuator stopped; the stop semantics belong to
+`references/safety-estop.md`. The launch-side counterpart of this rule is the
+supervisor guidance in `references/launch-system.md` section 10.
 
 **Key differences:**
 
@@ -1218,6 +1285,7 @@ class ImageProcessor : public rclcpp::Node
 | Timer drifts under load | Wall timer + heavy callbacks | Use a dedicated callback group or reduce callback work |
 | Intra-process not working | Missing `use_intra_process_comms(true)` or nodes not in same process | Enable in NodeOptions for all participating nodes; ensure they run in the same process (composition, same main(), etc.) |
 | Service call deadlocks executor | Synchronous wait on the future inside the callback | Register a response callback (`async_send_request(request, cb)` / `call_async` + `add_done_callback`) and return; move the client to a separate group only for unavoidable synchronous waits |
+| Cleanup skipped or run twice on SIGTERM | Handler raised into a callback or ran cleanup itself | Record the request in the handler; finish the spin; one idempotent cleanup (§1) |
 
 ---
 
