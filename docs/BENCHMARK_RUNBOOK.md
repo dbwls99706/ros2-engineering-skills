@@ -218,8 +218,20 @@ incomplete, has an artifact whose hash no longer matches the manifest, or whose
 manifest points outside the experiment directory; every answer is read through
 the same hash-checked path, so an output edited after capture is never shown to
 a grader. It also refuses a non-empty output directory, because re-running it
-would overwrite the sheets and any grades already recorded in `grades.json`;
-pass `--force` only when you intend to discard them.
+would overwrite the sheets and any grades already recorded in `grades.json`.
+`--force` replaces only the generated files (`sheet-*.md`, `grades.json`,
+`key.json`) and leaves unrelated files in place; it refuses to run when the
+output directory or any generated path is a symbolic link or not a regular
+file, and it refuses before removing anything. JSON files are written through
+unpredictable temporary names, so a planted `grades.json.tmp` link is never
+followed.
+
+`grades.json` and `key.json` carry `grading_sha256`, a digest of the suite
+(its criteria) and the exact blinded answer set: the assignments plus the
+SHA-256 of every answer the grader saw. `score` refuses a grades file whose
+digest does not match the experiment it is scoring, so grades from another
+run, another suite revision, or a run that reused session ids cannot be
+applied by mistake.
 
 Give the grader only `sheet-<case>.md` and `grades.json`. Keep `key.json`
 away from them; it unblinds the sheets. Sheets contain only completed answers
@@ -242,6 +254,9 @@ python3 scripts/benchmark_capture.py score /path/exp-2026-10 --grades /path/exp-
 from the manifest and seed. `key.json` is never trusted on its own: a key whose
 arms were swapped, that belongs to another experiment, or that is missing an
 assignment is rejected, so the key cannot flip `on_better` and `off_better`.
+It then recomputes `grading_sha256` from the verified manifest and rejects a
+`grades.json` or `key.json` whose digest differs, so only grades recorded
+against this experiment's own sheets are ever combined with its key.
 
 For each `(case, trial)` pair and each criterion the report gives one of
 `on_better`, `off_better`, `tie`, or `unknown`:

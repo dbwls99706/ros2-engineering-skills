@@ -445,6 +445,209 @@ class TestGradeSheetAndScore:
         key_path.write_text(json.dumps(original), encoding='utf-8')
         assert score()[0] == 0
 
+    def second_experiment(self, tmp_path, capsys, name='exp-b', seed=1):
+        exp = tmp_path / name
+        assert bench.main(init_args(exp, seed=seed)) == 0
+        capsys.readouterr()
+        return exp
+
+    def test_score_refuses_grades_from_another_experiment(self, experiment, tmp_path, capsys):
+        out_a = self.graded_experiment(experiment, tmp_path, capsys)
+        exp_b = self.second_experiment(tmp_path, capsys)
+        fill_all(exp_b, tmp_path, capsys)
+        out_b = tmp_path / 'sheets-b'
+        assert bench.main(['grade-sheet', str(exp_b), '--out', str(out_b)]) == 0
+        capsys.readouterr()
+        # Same suite, same seed, both complete: the blinded ids coincide, the grades must not.
+        assert bench.main(['score', str(exp_b), '--grades', str(out_a / 'grades.json'),
+                           '--key', str(out_b / 'key.json')]) == 2
+        assert 'does not belong to this experiment' in capsys.readouterr().err
+        assert bench.main(['score', str(exp_b), '--grades', str(out_b / 'grades.json')]) == 0
+        capsys.readouterr()
+
+    def test_grades_are_bound_to_answer_bytes_not_session_ids(self, tmp_path, capsys):
+        """Reused --session-id values and identical answers except one still separate the digests."""
+        workspaces = {}
+        for name in ('a', 'b'):
+            workspace = tmp_path / name
+            workspace.mkdir()
+            exp = self.second_experiment(workspace, capsys, name='exp', seed=1)
+            workspaces[name] = (workspace, exp)
+            while next_slot(exp) is not None:
+                case, trial, condition = next_slot(exp)
+                extra = ['--skill-loaded', 'true' if condition == 'on' else 'false',
+                         '--session-id', 'sess-%s-%d-%s' % (case, trial, condition)]
+                if name == 'b' and (case, trial, condition) == ('qos-compatibility', 1, 'on'):
+                    trace, _ = artifacts(workspace, 'different', output=False)
+                    answer = workspace / 'different.answer'
+                    answer.write_text(FIXTURE_LINE + 'a different answer\n', encoding='utf-8')
+                    assert bench.main(['add-run', str(exp), '--case', case, '--trial', str(trial),
+                                       '--condition', condition, '--trace', str(trace),
+                                       '--output', str(answer), *extra]) == 0
+                    capsys.readouterr()
+                    continue
+                assert add(exp, workspace, case, trial, condition, extra=extra, capsys=capsys) == 0
+        outs = {}
+        for name, (workspace, exp) in workspaces.items():
+            outs[name] = workspace / 'sheets'
+            assert bench.main(['grade-sheet', str(exp), '--out', str(outs[name])]) == 0
+            capsys.readouterr()
+        key_a = json.loads((outs['a'] / 'key.json').read_text(encoding='utf-8'))
+        key_b = json.loads((outs['b'] / 'key.json').read_text(encoding='utf-8'))
+        assert key_a['assignments'] == key_b['assignments']
+        assert key_a['grading_sha256'] != key_b['grading_sha256']
+        exp_b = workspaces['b'][1]
+        assert bench.main(['score', str(exp_b), '--grades', str(outs['a'] / 'grades.json'),
+                           '--key', str(outs['b'] / 'key.json')]) == 2
+        assert 'does not belong to this experiment' in capsys.readouterr().err
+        assert bench.main(['score', str(exp_b), '--grades', str(outs['b'] / 'grades.json')]) == 0
+        capsys.readouterr()
+
+    def test_grading_digest_depends_on_the_suite(self, experiment, tmp_path, capsys):
+        fill_all(experiment, tmp_path, capsys)
+        data = manifest(experiment)
+        suite, _ = bench.load_suite(SUITE)
+        key = bench.blind_assignments(data, suite)
+        digest = bench.grading_digest(data, key)
+        assert len(digest) == 64 and int(digest, 16) >= 0
+        other_suite = dict(data, suite_sha256='0' * 64)
+        assert bench.grading_digest(other_suite, key) != digest
+        for rid in key:
+            assert 'output_sha256' in bench.grading_entries(key)[rid]
+            assert 'output_sha256' not in bench.key_entries(key)[rid]
+
+    def test_grades_and_key_share_the_digest(self, experiment, tmp_path, capsys):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        grades = json.loads((out / 'grades.json').read_text(encoding='utf-8'))
+        key = json.loads((out / 'key.json').read_text(encoding='utf-8'))
+        assert grades['grading_sha256'] == key['grading_sha256']
+        assert len(grades['grading_sha256']) == 64
+        data = manifest(experiment)
+        suite, _ = bench.load_suite(SUITE)
+        assert grades['grading_sha256'] == bench.grading_digest(data, bench.blind_assignments(data, suite))
+
+    @pytest.mark.parametrize('mutation', ['missing', 'altered', 'schema'])
+    def test_score_rejects_an_unbound_grades_file(self, experiment, tmp_path, capsys, mutation):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        grades_path = out / 'grades.json'
+        grades = json.loads(grades_path.read_text(encoding='utf-8'))
+        if mutation == 'missing':
+            del grades['grading_sha256']
+        elif mutation == 'altered':
+            digest = grades['grading_sha256']
+            grades['grading_sha256'] = ('0' if digest[0] != '0' else '1') + digest[1:]
+        else:
+            grades['schema_version'] = 2
+        grades_path.write_text(json.dumps(grades), encoding='utf-8')
+        assert bench.main(['score', str(experiment), '--grades', str(grades_path)]) == 2
+        err = capsys.readouterr().err
+        assert ('schema_version' if mutation == 'schema' else 'does not belong') in err
+
+    @pytest.mark.parametrize('mutation', ['missing', 'altered'])
+    def test_score_rejects_a_key_whose_digest_was_edited(self, experiment, tmp_path, capsys, mutation):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        key_path = out / 'key.json'
+        key = json.loads(key_path.read_text(encoding='utf-8'))
+        if mutation == 'missing':
+            del key['grading_sha256']
+        else:
+            key['grading_sha256'] = 'f' * 64
+        key_path.write_text(json.dumps(key), encoding='utf-8')
+        assert bench.main(['score', str(experiment), '--grades', str(out / 'grades.json')]) == 2
+        assert 'key.json grading_sha256' in capsys.readouterr().err
+
+    def test_grade_sheet_refuses_a_symlinked_output_directory(self, experiment, tmp_path, capsys):
+        fill_all(experiment, tmp_path, capsys)
+        external = tmp_path / 'external-dir'
+        external.mkdir()
+        (external / 'marker.txt').write_text('keep\n', encoding='utf-8')
+        out = tmp_path / 'grading'
+        out.symlink_to(external, target_is_directory=True)
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 2
+        assert 'must not be a symbolic link' in capsys.readouterr().err
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out), '--force']) == 2
+        capsys.readouterr()
+        assert [p.name for p in external.iterdir()] == ['marker.txt']
+        assert out.is_symlink()
+
+    def test_grade_sheet_refuses_a_file_as_output_directory(self, experiment, tmp_path, capsys):
+        fill_all(experiment, tmp_path, capsys)
+        out = tmp_path / 'grading'
+        out.write_text('not a directory\n', encoding='utf-8')
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 2
+        assert 'must be a directory' in capsys.readouterr().err
+        assert out.read_text(encoding='utf-8') == 'not a directory\n'
+
+    def test_force_replaces_only_generated_files(self, experiment, tmp_path, capsys):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        (out / 'sheet-old-case.md').write_text('from an earlier suite\n', encoding='utf-8')
+        (out / 'notes.txt').write_text('grader notes\n', encoding='utf-8')
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out), '--force']) == 0
+        capsys.readouterr()
+        assert not (out / 'sheet-old-case.md').exists()
+        assert (out / 'notes.txt').read_text(encoding='utf-8') == 'grader notes\n'
+        assert (out / 'grades.json').is_file() and (out / 'key.json').is_file()
+        assert (out / 'sheet-qos-compatibility.md').is_file()
+
+    @pytest.mark.parametrize('kind', ['symlink', 'directory'])
+    def test_force_refuses_non_regular_generated_paths_before_removing_anything(
+            self, experiment, tmp_path, capsys, kind):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        grades_path = out / 'grades.json'
+        grades = json.loads(grades_path.read_text(encoding='utf-8'))
+        case_id, rows = next(iter(grades['cases'].items()))
+        grades['cases'][case_id][next(iter(rows))]['C1'] = 'pass'
+        grades_path.write_text(json.dumps(grades), encoding='utf-8')
+        recorded = grades_path.read_bytes()
+        outside = tmp_path / 'outside.md'
+        outside.write_text('untouched\n', encoding='utf-8')
+        if kind == 'symlink':
+            planted = out / 'sheet-qos-compatibility.md'
+            planted.unlink()
+            planted.symlink_to(outside)
+        else:
+            planted = out / 'sheet-planted.md'
+            planted.mkdir()
+        before = sorted(p.name for p in out.iterdir())
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out), '--force']) == 2
+        err = capsys.readouterr().err
+        assert 'not a regular file' in err and planted.name in err
+        assert outside.read_text(encoding='utf-8') == 'untouched\n'
+        assert grades_path.read_bytes() == recorded
+        assert sorted(p.name for p in out.iterdir()) == before
+        if kind == 'symlink':
+            assert planted.is_symlink()
+
+    def test_json_writes_never_follow_a_planted_temporary_symlink(self, experiment, tmp_path, capsys):
+        outside = tmp_path / 'outside.txt'
+        outside.write_text('untouched\n', encoding='utf-8')
+        (experiment / 'capture.json.tmp').symlink_to(outside)
+        assert add_next(experiment, tmp_path, extra=['--skill-loaded', 'true'], capsys=capsys) == 0
+        assert outside.read_text(encoding='utf-8') == 'untouched\n'
+        assert not (experiment / 'capture.json').is_symlink()
+        fill_all(experiment, tmp_path, capsys)
+        out = tmp_path / 'sheets'
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 0
+        capsys.readouterr()
+        (out / 'grades.json.tmp').symlink_to(outside)
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out), '--force']) == 0
+        capsys.readouterr()
+        assert outside.read_text(encoding='utf-8') == 'untouched\n'
+        assert (out / 'grades.json').is_file() and not (out / 'grades.json').is_symlink()
+
+    def test_save_json_leaves_the_target_and_no_temporary_file_when_rename_fails(self, tmp_path, monkeypatch):
+        target = tmp_path / 'data.json'
+        target.write_text('{"kept": true}\n', encoding='utf-8')
+
+        def refuse(src, dst):
+            raise OSError('synthetic rename failure')
+
+        monkeypatch.setattr(bench.os, 'replace', refuse)
+        with pytest.raises(OSError, match='synthetic rename failure'):
+            bench.save_json(target, {'kept': False})
+        assert target.read_text(encoding='utf-8') == '{"kept": true}\n'
+        assert [p.name for p in tmp_path.iterdir()] == ['data.json']
+
     def test_score_refuses_a_capture_edited_after_grading(self, experiment, tmp_path, capsys):
         out = self.graded_experiment(experiment, tmp_path, capsys)
         edited = sorted((experiment / 'runs').glob('*.output.md'))[0]

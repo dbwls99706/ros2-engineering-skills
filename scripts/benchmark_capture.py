@@ -24,6 +24,7 @@ the recorded ``harness_revision``.
 
 import argparse
 from datetime import datetime, timezone
+import fnmatch
 import hashlib
 import json
 import math
@@ -31,8 +32,10 @@ import os
 import platform
 import random
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import uuid
 
@@ -46,6 +49,10 @@ DEFAULT_SUITE = ROOT / 'evals' / 'benchmark_suite.json'
 CONDITIONS = ('on', 'off')
 STATUSES = ('completed', 'failed', 'timed_out')
 GRADES = ('pass', 'fail', 'abstain')
+# Files grade-sheet writes into its output directory; --force replaces only these.
+GENERATED_OUTPUTS = ('sheet-*.md', 'grades.json', 'key.json')
+# Version of the payload behind grading_sha256 in grades.json and key.json.
+BINDING_SCHEMA = 1
 CRITERION_LABEL = re.compile(r'C([1-9][0-9]*)\Z')
 ORDER_ALGORITHM = ('Shuffle the (case, trial) blocks with the seed; inside each block '
                    'assign on-first or off-first from a seeded, balanced list so the '
@@ -153,9 +160,27 @@ def load_manifest(exp_dir):
 
 
 def save_json(path, data):
-    tmp = path.with_name(path.name + '.tmp')
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=False) + '\n', encoding='utf-8')
-    os.replace(tmp, path)
+    """Write JSON through an unpredictable temporary name, then rename it into place.
+
+    mkstemp creates a fresh regular file exclusively, so a symbolic link planted
+    at a guessable name such as ``grades.json.tmp`` is never followed; the
+    target is only ever replaced by a complete file.
+    """
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
+    try:
+        mask = os.umask(0)
+        os.umask(mask)
+        os.fchmod(fd, 0o666 & ~mask)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps(data, indent=2, sort_keys=False) + '\n')
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def suite_for(manifest):
@@ -474,6 +499,45 @@ def key_entries(key):
             for rid, run in key.items()}
 
 
+def grading_entries(key):
+    """key_entries plus the hash of the answer shown under each blinded id."""
+    entries = key_entries(key)
+    for rid, run in key.items():
+        entries[rid]['output_sha256'] = run['output']['sha256']
+    return entries
+
+
+def grading_digest(manifest, key):
+    """Digest binding a grades file to one suite and one exact blinded answer set.
+
+    The payload names the suite (criteria) and every answer's bytes, so grades
+    recorded against another experiment, another suite revision, or a run that
+    reused session ids never match. One SHA-256 reveals nothing about which arm
+    produced an answer.
+    """
+    payload = {'binding_schema': BINDING_SCHEMA, 'suite_sha256': manifest['suite_sha256'],
+               'assignments': grading_entries(key)}
+    return sha256_bytes(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8'))
+
+
+def generated_outputs(out):
+    """List the generated files in ``out``; refuse before touching anything if one is not a regular file.
+
+    A symbolic link or directory under a generated name would otherwise be
+    skipped by the cleanup and then followed by the write that comes after it.
+    """
+    found = []
+    with os.scandir(out) as entries:
+        for entry in sorted(entries, key=lambda e: e.name):
+            if not any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in GENERATED_OUTPUTS):
+                continue
+            if entry.is_symlink() or not stat.S_ISREG(entry.stat(follow_symlinks=False).st_mode):
+                fail('Refusing to replace generated output %s: it is a symbolic link or not a '
+                     'regular file; remove it manually' % entry.name)
+            found.append(Path(entry.path))
+    return found
+
+
 def cmd_grade_sheet(args):
     exp_dir = Path(args.exp_dir).resolve()
     manifest = load_manifest(exp_dir)
@@ -482,12 +546,21 @@ def cmd_grade_sheet(args):
     load_order(exp_dir, manifest, suite)
     verified_capture(exp_dir, suite_path)
     out = Path(args.out)
-    if out.exists() and any(out.iterdir()) and not args.force:
-        fail('Output directory is not empty: %s. Re-running would overwrite the sheets and any '
-             'grades already recorded in grades.json; pass --force to replace them' % out)
+    if out.is_symlink():
+        fail('Output directory must not be a symbolic link: ' + str(out))
+    if out.exists() and not out.is_dir():
+        fail('Output path must be a directory: ' + str(out))
+    if out.is_dir() and any(out.iterdir()):
+        if not args.force:
+            fail('Output directory is not empty: %s. Re-running would overwrite the sheets and any '
+                 'grades already recorded in grades.json; pass --force to replace them' % out)
+        # Every generated path is checked before any is removed; unrelated files stay.
+        for stale in generated_outputs(out):
+            stale.unlink()
     out.mkdir(parents=True, exist_ok=True)
     key = blind_assignments(manifest, suite)
-    grades = {'schema_version': 1, 'values': list(GRADES), 'cases': {}}
+    binding = grading_digest(manifest, key)
+    grades = {'schema_version': 1, 'grading_sha256': binding, 'values': list(GRADES), 'cases': {}}
     for case in suite['cases']:
         ids = [rid for rid, run in key.items() if run['case_id'] == case['id']]
         labels = ['C%d' % (i + 1) for i in range(len(case['criteria']))]
@@ -506,6 +579,7 @@ def cmd_grade_sheet(args):
     save_json(out / 'grades.json', grades)
     save_json(out / 'key.json', {
         'warning': 'Do not give this file to graders; it unblinds the sheets.',
+        'grading_sha256': binding,
         'assignments': key_entries(key)})
     excluded = [slot_key(run) for run in manifest['runs'] if not gradable(run)]
     print(json.dumps({'sheets': len(suite['cases']), 'gradable_runs': len(key),
@@ -546,14 +620,27 @@ def cmd_score(args):
     verified_capture(exp_dir, suite_path)
     grades_path = Path(args.grades)
     grades = vec.parse_object(vec.read_regular_bytes(grades_path))
+    if grades.get('schema_version') != 1:
+        fail('grades.json schema_version must be 1')
     key_path = Path(args.key) if args.key else grades_path.with_name('key.json')
-    key = vec.parse_object(vec.read_regular_bytes(key_path)).get('assignments')
+    key_document = vec.parse_object(vec.read_regular_bytes(key_path))
+    key = key_document.get('assignments')
     # The key is never trusted: it must equal the assignments re-derived from
     # this experiment's manifest and seed, so a swapped or foreign key cannot
     # flip ON and OFF.
-    if key != key_entries(blind_assignments(manifest, suite)):
+    derived = blind_assignments(manifest, suite)
+    if key != key_entries(derived):
         fail('key.json does not match the blinded assignments derived from this experiment; '
              'regenerate it with grade-sheet or pass the original with --key')
+    # The grades are bound to the suite and the exact answers the grader saw, so
+    # a grades file from another experiment is refused even with a valid key.
+    expected = grading_digest(manifest, derived)
+    if grades.get('grading_sha256') != expected:
+        fail("grades.json does not belong to this experiment: its grading_sha256 "
+             "does not match the blinded answer set derived here; "
+             "grade this experiment's own sheets")
+    if key_document.get('grading_sha256') != expected:
+        fail('key.json grading_sha256 does not match this experiment; regenerate it with grade-sheet')
     by_slot = {slot_key(run): run for run in manifest['runs']}
     rid_by_slot = {(a['case_id'], a['trial'], a['condition']): rid for rid, a in key.items()}
     pairs = []
@@ -670,7 +757,9 @@ def build_parser():
     sheet.add_argument('exp_dir')
     sheet.add_argument('--out', required=True)
     sheet.add_argument('--force', action='store_true',
-                       help='overwrite a non-empty output directory, discarding recorded grades')
+                       help='replace the generated files (sheet-*.md, grades.json, key.json) in a '
+                            'non-empty output directory, discarding recorded grades; unrelated '
+                            'files are left in place')
     sheet.set_defaults(func=cmd_grade_sheet)
 
     score = sub.add_parser('score', help='combine grades into paired outcomes')

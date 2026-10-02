@@ -27,7 +27,12 @@ Plugin ON/OFF benchmark capture and blinded evaluation workflow:
   the integrity verifier first and read answers only through hash-checked,
   bundle-contained paths; `grade-sheet` refuses to overwrite recorded grades
   without `--force`; `score` rejects a `key.json` that does not equal the
-  assignments re-derived from the manifest and seed.
+  assignments re-derived from the manifest and seed. `grades.json` is bound to
+  the suite and the exact blinded answer set it graded by `grading_sha256`,
+  which `score` recomputes and enforces; `grade-sheet` refuses symbolic-link
+  output paths, `--force` replaces only its generated files and refuses
+  non-regular ones before removing anything, and JSON files are written through
+  unpredictable temporary names.
 - Preregister `critical_criteria` labels per case in `evals/benchmark_suite.json`
   and validate the optional `skill_revision_binding` manifest field.
 
