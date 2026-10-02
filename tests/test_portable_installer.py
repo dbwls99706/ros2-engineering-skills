@@ -346,12 +346,44 @@ def test_source_commit_records_head_and_bundle_scoped_dirty(source, fake_git):
     manifest = manifest_of(target(source))
     assert manifest['source_commit'] == 'a' * 40 and manifest['source_dirty'] is True
     status = next(call for call in fake_git['calls'] if call[3] == 'status')
-    assert status[4:6] == ['--porcelain', '--']
-    assert tuple(status[6:]) == installer.BUNDLE
+    assert status[4:7] == ['--porcelain', '--ignored=matching', '--']
+    assert tuple(status[7:]) == installer.BUNDLE
 
 
 def test_clean_checkout_is_not_dirty(source, fake_git):
     assert installer.source_commit(source) == ('a' * 40, False)
+
+
+@pytest.mark.parametrize('porcelain,dirty', [
+    ('!! evals/history/2026-10.jsonl\n', True),      # ignored by git but copied
+    ('?? references/local-note.md\n', True),          # untracked and copied
+    (' M README.md\n', True),
+    ('!! scripts/__pycache__/\n', False),            # never copied
+    ('!! references/test.md.swp\n', False),          # editor backup, never copied
+    ('!! docs/notes.md~\n', False),
+])
+def test_dirty_follows_the_bytes_that_get_copied(source, fake_git, porcelain, dirty):
+    fake_git['porcelain'] = porcelain
+    assert installer.source_commit(source) == ('a' * 40, dirty)
+
+
+def test_editor_backups_are_not_installed(source):
+    (source / 'references/test.md~').write_text('backup')
+    (source / 'references/.test.md.swp').write_text('swap')
+    installer.install(source, target(source))
+    assert not (target(source) / 'references/test.md~').exists()
+    assert not (target(source) / 'references/.test.md.swp').exists()
+    assert 'references/test.md~' not in manifest_of(target(source))['files']
+
+
+def test_symlink_under_an_ignored_name_is_still_drift(source, capsys):
+    dst = target(source)
+    installer.install(source, dst)
+    outside = source.parent / 'cache_outside'
+    outside.mkdir()
+    (dst / '.mypy_cache').symlink_to(outside, target_is_directory=True)
+    code, report = verify(dst, capsys)
+    assert code == 1 and report['symlinks'] == ['.mypy_cache']
 
 
 @pytest.mark.parametrize('head,returncode', [('a' * 40, 1), ('short', 0)])

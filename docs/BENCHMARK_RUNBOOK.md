@@ -213,6 +213,14 @@ the transcripts are authentic; a reviewer must still inspect the traces
 python3 scripts/benchmark_capture.py grade-sheet /path/exp-2026-10 --out /path/exp-2026-10-grading
 ```
 
+`grade-sheet` runs the integrity verifier first and refuses a capture that is
+incomplete, has an artifact whose hash no longer matches the manifest, or whose
+manifest points outside the experiment directory; every answer is read through
+the same hash-checked path, so an output edited after capture is never shown to
+a grader. It also refuses a non-empty output directory, because re-running it
+would overwrite the sheets and any grades already recorded in `grades.json`;
+pass `--force` only when you intend to discard them.
+
 Give the grader only `sheet-<case>.md` and `grades.json`. Keep `key.json`
 away from them; it unblinds the sheets. Sheets contain only completed answers
 without contamination, shuffled per case under blinded ids. Failed, timed-out,
@@ -229,6 +237,11 @@ the suite; no other sentence is promoted to critical after the fact.
 ```bash
 python3 scripts/benchmark_capture.py score /path/exp-2026-10 --grades /path/exp-2026-10-grading/grades.json
 ```
+
+`score` re-runs the integrity verifier and re-derives the blinded assignments
+from the manifest and seed. `key.json` is never trusted on its own: a key whose
+arms were swapped, that belongs to another experiment, or that is missing an
+assignment is rejected, so the key cannot flip `on_better` and `off_better`.
 
 For each `(case, trial)` pair and each criterion the report gives one of
 `on_better`, `off_better`, `tie`, or `unknown`:

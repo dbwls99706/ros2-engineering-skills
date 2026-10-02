@@ -26,6 +26,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 import platform
 import random
@@ -354,8 +355,8 @@ def cmd_add_run(args):
     else:
         if not args.error or not args.error.strip():
             fail('--error is required for a failed or timed_out run')
-    if args.duration is not None and not args.duration >= 0:
-        fail('--duration must be nonnegative')
+    if args.duration is not None and not (math.isfinite(args.duration) and args.duration >= 0):
+        fail('--duration must be a finite nonnegative number')
     session_id = args.session_id or str(uuid.uuid4())
     if any(run['session_id'] == session_id for run in manifest['runs']):
         fail('session_id already used; each run needs a fresh session')
@@ -454,13 +455,36 @@ def blind_assignments(manifest, suite):
     return key
 
 
+def verified_capture(exp_dir, suite_path):
+    """Refuse to grade or score anything the integrity verifier does not accept.
+
+    The verifier checks that every artifact path stays inside the experiment,
+    that every artifact is a regular file whose SHA-256 matches the manifest,
+    and that every preregistered slot is present.
+    """
+    report = vec.validate(manifest_path(exp_dir), suite_path)
+    if report['status'] != 'integrity_valid':
+        fail('Capture failed integrity verification: ' + '; '.join(report['errors']))
+    return report
+
+
+def key_entries(key):
+    return {rid: {'case_id': run['case_id'], 'trial': run['trial'],
+                  'condition': run['condition'], 'session_id': run['session_id']}
+            for rid, run in key.items()}
+
+
 def cmd_grade_sheet(args):
     exp_dir = Path(args.exp_dir).resolve()
     manifest = load_manifest(exp_dir)
     verify_harness(manifest)
-    suite, _ = suite_for(manifest)
+    suite, suite_path = suite_for(manifest)
     load_order(exp_dir, manifest, suite)
+    verified_capture(exp_dir, suite_path)
     out = Path(args.out)
+    if out.exists() and any(out.iterdir()) and not args.force:
+        fail('Output directory is not empty: %s. Re-running would overwrite the sheets and any '
+             'grades already recorded in grades.json; pass --force to replace them' % out)
     out.mkdir(parents=True, exist_ok=True)
     key = blind_assignments(manifest, suite)
     grades = {'schema_version': 1, 'values': list(GRADES), 'cases': {}}
@@ -474,16 +498,15 @@ def cmd_grade_sheet(args):
         lines += ['- %s: %s' % (label, text) for label, text in zip(labels, case['criteria'])]
         lines += ['', '## Answers', '']
         for rid in ids:
-            body = (exp_dir / key[rid]['output']['path']).read_text(encoding='utf-8')
+            # Re-verify path containment and the recorded hash at read time.
+            body = vec.artifact(exp_dir, key[rid]['output'], allow_empty=True).read_text(encoding='utf-8')
             lines += ['### ' + rid, '', body.rstrip('\n') or '(empty answer)', '', '---', '']
         (out / ('sheet-' + case['id'] + '.md')).write_text('\n'.join(lines), encoding='utf-8')
         grades['cases'][case['id']] = {rid: {label: None for label in labels} for rid in ids}
     save_json(out / 'grades.json', grades)
     save_json(out / 'key.json', {
         'warning': 'Do not give this file to graders; it unblinds the sheets.',
-        'assignments': {rid: {'case_id': run['case_id'], 'trial': run['trial'],
-                              'condition': run['condition'], 'session_id': run['session_id']}
-                        for rid, run in key.items()}})
+        'assignments': key_entries(key)})
     excluded = [slot_key(run) for run in manifest['runs'] if not gradable(run)]
     print(json.dumps({'sheets': len(suite['cases']), 'gradable_runs': len(key),
                       'excluded_runs': [list(k) for k in excluded],
@@ -518,12 +541,19 @@ def cmd_score(args):
     exp_dir = Path(args.exp_dir).resolve()
     manifest = load_manifest(exp_dir)
     verify_harness(manifest)
-    suite, _ = suite_for(manifest)
+    suite, suite_path = suite_for(manifest)
     load_order(exp_dir, manifest, suite)
+    verified_capture(exp_dir, suite_path)
     grades_path = Path(args.grades)
     grades = vec.parse_object(vec.read_regular_bytes(grades_path))
     key_path = Path(args.key) if args.key else grades_path.with_name('key.json')
-    key = vec.parse_object(vec.read_regular_bytes(key_path))['assignments']
+    key = vec.parse_object(vec.read_regular_bytes(key_path)).get('assignments')
+    # The key is never trusted: it must equal the assignments re-derived from
+    # this experiment's manifest and seed, so a swapped or foreign key cannot
+    # flip ON and OFF.
+    if key != key_entries(blind_assignments(manifest, suite)):
+        fail('key.json does not match the blinded assignments derived from this experiment; '
+             'regenerate it with grade-sheet or pass the original with --key')
     by_slot = {slot_key(run): run for run in manifest['runs']}
     rid_by_slot = {(a['case_id'], a['trial'], a['condition']): rid for rid, a in key.items()}
     pairs = []
@@ -639,6 +669,8 @@ def build_parser():
     sheet = sub.add_parser('grade-sheet', help='write blinded grading sheets')
     sheet.add_argument('exp_dir')
     sheet.add_argument('--out', required=True)
+    sheet.add_argument('--force', action='store_true',
+                       help='overwrite a non-empty output directory, discarding recorded grades')
     sheet.set_defaults(func=cmd_grade_sheet)
 
     score = sub.add_parser('score', help='combine grades into paired outcomes')

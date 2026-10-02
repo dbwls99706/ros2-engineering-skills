@@ -1,5 +1,6 @@
 """Synthetic experiment fixtures only; nothing here is a model benchmark capture."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -315,6 +316,12 @@ class TestAddRun:
         assert list((experiment / 'runs').iterdir()) == []
         assert manifest(experiment)['runs'] == []
 
+    @pytest.mark.parametrize('value', ['inf', 'nan'])
+    def test_duration_must_be_finite(self, experiment, tmp_path, capsys, value):
+        assert add_next(experiment, tmp_path, extra=['--duration', value]) == 2
+        assert 'finite' in capsys.readouterr().err
+        assert manifest(experiment)['runs'] == []
+
     def test_failed_run_needs_error_and_keeps_null_output(self, experiment, tmp_path, capsys):
         assert add_next(experiment, tmp_path, output=False, extra=['--status', 'timed_out']) == 2
         assert add_next(experiment, tmp_path, output=False,
@@ -350,6 +357,100 @@ class TestGradeSheetAndScore:
         assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 0
         capsys.readouterr()
         return out
+
+    def test_grade_sheet_refuses_an_incomplete_capture(self, experiment, tmp_path, capsys):
+        case, trial, condition = next_slot(experiment)
+        loaded = 'true' if condition == 'on' else 'false'
+        assert add(experiment, tmp_path, case, trial, condition,
+                   extra=['--skill-loaded', loaded], capsys=capsys) == 0
+        out = tmp_path / 'sheets'
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 2
+        err = capsys.readouterr().err
+        assert 'integrity verification' in err and 'Missing paired runs' in err
+        assert not out.exists()
+
+    def test_grade_sheet_refuses_an_output_edited_after_capture(self, experiment, tmp_path, capsys):
+        fill_all(experiment, tmp_path, capsys)
+        edited = sorted((experiment / 'runs').glob('*.output.md'))[0]
+        edited.write_text('edited after capture\n', encoding='utf-8')
+        out = tmp_path / 'sheets'
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 2
+        assert 'hash mismatch' in capsys.readouterr().err
+        assert not out.exists()
+
+    @pytest.mark.parametrize('escape', ['relative', 'absolute'])
+    def test_grade_sheet_never_reads_outside_the_experiment(self, experiment, tmp_path, capsys, escape):
+        fill_all(experiment, tmp_path, capsys)
+        outside = tmp_path / 'outside.md'
+        outside.write_text('OUTSIDE SECRET TEXT\n', encoding='utf-8')
+        data = manifest(experiment)
+        run = next(r for r in data['runs'] if r['output'] is not None)
+        # A matching hash isolates the path check from the hash check.
+        run['output'] = {'path': '../outside.md' if escape == 'relative' else str(outside),
+                         'sha256': hashlib.sha256(outside.read_bytes()).hexdigest()}
+        (experiment / 'capture.json').write_text(json.dumps(data), encoding='utf-8')
+        out = tmp_path / 'sheets'
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 2
+        err = capsys.readouterr().err
+        assert 'integrity verification' in err and 'inside their bundle' in err
+        assert not out.exists()
+
+    def test_grade_sheet_does_not_overwrite_recorded_grades(self, experiment, tmp_path, capsys):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        grades_path = out / 'grades.json'
+        grades = json.loads(grades_path.read_text(encoding='utf-8'))
+        case_id, rows = next(iter(grades['cases'].items()))
+        rid = next(iter(rows))
+        grades['cases'][case_id][rid]['C1'] = 'pass'
+        grades_path.write_text(json.dumps(grades), encoding='utf-8')
+        recorded = grades_path.read_bytes()
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 2
+        assert 'not empty' in capsys.readouterr().err
+        assert grades_path.read_bytes() == recorded
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out), '--force']) == 0
+        capsys.readouterr()
+        fresh = json.loads(grades_path.read_text(encoding='utf-8'))
+        assert fresh['cases'][case_id][rid]['C1'] is None
+
+    def test_score_rejects_a_key_that_does_not_match_the_experiment(self, experiment, tmp_path, capsys):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        key_path = out / 'key.json'
+        original = json.loads(key_path.read_text(encoding='utf-8'))
+        grades = str(out / 'grades.json')
+
+        def score():
+            code = bench.main(['score', str(experiment), '--grades', grades])
+            return code, capsys.readouterr()
+
+        assert score()[0] == 0
+        # Swap the arms of one pair.
+        swapped = json.loads(json.dumps(original))
+        by_slot = {(a['case_id'], a['trial'], a['condition']): rid for rid, a in swapped['assignments'].items()}
+        on_rid, off_rid = by_slot[('qos-compatibility', 1, 'on')], by_slot[('qos-compatibility', 1, 'off')]
+        swapped['assignments'][on_rid]['condition'] = 'off'
+        swapped['assignments'][off_rid]['condition'] = 'on'
+        key_path.write_text(json.dumps(swapped), encoding='utf-8')
+        code, captured = score()
+        assert code == 2 and 'does not match the blinded assignments' in captured.err
+        # A key from a different experiment (one session id differs).
+        foreign = json.loads(json.dumps(original))
+        foreign['assignments'][on_rid]['session_id'] = 'other-experiment'
+        key_path.write_text(json.dumps(foreign), encoding='utf-8')
+        assert score()[0] == 2
+        # A key missing an assignment.
+        partial = json.loads(json.dumps(original))
+        del partial['assignments'][on_rid]
+        key_path.write_text(json.dumps(partial), encoding='utf-8')
+        assert score()[0] == 2
+        key_path.write_text(json.dumps(original), encoding='utf-8')
+        assert score()[0] == 0
+
+    def test_score_refuses_a_capture_edited_after_grading(self, experiment, tmp_path, capsys):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        edited = sorted((experiment / 'runs').glob('*.output.md'))[0]
+        edited.write_text('edited after grading\n', encoding='utf-8')
+        assert bench.main(['score', str(experiment), '--grades', str(out / 'grades.json')]) == 2
+        assert 'hash mismatch' in capsys.readouterr().err
 
     def test_sheets_hide_condition_filenames_and_sessions(self, experiment, tmp_path, capsys):
         out = self.graded_experiment(experiment, tmp_path, capsys)
@@ -515,26 +616,33 @@ class TestErrorPaths:
                            '--skill-loaded', loaded]) == 0
         assert bench.main(['status', str(experiment)]) == 0
         assert '"recorded": 1' in capsys.readouterr().out
+        # An empty completed answer is a valid schema-2 artifact; grading needs the full capture.
+        fill_all(experiment, tmp_path, capsys)
         assert bench.main(['grade-sheet', str(experiment), '--out', str(tmp_path / 'g')]) == 0
         sheet = (tmp_path / 'g' / ('sheet-' + case + '.md')).read_text(encoding='utf-8')
         assert '(empty answer)' in sheet
 
-    def test_score_uses_explicit_key_and_reports_missing_slots(self, experiment, tmp_path, capsys):
+    def test_score_refuses_an_incomplete_capture_and_accepts_an_explicit_key(self, experiment, tmp_path, capsys):
         case, trial, condition = next_slot(experiment)
         loaded = 'true' if condition == 'on' else 'false'
         assert add_next(experiment, tmp_path, extra=['--skill-loaded', loaded], capsys=capsys) == 0
         out = tmp_path / 'g'
-        assert bench.main(['grade-sheet', str(experiment), '--out', str(out)]) == 0
+        (out).mkdir()
+        (out / 'grades.json').write_text('{"schema_version": 1, "cases": {}}', encoding='utf-8')
+        (out / 'key.json').write_text('{"assignments": {}}', encoding='utf-8')
+        assert bench.main(['score', str(experiment), '--grades', str(out / 'grades.json')]) == 2
+        assert 'Missing paired runs' in capsys.readouterr().err
+        fill_all(experiment, tmp_path, capsys)
+        assert bench.main(['grade-sheet', str(experiment), '--out', str(out), '--force']) == 0
         capsys.readouterr()
         moved_key = tmp_path / 'elsewhere.json'
         moved_key.write_bytes((out / 'key.json').read_bytes())
+        (out / 'key.json').unlink()
         assert bench.main(['score', str(experiment), '--grades', str(out / 'grades.json'),
                            '--key', str(moved_key)]) == 0
         report = json.loads(capsys.readouterr().out)
         pair = next(p for p in report['pairs'] if p['case_id'] == case and p['trial'] == trial)
-        other = 'off' if condition == 'on' else 'on'
-        assert pair['execution_status'][condition] == 'completed'
-        assert pair['execution_status'][other] == 'missing'
+        assert pair['execution_status'] == {'on': 'completed', 'off': 'completed'}
         assert set(pair['criteria'].values()) == {'unknown'}
 
     def test_unreadable_manifest_exits_one(self, experiment, capsys):
