@@ -19,6 +19,8 @@ Options:
   --force        Replace an existing target
   --dry-run      Print the planned operation without changing files
   -h, --help     Show this help
+
+Symbolic-link targets are never replaced; pass the resolved path instead.
 USAGE
 }
 
@@ -72,7 +74,19 @@ case "$TARGET" in
     ;;
 esac
 
-if [[ -e "$TARGET" || -L "$TARGET" ]]; then
+if [[ -L "$TARGET" ]]; then
+  resolved="$(python3 - "$TARGET" <<'PY'
+import os
+import sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+  echo "error: target is a symbolic link to $resolved; refusing to replace it." >&2
+  echo "Re-run with --target $resolved to update the linked installation, or remove the link explicitly." >&2
+  exit 1
+fi
+
+if [[ -e "$TARGET" ]]; then
   if [[ "$FORCE" -ne 1 ]]; then
     echo "error: target already exists: $TARGET (use --force to replace it)" >&2
     exit 1
@@ -87,7 +101,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-if [[ -e "$TARGET" || -L "$TARGET" ]]; then
+if [[ -e "$TARGET" ]]; then
   rm -rf -- "$TARGET"
 fi
 mkdir -p -- "$(dirname -- "$TARGET")"

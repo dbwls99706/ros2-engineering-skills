@@ -72,6 +72,15 @@ def test_valid_bundle(bundle):
     assert result['scope'] == 'static packaging only'
 
 
+def test_skill_frontmatter_helper(bundle):
+    meta = contract.skill_frontmatter(bundle / 'SKILL.md')
+    assert meta['name'] == 'ros2-engineering-skills'
+    assert meta['metadata']['version'] == '1.3.0'
+    (bundle / 'SKILL.md').write_text('no frontmatter\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='frontmatter'):
+        contract.skill_frontmatter(bundle / 'SKILL.md')
+
+
 @pytest.mark.parametrize('text', ['no frontmatter', '\ufeff---\nname: test\n---\n',
                                   '---\n[]\n---\nbody', '---\nname: a\nname: b\n---\nbody',
                                   '---\n? [a,b]\n: c\n---\nbody', '---\nname: [\n---\nbody'])

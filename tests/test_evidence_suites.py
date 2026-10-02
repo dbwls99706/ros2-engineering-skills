@@ -18,6 +18,17 @@ def test_benchmark_cases_have_prompts_and_rubrics():
         assert len(case['criteria']) >= 3
 
 
+def test_benchmark_cases_preregister_critical_criteria():
+    suite = json.loads((ROOT / 'evals/benchmark_suite.json').read_text(encoding='utf-8'))
+    for case in suite['cases']:
+        assert 'critical_criteria' in case, case['id']
+        labels = case['critical_criteria']
+        assert isinstance(labels, list)
+        assert len(set(labels)) == len(labels)
+        valid = {'C%d' % (i + 1) for i in range(len(case['criteria']))}
+        assert set(labels) <= valid, (case['id'], labels)
+
+
 def test_trigger_suite_has_positive_negative_and_explicit_cases():
     suite = json.loads((ROOT / 'evals/trigger_cases.json').read_text(encoding='utf-8'))
     cases = suite['cases']

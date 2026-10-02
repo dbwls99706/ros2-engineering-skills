@@ -94,7 +94,7 @@ jobs:
               --cov-fail-under=90 2>&1 | tee pytest-output.log
       - name: Enforce individual validator coverage
         run: |
-          for module in skill_validate_hook skill_stop_hook claude_hook validate_skill install_skill verify_eval_capture measure_context; do
+          for module in skill_validate_hook skill_stop_hook claude_hook validate_skill install_skill verify_eval_capture benchmark_capture measure_context; do
             python -m coverage report --include="*/${module}.py" --fail-under=90
           done
       - name: Upload coverage
@@ -145,6 +145,34 @@ jobs:
           .\install.ps1 -Target $target -Force
           if (Test-Path -LiteralPath (Join-Path $target 'stale.txt')) {
             throw 'Force did not replace the existing target'
+          }
+      - name: Refuse to replace a reparse-point target
+        shell: pwsh
+        run: |
+          # A directory junction carries the ReparsePoint attribute without
+          # needing symbolic-link privileges on the runner.
+          $real = Join-Path $env:RUNNER_TEMP 'linked-real'
+          $link = Join-Path $env:RUNNER_TEMP 'linked/ros2-engineering-skills'
+          New-Item -ItemType Directory -Path $real -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $real 'marker.txt') -Value 'keep'
+          New-Item -ItemType Directory -Path (Split-Path -Parent $link) -Force | Out-Null
+          New-Item -ItemType Junction -Path $link -Target $real | Out-Null
+          $rejected = $false
+          try {
+            .\install.ps1 -Target $link -Force
+            throw 'Expected installer to reject the reparse point'
+          }
+          catch {
+            if ($_.Exception.Message -notmatch 'reparse point') { throw }
+            $rejected = $true
+          }
+          if (-not $rejected) { throw 'Reparse point was not rejected' }
+          $item = Get-Item -LiteralPath $link -Force
+          if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw 'Junction was replaced by a directory'
+          }
+          if ((Get-Content -LiteralPath (Join-Path $real 'marker.txt')) -ne 'keep') {
+            throw 'Linked target was modified'
           }
       - name: Exercise knowledge-only installation on Windows
         shell: pwsh
@@ -212,6 +240,8 @@ jobs:
           python scripts/qos_checker.py --version
           python scripts/qos_audit.py --version
           python scripts/launch_validator.py --version
+          python scripts/benchmark_capture.py --version
+          python scripts/install_skill.py --version
       - name: Validate plugin JSON
         run: |
           python -m json.tool .claude-plugin/plugin.json > /dev/null
