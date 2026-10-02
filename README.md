@@ -154,6 +154,17 @@ it stages the replacement before touching the old installation. It excludes
 Claude plugin manifests and hook registration intentionally. The portable files
 and manual validators do not require the Claude plugin.
 
+Every installation records `INSTALL_PROVENANCE.json`: the source version and
+Git commit, the installer version, and a SHA-256 digest of each installed file.
+`python3 scripts/install_skill.py --verify --client codex` reports whether the
+installation still matches that manifest (exit 0 only when clean). `--force`
+refuses to replace an installation that differs from its manifest or has none;
+add `--force --discard-local-changes` to replace it anyway. The manifest is an
+installation snapshot for detecting accidental or local drift, not a signed
+attestation: it cannot prove the absence of deliberate tampering, because the
+manifest and the files can be edited together. The installer never searches for
+custom installation locations; name them with `--target`.
+
 Codex's optional display and invocation policy live in `agents/openai.yaml`.
 Supported discovery paths, explicit invocation, remote-environment caveats, and
 what has actually been tested are documented in
@@ -161,15 +172,19 @@ what has actually been tested are documented in
 is not proof of a successful authenticated model run on every client version.
 
 The original `./install.sh` and `.\install.ps1` still support full-checkout
-copy/link installation, force replacement, and dry-run. A full checkout includes
-the Claude plugin manifest; it is not necessarily a knowledge-only installation
-when placed in Claude's skill directories. Prefer the new installer for that use.
+copy/link installation, force replacement, and dry-run. They write no provenance
+manifest, and they refuse to replace a target that is a symbolic link or reparse
+point, so a link shared by several clients is never split into a separate copy;
+pass the resolved path instead. A full checkout includes the Claude plugin
+manifest; it is not necessarily a knowledge-only installation when placed in
+Claude's skill directories. Prefer the new installer for that use.
 
 ### Verify installation and run tools
 
 ```bash
 python3 scripts/validate_skill.py --check-sources
 python3 scripts/validate_skill.py --root /path/to/ros2-engineering-skills --installed --portable
+python3 scripts/install_skill.py --verify --client codex
 python3 scripts/skill_validate_hook.py --file src/my_node.py
 python3 scripts/skill_validate_hook.py --command 'ros2 topic list'
 SKILL_WORKSPACE=/path/to/ros2_ws python3 scripts/skill_stop_hook.py

@@ -16,6 +16,20 @@ from urllib.parse import unquote, urlsplit
 FIELDS = {'name', 'description', 'license', 'compatibility', 'metadata',
           'allowed-tools'}
 NAME = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
+FRONTMATTER = re.compile(r'\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)', re.S)
+
+
+def split_frontmatter(text):
+    """Return (frontmatter object, body) for SKILL.md text."""
+    match = FRONTMATTER.match(text)
+    if not match:
+        raise ValueError('SKILL.md must start with YAML frontmatter')
+    return yaml_object(match.group(1)), text[match.end():]
+
+
+def skill_frontmatter(path):
+    """Parse the YAML frontmatter of a SKILL.md file with the validator's loader."""
+    return split_frontmatter(Path(path).read_text(encoding='utf-8'))[0]
 
 
 def yaml_object(text):
@@ -113,10 +127,7 @@ def validate(root, installed=False, sources=False, today=None, portable=False):
     metrics = {}
     try:
         text = bundled_file(root, 'SKILL.md').read_text(encoding='utf-8')
-        match = re.match(r'\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)', text, re.S)
-        if not match:
-            raise ValueError('SKILL.md must start with YAML frontmatter')
-        meta = yaml_object(match.group(1))
+        meta, body = split_frontmatter(text)
         if set(meta) - FIELDS:
             raise ValueError('Nonportable frontmatter fields: '
                              + ', '.join(sorted(set(meta) - FIELDS)))
@@ -141,7 +152,6 @@ def validate(root, installed=False, sources=False, today=None, portable=False):
             isinstance(k, str) and isinstance(v, str) for k, v in custom.items()
         ):
             raise ValueError('metadata must map strings to strings')
-        body = text[match.end():]
         if not body.strip():
             raise ValueError('Skill instructions are empty')
         metrics.update(lines=len(text.splitlines()), body_bytes=len(body.encode('utf-8')))
