@@ -1,6 +1,6 @@
 # ros2-engineering-skills
 
-Source version: **1.6.2**. See [release notes](CHANGELOG.md#162---2026-09-30) and
+Source version: **1.7.0**. See [release notes](CHANGELOG.md#170---2026-10-02) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
