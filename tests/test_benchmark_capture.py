@@ -716,6 +716,71 @@ class TestGradeSheetAndScore:
         assert summary['contaminated_runs'] == {'on': 1, 'off': 0}
         assert summary['criterion_outcomes']['on_better'] == 1
 
+    @pytest.mark.parametrize('mutation', [
+        'cases_list', 'case_rows_list', 'row_deleted', 'criterion_deleted', 'criterion_added',
+        'row_list', 'values_changed', 'case_deleted', 'row_moved'])
+    def test_score_rejects_malformed_grades(self, experiment, tmp_path, capsys, mutation):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        grades_path = out / 'grades.json'
+        grades = json.loads(grades_path.read_text(encoding='utf-8'))
+        case_id, rows = next(iter(grades['cases'].items()))
+        other_case = next(c for c in grades['cases'] if c != case_id)
+        rid = next(iter(rows))
+        expected = {
+            'cases_list': 'cases must be an object',
+            'case_rows_list': 'rows for %s must be an object' % case_id,
+            'row_deleted': 'do not match its blinded ids',
+            'criterion_deleted': 'criteria for %s/%s do not match' % (case_id, rid),
+            'criterion_added': 'criteria for %s/%s do not match' % (case_id, rid),
+            'row_list': 'row %s/%s must be an object' % (case_id, rid),
+            'values_changed': 'values must be',
+            'case_deleted': 'cases do not match the suite',
+            'row_moved': 'do not match its blinded ids',
+        }[mutation]
+        if mutation == 'cases_list':
+            grades['cases'] = []
+        elif mutation == 'case_rows_list':
+            grades['cases'][case_id] = []
+        elif mutation == 'row_deleted':
+            del grades['cases'][case_id][rid]
+        elif mutation == 'criterion_deleted':
+            del grades['cases'][case_id][rid]['C2']
+        elif mutation == 'criterion_added':
+            grades['cases'][case_id][rid]['C99'] = 'pass'
+        elif mutation == 'row_list':
+            grades['cases'][case_id][rid] = []
+        elif mutation == 'values_changed':
+            grades['values'] = ['pass', 'fail']
+        elif mutation == 'case_deleted':
+            del grades['cases'][case_id]
+        else:
+            grades['cases'][other_case][rid] = grades['cases'][case_id].pop(rid)
+        grades_path.write_text(json.dumps(grades), encoding='utf-8')
+        assert bench.main(['score', str(experiment), '--grades', str(grades_path)]) == 2
+        err = capsys.readouterr().err
+        assert expected in err, err
+        if mutation == 'row_deleted':
+            assert 'leave an ungraded cell null' in err
+
+    def test_null_cells_are_counted_as_ungraded(self, experiment, tmp_path, capsys):
+        out = self.graded_experiment(experiment, tmp_path, capsys)
+        grades_path = out / 'grades.json'
+        grades = json.loads(grades_path.read_text(encoding='utf-8'))
+        for rows in grades['cases'].values():
+            for row in rows.values():
+                for label in row:
+                    row[label] = 'pass'
+
+        def score():
+            grades_path.write_text(json.dumps(grades), encoding='utf-8')
+            assert bench.main(['score', str(experiment), '--grades', str(grades_path)]) == 0
+            return json.loads(capsys.readouterr().out)['summary']['ungraded_cells']
+
+        assert score() == 0
+        case_id, rows = next(iter(grades['cases'].items()))
+        grades['cases'][case_id][next(iter(rows))]['C1'] = None
+        assert score() == 1
+
     def test_score_rejects_invalid_grade_value(self, experiment, tmp_path, capsys):
         out = self.graded_experiment(experiment, tmp_path, capsys)
         grades = json.loads((out / 'grades.json').read_text(encoding='utf-8'))

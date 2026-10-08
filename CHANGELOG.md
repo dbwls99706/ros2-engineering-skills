@@ -32,7 +32,9 @@ Plugin ON/OFF benchmark capture and blinded evaluation workflow:
   which `score` recomputes and enforces; `grade-sheet` refuses symbolic-link
   output paths, `--force` replaces only its generated files and refuses
   non-regular ones before removing anything, and JSON files are written through
-  unpredictable temporary names.
+  unpredictable temporary names. `score` validates the structure of
+  `grades.json` (every case, blinded id, and criterion present; values
+  `pass`/`fail`/`abstain`/`null`) so a missing row cannot hide as an unknown.
 - Preregister `critical_criteria` labels per case in `evals/benchmark_suite.json`
   and validate the optional `skill_revision_binding` manifest field.
 

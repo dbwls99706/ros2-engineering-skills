@@ -611,6 +611,56 @@ def critical_failure(grade_row, critical):
     return any(v == 'fail' for v in verdicts)
 
 
+def set_mismatch(kind, found, expected):
+    """Describe a set difference for a structural refusal, or return None when equal."""
+    found, expected = set(found), set(expected)
+    if found == expected:
+        return None
+    parts = []
+    if expected - found:
+        parts.append('missing: ' + ', '.join(sorted(expected - found)))
+    if found - expected:
+        parts.append('unexpected: ' + ', '.join(sorted(found - expected)))
+    return '%s (%s)' % (kind, '; '.join(parts))
+
+
+def validate_grades(grades, suite, derived):
+    """Refuse a grades file whose shape does not match the suite and the blinded ids.
+
+    Every suite case, every blinded id of that case, and every criterion label
+    must be present; a value is pass, fail, abstain, or null. A deleted row or
+    criterion is a structural error, never a silent unknown, so ungraded cells
+    are counted exactly.
+    """
+    if grades.get('values') != list(GRADES):
+        fail('grades.json values must be %s' % json.dumps(list(GRADES)))
+    cases = grades.get('cases')
+    if not isinstance(cases, dict):
+        fail('grades.json cases must be an object keyed by case id')
+    problem = set_mismatch('grades.json cases do not match the suite', cases, [c['id'] for c in suite['cases']])
+    if problem:
+        fail(problem)
+    for case in suite['cases']:
+        rows = cases[case['id']]
+        if not isinstance(rows, dict):
+            fail('grades.json rows for %s must be an object keyed by blinded id' % case['id'])
+        rids = [rid for rid, run in derived.items() if run['case_id'] == case['id']]
+        problem = set_mismatch('grades.json rows for %s do not match its blinded ids' % case['id'], rows, rids)
+        if problem:
+            fail(problem + '; keep every row and leave an ungraded cell null instead of deleting it')
+        labels = ['C%d' % (i + 1) for i in range(len(case['criteria']))]
+        for rid, row in rows.items():
+            if not isinstance(row, dict):
+                fail('grades.json row %s/%s must be an object keyed by criterion label' % (case['id'], rid))
+            problem = set_mismatch('grades.json criteria for %s/%s do not match the suite' % (case['id'], rid),
+                                   row, labels)
+            if problem:
+                fail(problem)
+            for label, value in row.items():
+                if value is not None and value not in GRADES:
+                    fail('Invalid grade %r for %s/%s' % (value, rid, label))
+
+
 def cmd_score(args):
     exp_dir = Path(args.exp_dir).resolve()
     manifest = load_manifest(exp_dir)
@@ -641,6 +691,7 @@ def cmd_score(args):
              "grade this experiment's own sheets")
     if key_document.get('grading_sha256') != expected:
         fail('key.json grading_sha256 does not match this experiment; regenerate it with grade-sheet')
+    validate_grades(grades, suite, derived)
     by_slot = {slot_key(run): run for run in manifest['runs']}
     rid_by_slot = {(a['case_id'], a['trial'], a['condition']): rid for rid, a in key.items()}
     pairs = []
@@ -651,7 +702,7 @@ def cmd_score(args):
     for case in suite['cases']:
         critical = critical_labels(case)
         labels = ['C%d' % (i + 1) for i in range(len(case['criteria']))]
-        case_grades = grades.get('cases', {}).get(case['id'], {})
+        case_grades = grades['cases'][case['id']]
         for trial in range(1, suite['trials'] + 1):
             entry = {'case_id': case['id'], 'trial': trial, 'criteria': {},
                      'execution_status': {}, 'protocol_contamination': {},
@@ -671,13 +722,10 @@ def cmd_score(args):
                 if 'protocol_contamination' in run:
                     contaminated[condition] += 1
                 rid = rid_by_slot.get((case['id'], trial, condition))
-                row = case_grades.get(rid) if rid and gradable(run) else None
+                # validate_grades guaranteed a complete row for every gradable run.
+                row = case_grades[rid] if rid and gradable(run) else None
                 if row is not None:
-                    for label in labels:
-                        value = row.get(label)
-                        if value not in GRADES and value is not None:
-                            fail('Invalid grade %r for %s/%s' % (value, rid, label))
-                        ungraded_cells += int(value is None)
+                    ungraded_cells += sum(row[label] is None for label in labels)
                 rows[condition] = row
             for label in labels:
                 on_grade = rows['on'].get(label) if rows['on'] else None

@@ -256,7 +256,12 @@ arms were swapped, that belongs to another experiment, or that is missing an
 assignment is rejected, so the key cannot flip `on_better` and `off_better`.
 It then recomputes `grading_sha256` from the verified manifest and rejects a
 `grades.json` or `key.json` whose digest differs, so only grades recorded
-against this experiment's own sheets are ever combined with its key.
+against this experiment's own sheets are ever combined with its key. `score`
+also checks the structure of `grades.json`: every suite case, every blinded
+id, and every criterion label must be present, and a value must be `pass`,
+`fail`, `abstain`, or `null`. Leave an ungraded cell `null`; a deleted row or
+criterion is a structural error, not an unknown, so `ungraded_cells` in the
+report is exact.
 
 For each `(case, trial)` pair and each criterion the report gives one of
 `on_better`, `off_better`, `tie`, or `unknown`:
