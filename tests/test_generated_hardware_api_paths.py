@@ -118,10 +118,16 @@ def test_probe_wiring_records_the_cache_contract(tmp_path, outcome):
         (parent / 'cmake' / 'hw_api_probe' / 'main.cpp').write_text('int main() { return 0; }\n', encoding='utf-8')
         expected = MACRO + ':INTERNAL=1'
     else:
-        # The generated probe itself: without ROS its find_package() fails, like Humble's API would.
+        # The generated probe itself, with hardware_interface made undiscoverable so the
+        # failure path is deterministic whether or not ROS is installed on this machine.
         generated_probe = tmp_path / 'api_probe' / 'cmake' / 'hw_api_probe'
-        for name in ('CMakeLists.txt', 'main.cpp'):
-            (parent / 'cmake' / 'hw_api_probe' / name).write_bytes((generated_probe / name).read_bytes())
+        probe_cmake = (generated_probe / 'CMakeLists.txt').read_text(encoding='utf-8')
+        marker = 'find_package(hardware_interface QUIET)'
+        assert marker in probe_cmake
+        probe_cmake = probe_cmake.replace(
+            marker, 'set(CMAKE_DISABLE_FIND_PACKAGE_hardware_interface TRUE)\n' + marker, 1)
+        (parent / 'cmake' / 'hw_api_probe' / 'CMakeLists.txt').write_text(probe_cmake, encoding='utf-8')
+        (parent / 'cmake' / 'hw_api_probe' / 'main.cpp').write_bytes((generated_probe / 'main.cpp').read_bytes())
         expected = MACRO + ':INTERNAL='
     build = parent / 'build'
     run = subprocess.run([cmake_tool, '-S', str(parent), '-B', str(build)],
@@ -131,7 +137,7 @@ def test_probe_wiring_records_the_cache_contract(tmp_path, outcome):
     assert [line for line in cache if line.startswith(MACRO + ':INTERNAL=')] == [expected]
     assert (build / 'hw_api_probe.log').exists()
     if outcome == 'fails':
-        assert 'hardware_interface' in (build / 'hw_api_probe.log').read_text(encoding='utf-8')
+        assert 'was not found for the API probe' in (build / 'hw_api_probe.log').read_text(encoding='utf-8')
 
 
 def test_modern_path_never_uses_the_removed_api(tmp_path):
