@@ -913,40 +913,103 @@ ament_package()
     print(f"Created interfaces package: {pkg}")
 
 
-# ros2_control hardware component API probe. Compiled at configure time by the
-# generated CMakeLists.txt: Jazzy 4.x and Kilted 5.x still carry the deprecated
-# manual export methods, ros2_control 6.12 removed them (and the double*
-# Handle constructor), and Humble 2.x has only the manual ones. The probe uses
-# every framework-managed accessor the generated code relies on, so a build
-# either gets all of them or falls back to the manual export path.
-HW_API_PROBE_CMAKE = """include(CheckCXXSourceCompiles)
-set(CMAKE_REQUIRED_LIBRARIES
-  hardware_interface::hardware_interface rclcpp::rclcpp rclcpp_lifecycle::rclcpp_lifecycle)
-check_cxx_source_compiles([=[
+# ros2_control hardware component API probe. The generated CMakeLists.txt
+# compiles cmake/hw_api_probe (below) with try_compile() at configure time:
+# Jazzy 4.x and Kilted 5.x still carry the deprecated manual export methods,
+# ros2_control 6.12 removed them (and the double* Handle constructor), and
+# Humble 2.x has only the manual ones. The probe is a separate C and C++
+# project rather than check_cxx_source_compiles(): the ROS imported targets
+# need both languages enabled, and a C++-only scratch project fails on CMake
+# 4.x with "No known features for C compiler". Keeping the C++ out of the
+# CMake text also keeps ament_lint_cmake satisfied.
+HW_API_PROBE_CMAKE = """try_compile(HW_API_PROBE_COMPILED
+  ${CMAKE_CURRENT_BINARY_DIR}/hw_api_probe
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/hw_api_probe
+  HardwareApiProbe
+  hw_api_probe
+  CMAKE_FLAGS
+    "-Dhardware_interface_DIR=${hardware_interface_DIR}"
+    "-Drclcpp_DIR=${rclcpp_DIR}"
+    "-Drclcpp_lifecycle_DIR=${rclcpp_lifecycle_DIR}"
+  OUTPUT_VARIABLE HW_API_PROBE_OUTPUT
+)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hw_api_probe.log "${HW_API_PROBE_OUTPUT}")
+if(HW_API_PROBE_COMPILED)
+  set(HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES 1 CACHE INTERNAL
+    "ros2_control exposes on_export_*_interfaces() and the handle accessors")
+  add_definitions(-DHARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES)
+  message(STATUS "ros2_control: framework-managed interfaces (on_export_*_interfaces)")
+else()
+  set(HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES "" CACHE INTERNAL
+    "ros2_control exposes only the manual export_*_interfaces() (Humble 2.x)")
+  message(STATUS "ros2_control: manual export_*_interfaces (Humble 2.x API)")
+endif()"""
+
+HW_API_PROBE_PROJECT = """# Compiled by the parent CMakeLists.txt through try_compile() to detect the
+# ros2_control hardware component API. It is never built into the package.
+# Every failure is a compile failure, never a configure error, so the parent
+# always receives a plain TRUE or FALSE.
+cmake_minimum_required(VERSION 3.8)
+project(HardwareApiProbe LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(hardware_interface QUIET)
+find_package(rclcpp QUIET)
+find_package(rclcpp_lifecycle QUIET)
+
+add_executable(hw_api_probe main.cpp)
+if(hardware_interface_FOUND AND rclcpp_FOUND AND rclcpp_lifecycle_FOUND)
+  target_link_libraries(hw_api_probe PRIVATE
+    hardware_interface::hardware_interface
+    rclcpp::rclcpp
+    rclcpp_lifecycle::rclcpp_lifecycle
+  )
+else()
+  target_compile_definitions(hw_api_probe PRIVATE HW_API_PROBE_MISSING_DEPENDENCIES)
+endif()
+"""
+
+# Every framework-managed accessor the generated code relies on must exist with
+# these signatures, or the manual export path is built instead.
+HW_API_PROBE_SOURCE = """
+#ifdef HW_API_PROBE_MISSING_DEPENDENCIES
+#error "ros2_control, rclcpp, or rclcpp_lifecycle was not found for the API probe"
+#endif
+
 #include <vector>
+
 #include <hardware_interface/system_interface.hpp>
-class Probe : public hardware_interface::SystemInterface {
+
+// Configure-time probe for the framework-managed hardware component API.
+// It is compiled, never linked into the package or executed.
+class HardwareApiProbe : public hardware_interface::SystemInterface
+{
 public:
   std::vector<hardware_interface::StateInterface::ConstSharedPtr>
-  on_export_state_interfaces() override { return {}; }
+  on_export_state_interfaces() override
+  {
+    return {};
+  }
+
   bool uses_handle_accessors()
   {
     const auto & state = get_state_interface_handle("joint/position");
     const auto & command = get_command_interface_handle("joint/position");
     double value = 0.0;
-    return set_state(state, value, false) && get_command(command, value, false) &&
-           set_command(command, value, false);
+    const bool state_set = set_state(state, value, false);
+    const bool command_read = get_command(command, value, false);
+    const bool command_set = set_command(command, value, false);
+    return state_set && command_read && command_set;
   }
 };
-int main() { return 0; }
-]=] HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES)
-unset(CMAKE_REQUIRED_LIBRARIES)
-if(HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES)
-  add_definitions(-DHARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES)
-  message(STATUS "ros2_control: framework-managed interfaces (on_export_*_interfaces)")
-else()
-  message(STATUS "ros2_control: manual export_*_interfaces (Humble 2.x API)")
-endif()"""
+
+int main()
+{
+  return 0;
+}
+"""
 
 HW_HEADER_MODERN_MEMBERS = """#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
   // Framework-managed interfaces (ros2_control >= 4.x): the handles are looked
@@ -1057,12 +1120,17 @@ def create_hardware_interface_package(
         pkg / "src",
         pkg / "config",
         pkg / "test",
+        pkg / "cmake" / "hw_api_probe",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 
     cpp_header = _copyright_cpp(maintainer_name)
     class_name = _class_name(name)
+
+    # --- configure-time ros2_control API probe (see HW_API_PROBE_CMAKE) ---
+    _write(pkg / "cmake" / "hw_api_probe" / "CMakeLists.txt", HW_API_PROBE_PROJECT)
+    _write(pkg / "cmake" / "hw_api_probe" / "main.cpp", cpp_header + HW_API_PROBE_SOURCE)
 
     # --- CMakeLists.txt ---
     _write(pkg / "CMakeLists.txt", f"""cmake_minimum_required(VERSION 3.8)
@@ -1085,9 +1153,11 @@ if(hardware_interface_VERSION VERSION_GREATER_EQUAL "6.0.0")
   add_definitions(-DHARDWARE_INTERFACE_HAS_PARAMS_API)
 endif()
 
-# Detect the hardware component API by compiling against it, not by version:
-# Jazzy 4.x/Kilted 5.x still carry the deprecated manual export methods,
-# ros2_control 6.12 removed them, and Humble 2.x has only the manual ones.
+# Detect the hardware component API by compiling cmake/hw_api_probe, not by
+# version: Jazzy 4.x/Kilted 5.x still carry the deprecated manual export
+# methods, ros2_control 6.12 removed them, and Humble 2.x has only the manual
+# ones. The probe is its own C and C++ project because the ROS imported
+# targets need both languages enabled.
 {HW_API_PROBE_CMAKE}
 
 add_library(${{PROJECT_NAME}} SHARED

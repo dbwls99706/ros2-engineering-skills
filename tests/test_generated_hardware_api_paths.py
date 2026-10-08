@@ -62,16 +62,76 @@ def method_body(source, name):
 
 def test_cmake_probes_the_api_instead_of_comparing_versions(tmp_path):
     _, _, cmake = generated(tmp_path)
-    assert 'check_cxx_source_compiles(' in cmake
-    assert 'on_export_state_interfaces() override' in cmake
+    probe_dir = tmp_path / 'api_probe' / 'cmake' / 'hw_api_probe'
+    probe_cmake = (probe_dir / 'CMakeLists.txt').read_text(encoding='utf-8')
+    probe_source = (probe_dir / 'main.cpp').read_text(encoding='utf-8')
+    # A separate C and C++ project: the ROS imported targets need both languages, and a
+    # C++-only check_cxx_source_compiles() scratch project fails on CMake 4.x.
+    assert 'try_compile(HW_API_PROBE_COMPILED' in cmake
+    assert '${CMAKE_CURRENT_SOURCE_DIR}/cmake/hw_api_probe' in cmake
+    assert 'check_cxx_source_compiles' not in cmake
+    assert 'project(HardwareApiProbe LANGUAGES C CXX)' in probe_cmake
+    assert 'hardware_interface::hardware_interface' in probe_cmake
+    assert 'on_export_state_interfaces() override' in probe_source
     # The probe exercises every framework-managed accessor the source relies on.
     for accessor in ('get_state_interface_handle(', 'get_command_interface_handle(',
                      'set_state(state, value, false)', 'get_command(command, value, false)',
                      'set_command(command, value, false)'):
-        assert accessor in cmake, accessor
+        assert accessor in probe_source, accessor
+    assert probe_source.startswith('// Copyright')
+    # No C++ inside the CMake text, and every CMake line is 2-space indented and short.
+    for path, text in (('CMakeLists.txt', cmake), ('cmake/hw_api_probe/CMakeLists.txt', probe_cmake)):
+        for number, line in enumerate(text.splitlines(), 1):
+            indent = len(line) - len(line.lstrip(' '))
+            assert indent % 2 == 0 and len(line) <= 100, '%s:%d: %r' % (path, number, line)
+    # The cache contract the container gates assert per distro.
+    assert 'set(%s 1 CACHE INTERNAL' % MACRO in cmake
+    assert 'set(%s "" CACHE INTERNAL' % MACRO in cmake
     assert 'add_definitions(-D%s)' % MACRO in cmake
     assert 'set(CMAKE_CXX_STANDARD 17)' in cmake
-    assert 'hardware_interface_VERSION VERSION_GREATER_EQUAL' not in cmake.split('check_cxx_source_compiles')[1]
+    assert 'hardware_interface_VERSION VERSION_GREATER_EQUAL' not in cmake.split('try_compile(')[1]
+
+
+def probe_block(cmake):
+    start = cmake.index('try_compile(HW_API_PROBE_COMPILED')
+    end = cmake.index('endif()', start) + len('endif()')
+    return cmake[start:end] + '\n'
+
+
+@pytest.mark.parametrize('outcome', ['compiles', 'fails'])
+def test_probe_wiring_records_the_cache_contract(tmp_path, outcome):
+    """Run the real try_compile() block with plain CMake; ROS is not needed to prove the wiring."""
+    cmake_tool = shutil.which('cmake')
+    if cmake_tool is None:
+        pytest.skip('cmake is required for the probe wiring check')
+    _, _, cmake = generated(tmp_path)
+    parent = tmp_path / 'parent'
+    (parent / 'cmake' / 'hw_api_probe').mkdir(parents=True)
+    (parent / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.8)\nproject(Parent LANGUAGES C CXX)\n' + probe_block(cmake),
+        encoding='utf-8')
+    if outcome == 'compiles':
+        # A probe that builds stands in for a ros2_control that offers the API.
+        (parent / 'cmake' / 'hw_api_probe' / 'CMakeLists.txt').write_text(
+            'cmake_minimum_required(VERSION 3.8)\nproject(HardwareApiProbe LANGUAGES C CXX)\n'
+            'add_executable(hw_api_probe main.cpp)\n', encoding='utf-8')
+        (parent / 'cmake' / 'hw_api_probe' / 'main.cpp').write_text('int main() { return 0; }\n', encoding='utf-8')
+        expected = MACRO + ':INTERNAL=1'
+    else:
+        # The generated probe itself: without ROS its find_package() fails, like Humble's API would.
+        generated_probe = tmp_path / 'api_probe' / 'cmake' / 'hw_api_probe'
+        for name in ('CMakeLists.txt', 'main.cpp'):
+            (parent / 'cmake' / 'hw_api_probe' / name).write_bytes((generated_probe / name).read_bytes())
+        expected = MACRO + ':INTERNAL='
+    build = parent / 'build'
+    run = subprocess.run([cmake_tool, '-S', str(parent), '-B', str(build)],
+                         capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stdout + run.stderr
+    cache = (build / 'CMakeCache.txt').read_text(encoding='utf-8').splitlines()
+    assert [line for line in cache if line.startswith(MACRO + ':INTERNAL=')] == [expected]
+    assert (build / 'hw_api_probe.log').exists()
+    if outcome == 'fails':
+        assert 'hardware_interface' in (build / 'hw_api_probe.log').read_text(encoding='utf-8')
 
 
 def test_modern_path_never_uses_the_removed_api(tmp_path):

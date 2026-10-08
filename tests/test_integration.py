@@ -661,11 +661,14 @@ class TestHardwareInterfacePackage:
         assert "find_package(hardware_interface REQUIRED)" in cmake
         assert "find_package(pluginlib REQUIRED)" in cmake
         assert "pluginlib_export_plugin_description_file" in cmake
-        # The hardware component API is probed by compiling against it, not by version.
-        assert "check_cxx_source_compiles(" in cmake
-        assert "on_export_state_interfaces() override" in cmake
+        # The hardware component API is probed by compiling a sub-project, not by version.
+        assert "try_compile(HW_API_PROBE_COMPILED" in cmake
+        assert "cmake/hw_api_probe" in cmake
         assert "HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES" in cmake
         assert "set(CMAKE_CXX_STANDARD 17)" in cmake
+        probe = tmp_path / "hw_test" / "cmake" / "hw_api_probe"
+        assert "project(HardwareApiProbe LANGUAGES C CXX)" in (probe / "CMakeLists.txt").read_text(encoding="utf-8")
+        assert "on_export_state_interfaces() override" in (probe / "main.cpp").read_text(encoding="utf-8")
 
     def test_header_has_system_interface(self, tmp_path):
         create_hardware_interface_package("hw_test", tmp_path)
