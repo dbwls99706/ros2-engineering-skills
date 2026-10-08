@@ -40,6 +40,22 @@ cd "$WS"
 colcon build --executor sequential --event-handlers console_direct+ \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
+echo '=== Generated hardware package: ros2_control API detected at configure time ==='
+# Humble (2.x) must take the manual export path; Jazzy 4.x and newer must take the
+# framework-managed path. A misdetection fails the distro instead of silently
+# building the deprecated code.
+probe="$(grep '^HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES:INTERNAL=' "$WS/build/test_hw_pkg/CMakeCache.txt" || true)"
+expected='HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES:INTERNAL=1'
+if [[ "$ROS_DISTRO" == humble ]]; then
+    expected='HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES:INTERNAL='
+fi
+printf '%s\n' "$probe" | tee -a /ws/ros-environment.txt
+if [[ "$probe" != "$expected" ]]; then
+    printf 'Unexpected ros2_control API detection for %s: %s (expected %s)\n' \
+        "$ROS_DISTRO" "$probe" "$expected" >&2
+    exit 1
+fi
+
 # Preserve the existing Rolling exclusion, without calling it a runtime pass.
 # Hardware plugin loading and interface tests still execute on every distro.
 test_pkgs=(test_cpp_pkg test_component_pkg test_iface_pkg test_hw_pkg)

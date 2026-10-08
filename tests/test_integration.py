@@ -661,6 +661,11 @@ class TestHardwareInterfacePackage:
         assert "find_package(hardware_interface REQUIRED)" in cmake
         assert "find_package(pluginlib REQUIRED)" in cmake
         assert "pluginlib_export_plugin_description_file" in cmake
+        # The hardware component API is probed by compiling against it, not by version.
+        assert "check_cxx_source_compiles(" in cmake
+        assert "on_export_state_interfaces() override" in cmake
+        assert "HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES" in cmake
+        assert "set(CMAKE_CXX_STANDARD 17)" in cmake
 
     def test_header_has_system_interface(self, tmp_path):
         create_hardware_interface_package("hw_test", tmp_path)
@@ -669,8 +674,12 @@ class TestHardwareInterfacePackage:
         assert "SystemInterface" in hpp
         assert "on_init" in hpp
         assert "on_configure" in hpp
-        assert "export_state_interfaces" in hpp
-        assert "export_command_interfaces" in hpp
+        # Manual export only on the Humble path; the framework-managed path caches handles.
+        legacy = hpp.split("#ifndef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES", 1)[1].split("#endif", 1)[0]
+        assert "export_state_interfaces" in legacy
+        assert "export_command_interfaces" in legacy
+        modern = hpp.split("#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES", 1)[1].split("#endif", 1)[0]
+        assert "position_commands_" in modern and "missed_state_updates_" in modern
         assert "read(" in hpp
         assert "write(" in hpp
 

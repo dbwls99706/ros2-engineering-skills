@@ -38,6 +38,20 @@ Plugin ON/OFF benchmark capture and blinded evaluation workflow:
 - Preregister `critical_criteria` labels per case in `evals/benchmark_suite.json`
   and validate the optional `skill_revision_binding` manifest field.
 
+Generator compatibility:
+
+- `scripts/create_package.py --type hardware_interface` detects the ros2_control
+  hardware component API when CMake configures the generated package, by
+  compiling a probe rather than comparing versions. On Jazzy 4.x and newer it
+  builds the framework-managed path: no `export_*_interfaces()` overrides,
+  handles cached in `on_configure()`, non-blocking handle access in `read()` /
+  `write()`, non-finite commands never taken as targets, and commands synced to
+  the measured position on activation. On Humble 2.x it keeps the manual export
+  path. ros2_control 6.12 (2026-10-07) removed the manual methods and the
+  `double*` handle constructor, which broke the Rolling integration job because
+  that image builds ros2_control from source; the container gates now assert the
+  detected path per distro.
+
 Installation provenance and local-drift protection:
 
 - `scripts/install_skill.py` writes `INSTALL_PROVENANCE.json` into every

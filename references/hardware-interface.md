@@ -86,6 +86,7 @@ When creating a `<ros2_control>` tag, you must specify the `type`:
 
 - **Humble → Jazzy**: Remove `export_*_interfaces()` overrides, delete manual `std::vector<double>` members, switch to `set_state()`/`get_command()` helpers, rename `get_state()`→`get_lifecycle_state()` for lifecycle methods
 - **Jazzy → Kilted**: Update `on_init()` to accept `HardwareComponentInterfaceParams`, replace `thread_priority` with `async_params`
+- **Kilted → ros2_control 6.12 (Rolling; Lyrical once its binaries reach 6.12)**: the deprecated manual export overrides and the `double*` handle constructor are gone; code that still overrides them no longer compiles (see the 6.12 note below)
 
 ## 2. Writing a hardware interface plugin
 
@@ -105,6 +106,16 @@ The framework provides maps to access interfaces:
 > - **Struct-based controller constructors:** Controllers now receive a `ControllerInterfaceParams` struct instead of individual arguments. Custom controllers must update their constructors accordingly.
 > - **Handle copy/move deleted:** `CommandInterface` and `StateInterface` handles can no longer be copied or moved. Store them by reference or pointer; passing by value will not compile.
 > - **Multiple data type support:** Interfaces are no longer limited to `double`. The framework supports additional data types (e.g., `bool`, `int`), enabling richer GPIO and sensor modeling without encoding everything as a `double`.
+
+**ros2_control 6.12 (Rolling, 2026-10-07; Lyrical once its binaries move to 6.12):**
+ros-controls/ros2_control #3610 removed the deprecated `export_state_interfaces()` /
+`export_command_interfaces()` overrides and the `Handle(prefix, interface, double*)`
+constructor; 6.11 still carries them. Code that still overrides them fails to compile
+(`marked 'override', but does not override`); Jazzy 4.49 and Kilted 5.19 still compile
+them with deprecation warnings. When one package must build on Humble and on 6.x,
+detect the API at configure time (compile a probe that overrides
+`on_export_state_interfaces()`) rather than comparing version numbers;
+`scripts/create_package.py --type hardware_interface` does this.
 
 ```cpp
 #include <hardware_interface/system_interface.hpp>
@@ -261,6 +272,16 @@ private:
 PLUGINLIB_EXPORT_CLASS(my_robot_driver::MyRobotHardware,
                        hardware_interface::SystemInterface)
 ```
+
+> **Real-time and initial-value notes for the example above.** The string helpers
+> `set_state(name, value)` / `get_command(name)` look the handle up by name on every
+> call and are documented upstream as not real-time safe. In `read()` / `write()`
+> cache `get_state_interface_handle()` / `get_command_interface_handle()` once in
+> `on_configure()` (interfaces exist from import, and `read()` also runs while
+> INACTIVE) and use the handle overloads with `wait = false`; a `false` return means
+> the value was not exchanged this cycle, not an error. Command interfaces start as
+> NaN until a controller writes them: treat a non-finite command as "no target", keep
+> the last valid one, and set it to the measured position in `on_activate()`.
 
 ### Humble (2.x) compatibility
 
