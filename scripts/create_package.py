@@ -913,6 +913,201 @@ ament_package()
     print(f"Created interfaces package: {pkg}")
 
 
+# ros2_control hardware component API probe. The generated CMakeLists.txt
+# compiles cmake/hw_api_probe (below) with try_compile() at configure time:
+# Jazzy 4.x and Kilted 5.x still carry the deprecated manual export methods,
+# ros2_control 6.12 removed them (and the double* Handle constructor), and
+# Humble 2.x has only the manual ones. The probe is a separate C and C++
+# project rather than check_cxx_source_compiles(): the ROS imported targets
+# need both languages enabled, and a C++-only scratch project fails on CMake
+# 4.x with "No known features for C compiler". Keeping the C++ out of the
+# CMake text also keeps ament_lint_cmake satisfied.
+HW_API_PROBE_CMAKE = """try_compile(HW_API_PROBE_COMPILED
+  ${CMAKE_CURRENT_BINARY_DIR}/hw_api_probe
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/hw_api_probe
+  HardwareApiProbe
+  hw_api_probe
+  CMAKE_FLAGS
+    "-Dhardware_interface_DIR=${hardware_interface_DIR}"
+    "-Drclcpp_DIR=${rclcpp_DIR}"
+    "-Drclcpp_lifecycle_DIR=${rclcpp_lifecycle_DIR}"
+  OUTPUT_VARIABLE HW_API_PROBE_OUTPUT
+)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hw_api_probe.log "${HW_API_PROBE_OUTPUT}")
+if(HW_API_PROBE_COMPILED)
+  set(HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES 1 CACHE INTERNAL
+    "ros2_control exposes on_export_*_interfaces() and the handle accessors")
+  add_definitions(-DHARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES)
+  message(STATUS "ros2_control: framework-managed interfaces (on_export_*_interfaces)")
+else()
+  set(HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES "" CACHE INTERNAL
+    "ros2_control exposes only the manual export_*_interfaces() (Humble 2.x)")
+  message(STATUS "ros2_control: manual export_*_interfaces (Humble 2.x API)")
+endif()"""
+
+HW_API_PROBE_PROJECT = """# Compiled by the parent CMakeLists.txt through try_compile() to detect the
+# ros2_control hardware component API. It is never built into the package.
+# Every failure is a compile failure, never a configure error, so the parent
+# always receives a plain TRUE or FALSE.
+cmake_minimum_required(VERSION 3.8)
+project(HardwareApiProbe LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(hardware_interface QUIET)
+find_package(rclcpp QUIET)
+find_package(rclcpp_lifecycle QUIET)
+
+add_executable(hw_api_probe main.cpp)
+if(hardware_interface_FOUND AND rclcpp_FOUND AND rclcpp_lifecycle_FOUND)
+  target_link_libraries(hw_api_probe PRIVATE
+    hardware_interface::hardware_interface
+    rclcpp::rclcpp
+    rclcpp_lifecycle::rclcpp_lifecycle
+  )
+else()
+  target_compile_definitions(hw_api_probe PRIVATE HW_API_PROBE_MISSING_DEPENDENCIES)
+endif()
+"""
+
+# Every framework-managed accessor the generated code relies on must exist with
+# these signatures, or the manual export path is built instead.
+HW_API_PROBE_SOURCE = """
+#ifdef HW_API_PROBE_MISSING_DEPENDENCIES
+#error "ros2_control, rclcpp, or rclcpp_lifecycle was not found for the API probe"
+#endif
+
+#include <vector>
+
+#include <hardware_interface/system_interface.hpp>
+
+// Configure-time probe for the framework-managed hardware component API.
+// It is compiled, never linked into the package or executed.
+class HardwareApiProbe : public hardware_interface::SystemInterface
+{
+public:
+  std::vector<hardware_interface::StateInterface::ConstSharedPtr>
+  on_export_state_interfaces() override
+  {
+    return {};
+  }
+
+  bool uses_handle_accessors()
+  {
+    const auto & state = get_state_interface_handle("joint/position");
+    const auto & command = get_command_interface_handle("joint/position");
+    double value = 0.0;
+    const bool state_set = set_state(state, value, false);
+    const bool command_read = get_command(command, value, false);
+    const bool command_set = set_command(command, value, false);
+    return state_set && command_read && command_set;
+  }
+};
+
+int main()
+{
+  return 0;
+}
+"""
+
+HW_HEADER_MODERN_MEMBERS = """#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
+  // Framework-managed interfaces (ros2_control >= 4.x): the handles are looked
+  // up once in on_configure(); read() and write() use only the non-blocking
+  // handle accessors, never the name-based helpers (not real-time safe).
+  // An entry is nullptr when the URDF does not declare that interface.
+  std::vector<hardware_interface::StateInterface::SharedPtr> position_states_;
+  std::vector<hardware_interface::StateInterface::SharedPtr> velocity_states_;
+  std::vector<hardware_interface::CommandInterface::SharedPtr> position_commands_;
+  // State publications skipped because a handle lock was contended.
+  std::size_t missed_state_updates_{0};
+#endif"""
+
+HW_CONFIGURE_MODERN = """#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
+  // Interfaces exist from import time and read() also runs while INACTIVE, so
+  // the handles are cached here, not in on_activate(). Name lookup is not
+  // real-time safe; it happens only in this lifecycle transition.
+  const size_t joints = info_.joints.size();
+  position_states_.assign(joints, nullptr);
+  velocity_states_.assign(joints, nullptr);
+  position_commands_.assign(joints, nullptr);
+  for (size_t i = 0; i < joints; i++) {
+    const std::string position = info_.joints[i].name + "/" + hardware_interface::HW_IF_POSITION;
+    const std::string velocity = info_.joints[i].name + "/" + hardware_interface::HW_IF_VELOCITY;
+    if (joint_state_interfaces_.count(position) != 0) {
+      position_states_[i] = get_state_interface_handle(position);
+    }
+    if (joint_state_interfaces_.count(velocity) != 0) {
+      velocity_states_[i] = get_state_interface_handle(velocity);
+    }
+    if (joint_command_interfaces_.count(position) != 0) {
+      position_commands_[i] = get_command_interface_handle(position);
+    }
+  }
+#endif"""
+
+HW_ACTIVATE_MODERN = """#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
+  // Command interfaces hold NaN until a controller writes them. Start from the
+  // measured position, never an arbitrary zero, so the first write() has a
+  // finite target. Activation is not the real-time path, so waiting is allowed.
+  std::copy(hw_positions_.begin(), hw_positions_.end(), hw_commands_.begin());
+  for (size_t i = 0; i < hw_commands_.size(); i++) {
+    if (position_commands_[i] && !set_command(position_commands_[i], hw_commands_[i], true)) {
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    if (position_states_[i] && !set_state(position_states_[i], hw_positions_[i], true)) {
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    if (velocity_states_[i] && !set_state(velocity_states_[i], hw_velocities_[i], true)) {
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+  }
+#endif"""
+
+HW_DEACTIVATE_MODERN = """#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
+  for (size_t i = 0; i < hw_commands_.size(); i++) {
+    if (position_commands_[i] && !set_command(position_commands_[i], hw_commands_[i], true)) {
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+  }
+#endif"""
+
+HW_CLEANUP_MODERN = """#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
+  position_states_.clear();
+  velocity_states_.clear();
+  position_commands_.clear();
+#endif"""
+
+HW_READ_MODERN = """#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
+  // Non-blocking publication: a contended handle keeps its previous value for
+  // this cycle. That is counted, not treated as a hardware error.
+  for (size_t i = 0; i < hw_positions_.size(); i++) {
+    if (position_states_[i] && !set_state(position_states_[i], hw_positions_[i], false)) {
+      ++missed_state_updates_;
+    }
+    if (velocity_states_[i] && !set_state(velocity_states_[i], hw_velocities_[i], false)) {
+      ++missed_state_updates_;
+    }
+  }
+#endif"""
+
+HW_WRITE_MODERN = """#ifdef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
+  for (size_t i = 0; i < hw_commands_.size(); i++) {
+    if (!position_commands_[i]) {
+      continue;
+    }
+    double command = 0.0;
+    if (!get_command(position_commands_[i], command, false)) {
+      continue;  // contended this cycle: keep the last valid command
+    }
+    if (!std::isfinite(command)) {
+      continue;  // NaN before any controller wrote, or an invalid command: not a target
+    }
+    hw_commands_[i] = command;
+  }
+#endif"""
+
+
 def create_hardware_interface_package(
     name: str, dest: Path,
     maintainer_name: str = "TODO",
@@ -925,6 +1120,7 @@ def create_hardware_interface_package(
         pkg / "src",
         pkg / "config",
         pkg / "test",
+        pkg / "cmake" / "hw_api_probe",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
@@ -932,10 +1128,16 @@ def create_hardware_interface_package(
     cpp_header = _copyright_cpp(maintainer_name)
     class_name = _class_name(name)
 
+    # --- configure-time ros2_control API probe (see HW_API_PROBE_CMAKE) ---
+    _write(pkg / "cmake" / "hw_api_probe" / "CMakeLists.txt", HW_API_PROBE_PROJECT)
+    _write(pkg / "cmake" / "hw_api_probe" / "main.cpp", cpp_header + HW_API_PROBE_SOURCE)
+
     # --- CMakeLists.txt ---
     _write(pkg / "CMakeLists.txt", f"""cmake_minimum_required(VERSION 3.8)
 project({name})
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -950,6 +1152,13 @@ find_package(rclcpp_lifecycle REQUIRED)
 if(hardware_interface_VERSION VERSION_GREATER_EQUAL "6.0.0")
   add_definitions(-DHARDWARE_INTERFACE_HAS_PARAMS_API)
 endif()
+
+# Detect the hardware component API by compiling cmake/hw_api_probe, not by
+# version: Jazzy 4.x/Kilted 5.x still carry the deprecated manual export
+# methods, ros2_control 6.12 removed them, and Humble 2.x has only the manual
+# ones. The probe is its own C and C++ project because the ROS imported
+# targets need both languages enabled.
+{HW_API_PROBE_CMAKE}
 
 add_library(${{PROJECT_NAME}} SHARED
   src/{name}_hardware.cpp
@@ -993,6 +1202,7 @@ ament_package()
     _write(pkg / "include" / name / f"{name}_hardware.hpp", cpp_header + f"""
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -1033,8 +1243,13 @@ public:
   hardware_interface::CallbackReturn on_cleanup(
     const rclcpp_lifecycle::State & previous_state) override;
 
+#ifndef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
+  // Humble (2.x) exports interfaces by hand and points them at the buffers
+  // below. From Jazzy (4.x) the framework creates them from the <ros2_control>
+  // URDF tag, and ros2_control 6.12 removed these overrides.
   std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
   std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
+#endif
 
   hardware_interface::return_type read(
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
@@ -1043,10 +1258,13 @@ public:
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
 
 private:
-  // Joint state storage
+  // Device-side buffers of this simulated interface. With manual export they
+  // are the interface memory; with framework-managed interfaces they are
+  // copied through the cached handles in read() and write().
   std::vector<double> hw_positions_;
   std::vector<double> hw_velocities_;
   std::vector<double> hw_commands_;
+{HW_HEADER_MODERN_MEMBERS}
 }};
 
 }}  // namespace {name}
@@ -1057,6 +1275,8 @@ private:
 #include "{name}/{name}_hardware.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <string>
 
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
 #include <pluginlib/class_list_macros.hpp>
@@ -1092,6 +1312,7 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_configure(
   std::fill(hw_positions_.begin(), hw_positions_.end(), 0.0);
   std::fill(hw_velocities_.begin(), hw_velocities_.end(), 0.0);
   std::fill(hw_commands_.begin(), hw_commands_.end(), 0.0);
+{HW_CONFIGURE_MODERN}
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
 
@@ -1099,6 +1320,7 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_activate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {{
   RCLCPP_INFO(rclcpp::get_logger("{name}"), "Activating...");
+{HW_ACTIVATE_MODERN}
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
 
@@ -1110,6 +1332,7 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_deactivate(
   // Retain measured positions for this simulated interface. Real hardware needs
   // an explicit driver stop/disable and independent watchdog; this is not one.
   std::copy(hw_positions_.begin(), hw_positions_.end(), hw_commands_.begin());
+{HW_DEACTIVATE_MODERN}
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
 
@@ -1117,9 +1340,11 @@ hardware_interface::CallbackReturn {class_name}Hardware::on_cleanup(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {{
   RCLCPP_INFO(rclcpp::get_logger("{name}"), "Cleaning up...");
+{HW_CLEANUP_MODERN}
   return hardware_interface::CallbackReturn::SUCCESS;
 }}
 
+#ifndef HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES
 std::vector<hardware_interface::StateInterface>
 {class_name}Hardware::export_state_interfaces()
 {{
@@ -1143,6 +1368,7 @@ std::vector<hardware_interface::CommandInterface>
   }}
   return command_interfaces;
 }}
+#endif
 
 hardware_interface::return_type {class_name}Hardware::read(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
@@ -1152,12 +1378,14 @@ hardware_interface::return_type {class_name}Hardware::read(
   for (size_t i = 0; i < hw_positions_.size(); i++) {{
     hw_positions_[i] = hw_commands_[i];
   }}
+{HW_READ_MODERN}
   return hardware_interface::return_type::OK;
 }}
 
 hardware_interface::return_type {class_name}Hardware::write(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {{
+{HW_WRITE_MODERN}
   // TODO(user): Write commands to actual hardware here
   return hardware_interface::return_type::OK;
 }}
@@ -1269,6 +1497,20 @@ ros2 control load_controller joint_state_broadcaster --set-state active
 
 - `config/controllers.yaml` — Controller manager configuration
 - `config/{name}.ros2_control.xacro` — Hardware interface URDF snippet
+
+## Command and state policy
+
+- The ros2_control API is detected when CMake configures the package: on Jazzy
+  and newer the framework creates the interfaces from the URDF and this code
+  caches their handles in `on_configure()`; on Humble the manual export path
+  is built instead.
+- `read()` and `write()` use only non-blocking handle access; a contended
+  handle keeps its previous value for that cycle.
+- A non-finite command (the NaN a command interface holds before any
+  controller writes it, or an invalid value) is not a target: the last valid
+  command is kept. On activation the command is set to the measured position.
+- This is a simulation template. It makes no real-time guarantee and provides
+  no driver stop, watchdog, or limit enforcement.
 """)
 
     _write_package_xml(

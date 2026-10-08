@@ -2,7 +2,9 @@
 
 `scripts/eval_runner.py` performs lexical checks, not model inference or semantic
 judging. Structural fixtures, real captured outputs, and paired comparisons are
-separate evidence sources. None establishes robot safety.
+separate evidence sources. None establishes robot safety. The preregistered
+plugin-on/off experiment (`evals/benchmark_suite.json`) is run and graded through
+[the benchmark runbook](BENCHMARK_RUNBOOK.md), not through this runner.
 
 ## Modes
 

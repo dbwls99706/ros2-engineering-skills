@@ -1,6 +1,7 @@
 """Portable installs never register hooks or replace unrelated files."""
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -56,9 +57,18 @@ def test_force_replaces_only_skill(source):
     (dst / 'stale.txt').write_text('stale')
     sibling = dst.parent / 'keep.txt'
     sibling.write_text('keep')
-    installer.install(source, dst, force=True)
+    installer.install(source, dst, force=True, discard_local_changes=True)
     assert not (dst / 'stale.txt').exists()
     assert sibling.read_text() == 'keep'
+
+
+def test_force_alone_refuses_a_drifted_install(source):
+    dst = target(source)
+    installer.install(source, dst)
+    (dst / 'stale.txt').write_text('stale')
+    with pytest.raises(ValueError, match='added: stale.txt'):
+        installer.install(source, dst, force=True)
+    assert (dst / 'stale.txt').read_text() == 'stale'
 
 
 def test_validation_failure_preserves_previous_install(source):
@@ -84,7 +94,7 @@ def test_rename_failure_restores_previous_install(source, monkeypatch):
 
     monkeypatch.setattr(Path, 'rename', fail_final)
     with pytest.raises(OSError, match='cannot rename'):
-        installer.install(source, dst, force=True)
+        installer.install(source, dst, force=True, discard_local_changes=True)
     assert (dst / 'keep.txt').read_text() == 'previous'
 
 
@@ -185,7 +195,7 @@ def test_double_rename_failure_preserves_recoverable_backup(source, monkeypatch)
 
     monkeypatch.setattr(Path, 'rename', fail_swap_and_restore)
     with pytest.raises(OSError, match='preserved at') as error:
-        installer.install(source, dst, force=True)
+        installer.install(source, dst, force=True, discard_local_changes=True)
     backups = list(dst.parent.glob('.skill-backup-*/previous'))
     assert len(backups) == 1
     assert str(backups[0]) in str(error.value)
@@ -207,7 +217,7 @@ def test_backup_rename_failure_leaves_original(source, monkeypatch):
 
     monkeypatch.setattr(Path, 'rename', refuse_backup)
     with pytest.raises(OSError, match='cannot move original'):
-        installer.install(source, dst, force=True)
+        installer.install(source, dst, force=True, discard_local_changes=True)
     assert (dst / 'keep.txt').read_text() == 'original'
     assert not list(dst.parent.glob('.skill-backup-*'))
 
@@ -257,3 +267,316 @@ def test_target_rechecked_after_lock_is_acquired(source, monkeypatch):
     with pytest.raises(ValueError, match='not a skill'):
         installer.install(source, dst, force=True)
     assert (dst / 'private.txt').read_text() == 'unrelated concurrent creator'
+
+
+# ------------------------------------------------------------------ provenance
+
+def manifest_of(dst):
+    return json.loads((dst / installer.PROVENANCE).read_text(encoding='utf-8'))
+
+
+def verify(dst, capsys):
+    code = installer.main(['--verify', '--target', str(dst)])
+    return code, json.loads(capsys.readouterr().out)
+
+
+@pytest.fixture
+def fake_git(monkeypatch):
+    """Answer git calls from state; every other subprocess runs for real."""
+    state = {'head': 'a' * 40, 'porcelain': '', 'returncode': 0, 'calls': []}
+    real_run = installer.subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[0] != 'git':
+            return real_run(argv, **kwargs)
+        state['calls'].append(list(argv))
+        if argv[3] == 'rev-parse':
+            return Mock(returncode=state['returncode'], stdout=state['head'] + '\n', stderr='')
+        return Mock(returncode=0, stdout=state['porcelain'], stderr='')
+
+    monkeypatch.setattr(installer.subprocess, 'run', run)
+    return state
+
+
+def test_manifest_records_every_installed_file(source):
+    dst = target(source)
+    report = installer.install(source, dst)
+    manifest = manifest_of(dst)
+    assert manifest['schema_version'] == installer.PROVENANCE_SCHEMA
+    assert manifest['hash_algorithm'] == 'sha256'
+    assert manifest['skill_name'] == installer.NAME
+    assert manifest['source_version'] == '1.3.0'
+    assert manifest['installer'] == 'scripts/install_skill.py'
+    assert manifest['installer_version'] == installer.INSTALLER_VERSION
+    assert manifest['layout'] == 'knowledge-only'
+    assert manifest['installed_at'].endswith('Z')
+    assert report['provenance'] == installer.PROVENANCE
+    assert report['source_version'] == '1.3.0'
+    assert report['installer_version'] == installer.INSTALLER_VERSION
+    assert installer.PROVENANCE not in manifest['files']
+    on_disk = {p.relative_to(dst).as_posix() for p in dst.rglob('*') if p.is_file()}
+    assert set(manifest['files']) == on_disk - {installer.PROVENANCE}
+    for relative, digest in manifest['files'].items():
+        assert installer.sha256_file(dst / relative) == digest
+
+
+def test_manifest_excludes_bytecode(source):
+    (source / 'scripts/__pycache__').mkdir()
+    (source / 'scripts/__pycache__/temp.pyc').write_bytes(b'test')
+    installer.install(source, target(source))
+    assert not any(p.startswith('scripts/__pycache__') for p in manifest_of(target(source))['files'])
+
+
+def test_dry_run_names_the_manifest_without_writing_it(source):
+    report = installer.install(source, target(source), dry_run=True)
+    assert report['provenance'] == installer.PROVENANCE
+    assert not target(source).parent.exists()
+
+
+def test_source_commit_is_unknown_outside_a_checkout(source):
+    assert installer.source_commit(source) == (None, None)
+    installer.install(source, target(source))
+    manifest = manifest_of(target(source))
+    assert manifest['source_commit'] is None and manifest['source_dirty'] is None
+
+
+def test_source_commit_records_head_and_bundle_scoped_dirty(source, fake_git):
+    fake_git['porcelain'] = ' M references/test.md\n'
+    installer.install(source, target(source))
+    manifest = manifest_of(target(source))
+    assert manifest['source_commit'] == 'a' * 40 and manifest['source_dirty'] is True
+    status = next(call for call in fake_git['calls'] if call[3] == 'status')
+    assert status[4:7] == ['--porcelain', '--ignored=matching', '--']
+    assert tuple(status[7:]) == installer.BUNDLE
+
+
+def test_clean_checkout_is_not_dirty(source, fake_git):
+    assert installer.source_commit(source) == ('a' * 40, False)
+
+
+@pytest.mark.parametrize('porcelain,dirty', [
+    ('!! evals/history/2026-10.jsonl\n', True),      # ignored by git but copied
+    ('?? references/local-note.md\n', True),          # untracked and copied
+    (' M README.md\n', True),
+    ('!! scripts/__pycache__/\n', False),            # never copied
+    ('!! references/test.md.swp\n', False),          # editor backup, never copied
+    ('!! docs/notes.md~\n', False),
+])
+def test_dirty_follows_the_bytes_that_get_copied(source, fake_git, porcelain, dirty):
+    fake_git['porcelain'] = porcelain
+    assert installer.source_commit(source) == ('a' * 40, dirty)
+
+
+def test_editor_backups_are_not_installed(source):
+    (source / 'references/test.md~').write_text('backup')
+    (source / 'references/.test.md.swp').write_text('swap')
+    installer.install(source, target(source))
+    assert not (target(source) / 'references/test.md~').exists()
+    assert not (target(source) / 'references/.test.md.swp').exists()
+    assert 'references/test.md~' not in manifest_of(target(source))['files']
+
+
+def test_symlink_under_an_ignored_name_is_still_drift(source, capsys):
+    dst = target(source)
+    installer.install(source, dst)
+    outside = source.parent / 'cache_outside'
+    outside.mkdir()
+    (dst / '.mypy_cache').symlink_to(outside, target_is_directory=True)
+    code, report = verify(dst, capsys)
+    assert code == 1 and report['symlinks'] == ['.mypy_cache']
+
+
+@pytest.mark.parametrize('head,returncode', [('a' * 40, 1), ('short', 0)])
+def test_source_commit_rejects_unusable_git_output(source, fake_git, head, returncode):
+    fake_git.update(head=head, returncode=returncode)
+    assert installer.source_commit(source) == (None, None)
+
+
+def test_source_commit_tolerates_missing_git(source, monkeypatch):
+    monkeypatch.setattr(installer.subprocess, 'run', Mock(side_effect=FileNotFoundError('git')))
+    assert installer.source_commit(source) == (None, None)
+
+
+def test_source_version_requires_metadata_version(source):
+    (source / 'SKILL.md').write_text('---\nname: ros2-engineering-skills\n---\nbody\n')
+    with pytest.raises(ValueError, match='no version'):
+        installer.source_version(source)
+    (source / 'SKILL.md').write_text('broken')
+    with pytest.raises(ValueError, match='failed validation'):
+        installer.source_version(source)
+
+
+def test_staged_symlink_is_never_recorded(source):
+    stage = source.parent / 'stage'
+    stage.mkdir()
+    (stage / 'link').symlink_to(source / 'SKILL.md')
+    with pytest.raises(ValueError, match='symlinks or special files'):
+        installer.write_provenance(stage, source)
+
+
+def test_verify_is_clean_after_install(source, capsys):
+    dst = target(source)
+    installer.install(source, dst)
+    code, report = verify(dst, capsys)
+    assert code == 0 and report['status'] == 'clean'
+    assert report['source_version'] == '1.3.0'
+    assert report['installer_version'] == installer.INSTALLER_VERSION
+    assert not any(report[key] for key in ('modified', 'missing', 'added', 'symlinks', 'other'))
+
+
+def test_verify_reports_modified_missing_and_added(source, capsys):
+    dst = target(source)
+    installer.install(source, dst)
+    (dst / 'README.md').write_text('edited locally\n')
+    (dst / 'LICENSE').unlink()
+    (dst / 'notes.md').write_text('local note\n')
+    code, report = verify(dst, capsys)
+    assert code == 1 and report['status'] == 'drifted'
+    assert report['modified'] == ['README.md']
+    assert report['missing'] == ['LICENSE']
+    assert report['added'] == ['notes.md']
+
+
+def test_generated_caches_are_not_drift(source, capsys):
+    dst = target(source)
+    installer.install(source, dst)
+    for relative in ('.mypy_cache/x', 'htmlcov/index.html', 'coverage.xml', '.hypothesis/y',
+                     'scripts/__pycache__/a.pyc', '.pytest_cache/v'):
+        path = dst / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('generated')
+    code, report = verify(dst, capsys)
+    assert code == 0 and report['status'] == 'clean', report
+
+
+def test_symlink_inside_install_is_drift_and_is_never_opened(source, capsys, monkeypatch):
+    dst = target(source)
+    installer.install(source, dst)
+    outside = source.parent / 'outside.txt'
+    outside.write_text('secret')
+    outside_dir = source.parent / 'outside_dir'
+    outside_dir.mkdir()
+    (outside_dir / 'inner.txt').write_text('secret')
+    (dst / 'leak').symlink_to(outside)
+    (dst / 'leakdir').symlink_to(outside_dir, target_is_directory=True)
+    hashed = []
+    real_sha256 = installer.sha256_file
+
+    def recording_sha256(path):
+        hashed.append(Path(path).resolve())
+        return real_sha256(path)
+
+    monkeypatch.setattr(installer, 'sha256_file', recording_sha256)
+    code, report = verify(dst, capsys)
+    assert code == 1 and report['status'] == 'drifted'
+    assert report['symlinks'] == ['leak', 'leakdir']
+    assert not any(p.startswith('leakdir') for p in report['added'])
+    assert outside.resolve() not in hashed
+    assert (outside_dir / 'inner.txt').resolve() not in hashed
+
+
+@pytest.mark.skipif(not hasattr(os, 'mkfifo'), reason='requires POSIX named pipes')
+def test_special_files_are_drift_and_are_never_opened(source, capsys):
+    dst = target(source)
+    installer.install(source, dst)
+    os.mkfifo(dst / 'pipe')
+    code, report = verify(dst, capsys)
+    assert code == 1 and report['other'] == ['pipe']
+
+
+@pytest.mark.parametrize('mutate,reason', [
+    (lambda m: m.update(hash_algorithm='md5'), 'unsupported hash algorithm'),
+    (lambda m: m.update(schema_version=2), 'unsupported provenance schema'),
+    (lambda m: m.update(files=['SKILL.md']), 'malformed'),
+])
+def test_unusable_manifest_is_unverified(source, capsys, mutate, reason):
+    dst = target(source)
+    installer.install(source, dst)
+    manifest = manifest_of(dst)
+    mutate(manifest)
+    (dst / installer.PROVENANCE).write_text(json.dumps(manifest))
+    code, report = verify(dst, capsys)
+    assert code == 1 and report['status'] == 'unverified' and reason in report['reason']
+
+
+def test_broken_or_missing_manifest_is_unverified(source, capsys):
+    dst = target(source)
+    installer.install(source, dst)
+    (dst / installer.PROVENANCE).write_text('{not json')
+    assert verify(dst, capsys)[1]['reason'].startswith('unreadable provenance manifest')
+    (dst / installer.PROVENANCE).write_text('[]')
+    assert verify(dst, capsys)[1]['reason'] == 'provenance manifest is not an object'
+    (dst / installer.PROVENANCE).unlink()
+    assert verify(dst, capsys)[1]['reason'] == 'no provenance manifest'
+    (dst / installer.PROVENANCE).symlink_to(source / 'SKILL.md')
+    assert verify(dst, capsys)[1]['reason'] == 'provenance manifest is a symlink'
+
+
+def test_verify_never_follows_a_target_symlink(source, capsys):
+    dst = target(source)
+    installer.install(source, dst)
+    link = dst.parent / 'alias'
+    link.symlink_to(dst, target_is_directory=True)
+    code, report = installer.main(['--verify', '--target', str(link)]), json.loads(capsys.readouterr().out)
+    assert code == 1 and report['reason'] == 'target is a symlink'
+    assert verify(dst.parent / 'absent', capsys)[1]['reason'] == 'target does not exist'
+
+
+def test_force_refuses_a_drifted_install_and_changes_nothing(source):
+    dst = target(source)
+    installer.install(source, dst)
+    (dst / 'README.md').write_text('edited locally\n')
+    before = {p: p.read_bytes() for p in dst.rglob('*') if p.is_file()}
+    with pytest.raises(ValueError, match='differs from its provenance manifest .*modified: README.md'):
+        installer.install(source, dst, force=True)
+    assert {p: p.read_bytes() for p in dst.rglob('*') if p.is_file()} == before
+
+
+def test_force_with_discard_replaces_a_drifted_install(source):
+    dst = target(source)
+    installer.install(source, dst)
+    old_manifest = manifest_of(dst)
+    (dst / 'README.md').write_text('edited locally\n')
+    report = installer.install(source, dst, force=True, discard_local_changes=True)
+    assert report['status'] == 'installed'
+    assert (dst / 'README.md').read_text() == '# Test fixture\n'
+    assert manifest_of(dst)['files'] == old_manifest['files']
+    assert installer.drift_report(dst)['status'] == 'clean'
+
+
+def test_install_without_manifest_needs_discard(source):
+    dst = target(source)
+    installer.install(source, dst)
+    (dst / installer.PROVENANCE).unlink()
+    with pytest.raises(ValueError, match='cannot be verified .*no provenance manifest'):
+        installer.install(source, dst, force=True)
+    assert not (dst / installer.PROVENANCE).exists()
+    installer.install(source, dst, force=True, discard_local_changes=True)
+    assert manifest_of(dst)['schema_version'] == installer.PROVENANCE_SCHEMA
+
+
+def test_cli_discard_requires_force(capsys):
+    with pytest.raises(SystemExit) as exc:
+        installer.main(['--discard-local-changes', '--target', '/tmp/ros2-engineering-skills'])
+    assert exc.value.code == 2
+    assert 'requires --force' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('extra', [['--force'], ['--dry-run'], ['--force', '--discard-local-changes']])
+def test_cli_verify_is_exclusive(capsys, extra):
+    with pytest.raises(SystemExit) as exc:
+        installer.main(['--verify', '--target', '/tmp/ros2-engineering-skills', *extra])
+    assert exc.value.code == 2
+
+
+def test_cli_verify_reports_errors(monkeypatch, capsys):
+    monkeypatch.setattr(installer, 'drift_report', Mock(side_effect=OSError('unreadable')))
+    assert installer.main(['--verify', '--target', '/tmp/ros2-engineering-skills']) == 1
+    assert json.loads(capsys.readouterr().out)['status'] == 'error'
+
+
+def test_cli_version(capsys):
+    with pytest.raises(SystemExit) as exc:
+        installer.main(['--version'])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == installer.INSTALLER_VERSION

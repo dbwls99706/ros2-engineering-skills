@@ -88,10 +88,26 @@ def test_unknown_option_is_rejected():
     assert 'unknown option' in result.stderr
 
 
+def test_symlink_target_is_never_replaced(tmp_path):
+    real = tmp_path / 'real'
+    real.mkdir()
+    (real / 'marker.txt').write_text('keep', encoding='utf-8')
+    link = tmp_path / 'link'
+    link.symlink_to(real, target_is_directory=True)
+    for args in (('--force',), (), ('--link', '--force'), ('--force', '--dry-run')):
+        result = _run('--target', link, *args)
+        assert result.returncode == 1, args
+        assert 'symbolic link' in result.stderr
+        assert str(real.resolve()) in result.stderr
+        assert link.is_symlink()
+        assert (real / 'marker.txt').read_text(encoding='utf-8') == 'keep'
+    assert 'never replaced' in _run('--help').stdout
+
+
 def test_install_files_are_present_and_documented():
     assert os.access(INSTALL_SH, os.X_OK)
     powershell = INSTALL_PS1.read_text(encoding='utf-8')
-    required = ('[CmdletBinding()]', '$Target', '$Link', '$Force', '$DryRun')
+    required = ('[CmdletBinding()]', '$Target', '$Link', '$Force', '$DryRun', 'ReparsePoint')
     for token in required:
         assert token in powershell
 

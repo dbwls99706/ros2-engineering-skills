@@ -124,6 +124,14 @@ def test_runtime_runner_retains_every_gate_and_explicit_rolling_exclusions():
     assert 'test_pkgs=(test_iface_pkg test_hw_pkg)' in text
     assert '--deselect test/test_test_py_pkg.py::test_node_creation' in text
     assert '[[ "$ROS_DISTRO" != rolling ]]' in text
+    # The generated hardware package's configure-time API detection is asserted per
+    # distro: Humble keeps the manual export path, everything newer must detect the
+    # framework-managed one. No distro is skipped for it.
+    assert ("grep '^HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES:INTERNAL=' "
+            "\"$WS/build/test_hw_pkg/CMakeCache.txt\"") in text
+    assert 'if [[ "$ROS_DISTRO" == humble ]]; then' in text
+    assert "expected='HARDWARE_INTERFACE_HAS_ON_EXPORT_INTERFACES:INTERNAL='" in text
+    assert 'Unexpected ros2_control API detection' in text
 
 
 @pytest.mark.parametrize('outcome', ['success', 'failure', 'cancelled', 'skipped', 'missing'])

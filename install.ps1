@@ -24,7 +24,17 @@ if ($Target -eq $Root -or
     throw "Refusing unsafe target: $Target"
 }
 
-$Exists = Test-Path -LiteralPath $Target
+# Get-Item rather than Test-Path: a dangling symbolic link or junction can
+# report as absent while still occupying the path. Reparse points are never
+# replaced, so a link shared by several clients cannot be split silently.
+$TargetItem = Get-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+if ($null -ne $TargetItem -and
+    ($TargetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+    $Resolved = if ($TargetItem.Target) { $TargetItem.Target | Select-Object -First 1 } else { '<unknown>' }
+    throw "Target is a symbolic link or reparse point to ${Resolved}: $Target; refusing to replace it. " +
+        "Re-run with -Target <resolved path> to update the linked installation, or remove the link explicitly."
+}
+$Exists = $null -ne $TargetItem
 if ($Exists -and -not $Force) {
     throw "Target already exists: $Target (use -Force to replace it)"
 }
