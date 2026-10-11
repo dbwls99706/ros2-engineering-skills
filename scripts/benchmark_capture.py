@@ -164,14 +164,13 @@ def save_json(path, data):
 
     mkstemp creates a fresh regular file exclusively, so a symbolic link planted
     at a guessable name such as ``grades.json.tmp`` is never followed; the
-    target is only ever replaced by a complete file.
+    target is only ever replaced by a complete file. The file keeps mkstemp's
+    owner-only default mode; no POSIX-only call is used, so this also runs on
+    Windows (os.fchmod exists there only from Python 3.13).
     """
     path = Path(path)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
     try:
-        mask = os.umask(0)
-        os.umask(mask)
-        os.fchmod(fd, 0o666 & ~mask)
         with os.fdopen(fd, 'w', encoding='utf-8') as handle:
             handle.write(json.dumps(data, indent=2, sort_keys=False) + '\n')
         os.replace(tmp, path)

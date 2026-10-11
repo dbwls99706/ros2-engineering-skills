@@ -174,6 +174,16 @@ jobs:
           if ((Get-Content -LiteralPath (Join-Path $real 'marker.txt')) -ne 'keep') {
             throw 'Linked target was modified'
           }
+      - name: Exercise the benchmark helper's JSON writes on Windows
+        shell: pwsh
+        run: |
+          # save_json() uses mkstemp + os.replace and must not depend on POSIX-only
+          # calls; run the tests that write capture.json, order.json, grades.json
+          # and key.json through it (symlink-based tests stay on Linux).
+          python -m pip install -r requirements-dev.txt
+          python -m pytest tests/test_benchmark_capture.py -ra --tb=short -p no:cacheprovider `
+            -k "save_json or TestInit or test_score_keeps_unknowns_and_separates_execution_failures"
+          if ($LASTEXITCODE -ne 0) { throw 'Benchmark JSON writes failed on Windows' }
       - name: Exercise knowledge-only installation on Windows
         shell: pwsh
         run: |
