@@ -1086,16 +1086,23 @@ class AuditReport:
             "incomplete_files": len(self.skipped),
         }
 
+    @property
+    def empty(self) -> bool:
+        """Nothing was scanned, so nothing was established: a symlinked
+        package or a wrong path audits zero files and must not read as a pass."""
+        return self.scanned_files == 0
+
     def exit_code(self, strict: bool) -> int:
         c = self.counts()
         if c["confirmed_incompatible"] or c["confirmed_type_conflicts"]:
             return 1
         # Anything the audit could not establish fails only in strict mode:
         # skipped or unparsed files, unresolved endpoints (paired or not),
-        # potential or unevaluated pairs, and indeterminate results.
+        # potential or unevaluated pairs, indeterminate results, and a scan
+        # that found no files at all.
         if strict and (c["confirmed_indeterminate"] or c["potential_pairs"] or c["not_evaluated_pairs"]
                        or c["possible_type_conflicts"] or c["unresolved_endpoints"]
-                       or c["incomplete_files"]):
+                       or c["incomplete_files"] or self.empty):
             return 1
         return 0
 
@@ -1273,6 +1280,7 @@ def report_to_dict(report: AuditReport, strict: bool) -> dict:
     return {
         "tool": "qos_audit", "version": __version__, "root": report.root,
         "scanned_files": report.scanned_files, "skipped_files": report.skipped,
+        "empty_scan": report.empty,
         "summary": report.counts(), "strict": strict, "exit_code": report.exit_code(strict),
         "pairs": report.pairs, "type_conflicts": report.type_conflicts,
         "multi_type_topics": report.multi_type_topics,
@@ -1288,6 +1296,9 @@ def print_report(report: AuditReport, strict: bool) -> None:
     print(f"QoS audit of {report.root}: {report.scanned_files} files, "
           f"{len(report.endpoints)} endpoints")
     print("=" * 60)
+    if report.empty:
+        print("WARNING: no files were scanned; this audit established nothing. "
+              "Check the path (symlinked packages are not followed).")
 
     for relation in ("confirmed", "potential"):
         pairs = [p for p in report.pairs if p["relation"] == relation]
@@ -1360,7 +1371,7 @@ Exit codes:
   0  no confirmed QoS incompatibility and no confirmed type conflict
   1  confirmed QoS incompatibility or confirmed type conflict
      (with --strict: also potential pairs, unresolved endpoints, indeterminate results,
-     possible type conflicts, or skipped/unparsed files)
+     possible type conflicts, skipped/unparsed files, or a scan that found no files)
   2  usage error or unreadable input path
 
 Pairs are confirmed only for identical absolute topics with the same message
@@ -1388,6 +1399,9 @@ YAML qos_overrides are listed as candidates and never applied.
         return 2
 
     report = scan(root)
+    if report.empty:
+        print(f"warning: no files scanned under {root}; the audit established nothing",
+              file=sys.stderr)
     if args.json:
         print(json.dumps(report_to_dict(report, args.strict), indent=2))
     else:

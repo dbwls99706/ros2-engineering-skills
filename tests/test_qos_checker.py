@@ -117,6 +117,16 @@ class TestCompatibilityChecks:
         assert result.compatible is False
         assert any("RELIABILITY" in i for i in result.issues)
 
+    def test_transient_local_pub_volatile_sub_connects_without_history(self):
+        # Compatible, but a late joiner gets nothing: this is how a web client
+        # lost the latched /plan topic while the matrix said "Yes".
+        pub = QoSProfile(Reliability.RELIABLE, Durability.TRANSIENT_LOCAL, History.KEEP_LAST, 1)
+        sub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1)
+        result = check_compatibility(pub, sub)
+        assert result.compatible is True and result.issues == []
+        assert any("late-joining subscriber receives no retained history" in w
+                   for w in result.warnings)
+
     def test_volatile_pub_transient_local_sub_incompatible(self):
         pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1)
         sub = QoSProfile(Reliability.RELIABLE, Durability.TRANSIENT_LOCAL, History.KEEP_LAST, 1)

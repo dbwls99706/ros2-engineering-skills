@@ -488,3 +488,72 @@ class TestCLI:
             capture_output=True, text=True,
         )
         assert result.returncode == 0
+
+
+class TestMetadataInput:
+    WRAPPED = (
+        "rosbag2_bagfile_information:\n"
+        "  topics_with_message_count:\n"
+        "    - topic_metadata:\n"
+        "        name: /라이다/scan\n"
+        "        type: sensor_msgs/msg/LaserScan\n"
+        "        offered_qos_profiles: \"- reliability: 2\\n  durability: 2\"\n"
+        "      message_count: 1\n")
+    UNWRAPPED = (
+        "topics_with_message_count:\n"
+        "  - topic_metadata:\n"
+        "      name: /scan\n"
+        "      type: sensor_msgs/msg/LaserScan\n"
+        "      offered_qos_profiles: ''\n"
+        "    message_count: 1\n")
+
+    def _run(self, *args, env=None):
+        return subprocess.run([sys.executable, SCRIPT, *map(str, args)],
+                              capture_output=True, text=True, env=env)
+
+    def test_bag_directory_is_accepted(self, tmp_path):
+        (tmp_path / "metadata.yaml").write_text(self.WRAPPED, encoding="utf-8")
+        result = self._run(tmp_path, "--json")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["total_topics"] == 1
+
+    def test_both_metadata_layouts_and_empty_file_still_parse(self, tmp_path):
+        for text in (self.WRAPPED, self.UNWRAPPED, ""):
+            meta = tmp_path / "metadata.yaml"
+            meta.write_text(text, encoding="utf-8")
+            result = self._run(meta, "--json")
+            assert result.returncode == 0, (text, result.stderr)
+            assert json.loads(result.stdout)["total_topics"] == (0 if text == "" else 1)
+
+    def test_utf8_metadata_is_read_independently_of_the_locale(self, tmp_path):
+        meta = tmp_path / "metadata.yaml"
+        meta.write_text(self.WRAPPED, encoding="utf-8")
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"}
+        result = self._run(meta, "--json", env=env)
+        assert result.returncode == 0, result.stderr
+        assert "Traceback" not in result.stderr
+
+    def test_invalid_yaml_is_an_error_message_not_a_traceback(self, tmp_path):
+        meta = tmp_path / "metadata.yaml"
+        meta.write_text("a: [unclosed\n", encoding="utf-8")
+        result = self._run(meta)
+        assert result.returncode == 1
+        assert "not valid YAML" in result.stderr and "Traceback" not in result.stderr
+
+    @pytest.mark.parametrize("text", [
+        "- a\n- b\n",
+        "just a string\n",
+        "rosbag2_bagfile_information: 3\n",
+        "topics_with_message_count: 'x'\n",
+        "topics_with_message_count:\n  - just_a_string\n",
+        "topics_with_message_count:\n  - topic_metadata: 7\n",
+    ])
+    def test_malformed_structure_is_an_error_not_a_partial_result(self, tmp_path, text):
+        # Skipping a bad entry would let --json report fewer topics than the
+        # bag holds with exit 0.
+        meta = tmp_path / "metadata.yaml"
+        meta.write_text(text, encoding="utf-8")
+        result = self._run(meta, "--json")
+        assert result.returncode == 1, result.stdout
+        assert "not rosbag2 metadata" in result.stderr and "Traceback" not in result.stderr
+        assert result.stdout == ""

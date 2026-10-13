@@ -819,3 +819,162 @@ class TestIssueDisplay:
         assert "ERROR" in s
         assert "test.launch.py:10" in s
         assert "something wrong" in s
+
+
+OPAQUE_EXCLUSIVE_RETURNS = """from launch import LaunchDescription
+from launch.actions import OpaqueFunction
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def _nodes(context):
+    if LaunchConfiguration('split').perform(context) == 'false':
+        return [Node(package='p', executable='bridge', name='bridge', output='screen')]
+    return [
+        Node(package='p', executable='bridge', name='bridge', output='screen'),
+        Node(package='p', executable='native', name='native', output='screen'),
+    ]
+
+
+def generate_launch_description():
+    return LaunchDescription([OpaqueFunction(function=_nodes)])
+"""
+
+
+class TestControlFlowDuplicates:
+    def test_exclusive_opaque_function_returns_are_not_an_error(self, tmp_path):
+        # Only one return value is ever launched; a real bringup file failed
+        # with exit 1 on this shape. The file does not prove which branch
+        # runs, so a warning remains.
+        path = write_launch_file(tmp_path, "opaque.launch.py", OPAQUE_EXCLUSIVE_RETURNS)
+        dups = [i for i in validate_file(path) if "Duplicate" in i.message]
+        assert len(dups) == 1 and dups[0].severity == "warning"
+        assert "different branches or return statements" in dups[0].message
+        assert run_script(path).returncode == 0
+
+    def test_duplicate_inside_one_return_is_still_an_error(self, tmp_path):
+        source = OPAQUE_EXCLUSIVE_RETURNS.replace("name='native'", "name='bridge'")
+        path = write_launch_file(tmp_path, "dup_return.launch.py", source)
+        errors = [i for i in validate_file(path) if i.severity == "error" and "Duplicate" in i.message]
+        assert len(errors) == 1
+        assert run_script(path).returncode == 1
+
+    def test_if_else_branches_are_exclusive_but_if_and_after_are_not(self, tmp_path):
+        source = """from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    nodes = []
+    if True:
+        nodes.append(Node(package='a', executable='x', name='cam', output='screen'))
+    else:
+        nodes.append(Node(package='b', executable='y', name='cam', output='screen'))
+    nodes.append(Node(package='c', executable='z', name='lidar', output='screen'))
+    nodes.append(Node(package='d', executable='w', name='lidar', output='screen'))
+    return LaunchDescription(nodes)
+"""
+        issues = {i.message.split("'")[1]: i for i in validate_file(
+            write_launch_file(tmp_path, "branches.launch.py", source)) if "Duplicate" in i.message}
+        assert issues["cam"].severity == "warning"
+        assert issues["lidar"].severity == "error"
+
+    def test_unconditional_duplicates_and_same_condition_stay_errors(self, tmp_path):
+        path = write_launch_file(tmp_path, "dup.launch.py", DUPLICATE_NODES)
+        assert any(i.severity == "error" and "Duplicate" in i.message for i in validate_file(path))
+
+
+class TestEntryPointBinding:
+    def test_reexported_or_aliased_entry_point_is_accepted(self, tmp_path):
+        for name, source in [
+                ("reexport.launch.py",
+                 "from my_pkg.common import generate_launch_description\n"),
+                ("alias.launch.py",
+                 "from launch import LaunchDescription\n"
+                 "def _build():\n    return LaunchDescription([])\n"
+                 "generate_launch_description = _build\n"),
+                ("test_talker.launch.py",
+                 "import launch\nimport launch_testing.actions\n"
+                 "def generate_test_description():\n"
+                 "    return launch.LaunchDescription([launch_testing.actions.ReadyToTest()])\n")]:
+            path = write_launch_file(tmp_path, name, source)
+            assert not any("generate_launch_description" in i.message
+                           for i in validate_file(path)), name
+
+    def test_nested_entry_point_is_not_module_scope(self, tmp_path):
+        path = write_launch_file(tmp_path, "nested.launch.py",
+                                 "def helper():\n"
+                                 "    def generate_launch_description():\n"
+                                 "        return None\n")
+        assert any(i.severity == "error" and "Missing generate_launch_description" in i.message
+                   for i in validate_file(path))
+
+    def test_loop_bodies_bind_only_on_some_paths(self, tmp_path):
+        # `for _ in []` provably never runs: missing. Other loops may run zero
+        # times and `else` is skipped after `break`: a warning, not an error.
+        never = write_launch_file(tmp_path, "never.launch.py",
+                                  "for _ in []:\n"
+                                  "    def generate_launch_description():\n"
+                                  "        return None\n")
+        assert any(i.severity == "error" and "Missing" in i.message for i in validate_file(never))
+        for source in ("for i in range(1):\n    break\nelse:\n"
+                       "    def generate_launch_description():\n        return None\n",
+                       "for i in range(1):\n    def generate_launch_description():\n"
+                       "        return None\n",
+                       "if flag:\n    def generate_launch_description():\n        return None\n"):
+            path = write_launch_file(tmp_path, "maybe.launch.py", source)
+            entry = [i for i in validate_file(path) if "generate_launch_description" in i.message]
+            assert [i.severity for i in entry] == ["warning"], source
+            assert "some execution paths" in entry[0].message
+            assert run_script(path).returncode == 0
+        both = write_launch_file(tmp_path, "both.launch.py",
+                                 "try:\n    from a import generate_launch_description\n"
+                                 "except ImportError:\n"
+                                 "    def generate_launch_description():\n        return None\n")
+        assert not any("generate_launch_description" in i.message for i in validate_file(both))
+
+    def test_utf8_source_is_read_independently_of_the_locale(self, tmp_path):
+        path = tmp_path / "robot.launch.py"
+        path.write_bytes(("# 로봇 브링업\n" + VALID_LAUNCH).encode("utf-8"))
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"}
+        result = subprocess.run([sys.executable, SCRIPT, str(path)],
+                                capture_output=True, text=True, env=env)
+        assert "Cannot read file" not in result.stdout
+        assert result.returncode == 0, result.stdout
+
+    def test_coding_declaration_is_honoured_and_bad_bytes_are_an_error(self, tmp_path):
+        legacy = tmp_path / "legacy.launch.py"
+        legacy.write_bytes(("# -*- coding: cp949 -*-\n# 로봇\n" + VALID_LAUNCH).encode("cp949"))
+        assert not any("Cannot read" in i.message for i in validate_file(str(legacy)))
+        broken = tmp_path / "broken.launch.py"
+        broken.write_bytes(("# 로봇\n" + VALID_LAUNCH).encode("cp949"))
+        issues = validate_file(str(broken))
+        # tokenize reports undecodable bytes as a missing encoding declaration.
+        assert len(issues) == 1 and "encoding" in issues[0].message
+
+
+class TestDirectoryScope:
+    def test_colcon_outputs_and_non_launch_modules_are_skipped(self, tmp_path):
+        src = tmp_path / "src" / "pkg"
+        (src / "launch").mkdir(parents=True)
+        (src / "test").mkdir()
+        (src / "launch" / "robot.launch.py").write_text(VALID_LAUNCH)
+        (src / "launch" / "robot_launch.py").write_text(VALID_LAUNCH)
+        # pytest module (even importing launch) and process fake that merely end in _launch.py
+        (src / "test" / "test_http_launch.py").write_text(
+            "import launch\nimport subprocess\ndef test_x():\n    assert subprocess\n")
+        (src / "test" / "fake_launch.py").write_text("import signal\n")
+        (src / "tools").mkdir()
+        (src / "tools" / "helper_launch.py").write_text("import os\n")
+        for copy in ("install/pkg/share/pkg/launch", "build/pkg/launch", ".git/x"):
+            (tmp_path / copy).mkdir(parents=True)
+            (tmp_path / copy / "robot.launch.py").write_text(MISSING_GENERATE)
+        result = validate_directory(str(tmp_path))
+        assert result.files_checked == 2
+        assert result.error_count == 0
+
+    def test_underscore_launch_file_with_entry_point_in_tests_is_checked(self, tmp_path):
+        (tmp_path / "test").mkdir()
+        (tmp_path / "test" / "test_bringup_launch.py").write_text(MISSING_GENERATE.replace(
+            "some_other_function", "generate_launch_description").replace(
+            "LaunchDescription([])", "None"))
+        assert validate_directory(str(tmp_path)).files_checked == 1

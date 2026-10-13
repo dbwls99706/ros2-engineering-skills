@@ -289,6 +289,14 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
             "last message for late subscribers), or change the subscriber to VOLATILE."
         )
 
+    if pub.durability == Durability.TRANSIENT_LOCAL and sub.durability == Durability.VOLATILE:
+        warnings.append(
+            "Publisher is TRANSIENT_LOCAL but subscriber is VOLATILE. The connection "
+            "is made, but a late-joining subscriber receives no retained history: "
+            "if it needs the last sample (a map, static TF, a latched plan), request "
+            "TRANSIENT_LOCAL on the subscriber."
+        )
+
     # History / depth warnings
     if pub.history == History.KEEP_ALL:
         warnings.append(

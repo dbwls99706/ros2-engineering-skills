@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 try:
     import yaml  # type: ignore[import-untyped]
@@ -146,26 +146,49 @@ def parse_metadata(metadata_path: str) -> list[dict]:
         sys.exit(1)
 
     path = Path(metadata_path)
-    if not path.exists():
-        print(f"Error: File not found: {metadata_path}", file=sys.stderr)
+    if path.is_dir():
+        # `ros2 bag info` and `ros2 bag play` take the bag directory.
+        path = path / "metadata.yaml"
+    if not path.is_file():
+        print(f"Error: File not found: {path}", file=sys.stderr)
         sys.exit(1)
 
-    content = path.read_text()
-    data = yaml.safe_load(content)
+    def malformed(reason: str) -> NoReturn:
+        # A structural error is a usage error, not a traceback, and never a
+        # partial result: dropping a topic would make `--json` report fewer
+        # topics than the bag holds with exit 0.
+        print(f"Error: {path} is not rosbag2 metadata: {reason}", file=sys.stderr)
+        sys.exit(1)
+
+    # Bytes: PyYAML detects UTF-8/UTF-16 itself, while read_text() would use
+    # the locale codec (cp949/cp1252 on Windows) and misread rosbag2's UTF-8.
+    try:
+        data = yaml.safe_load(path.read_bytes())
+    except yaml.YAMLError as exc:
+        print(f"Error: {path} is not valid YAML: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if data is None:
         return []
+    if not isinstance(data, dict):
+        malformed("top level is not a mapping")
 
-    # Handle both rosbag2 metadata formats
-    if "rosbag2_bagfile_information" in data:
-        bag_info = data["rosbag2_bagfile_information"]
-    else:
-        bag_info = data
+    # Handle both rosbag2 metadata formats: with the
+    # rosbag2_bagfile_information wrapper and without it.
+    bag_info = data.get("rosbag2_bagfile_information", data)
+    if not isinstance(bag_info, dict):
+        malformed("rosbag2_bagfile_information is not a mapping")
 
     topics_with_qos = []
-    topics = bag_info.get("topics_with_message_count", [])
-    for topic_entry in topics:
+    topics = bag_info.get("topics_with_message_count") or []
+    if not isinstance(topics, list):
+        malformed("topics_with_message_count is not a list")
+    for index, topic_entry in enumerate(topics):
+        if not isinstance(topic_entry, dict):
+            malformed(f"topic entry {index} is not a mapping")
         topic_meta = topic_entry.get("topic_metadata", topic_entry)
+        if not isinstance(topic_meta, dict):
+            malformed(f"topic_metadata of entry {index} is not a mapping")
         topic_name = topic_meta.get("name", topic_meta.get("topic", ""))
         msg_type = topic_meta.get("type", "")
 

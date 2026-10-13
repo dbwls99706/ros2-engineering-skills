@@ -1126,3 +1126,29 @@ class TestRepositoryControls:
         assert code == 0
         assert [e["topic"] for e in data["unpaired"]] == ["managed_probe"]
         assert data["unpaired"][0]["msg_type"] == "std_msgs/msg/String"
+
+
+class TestEmptyScan:
+    def test_zero_scanned_files_is_never_a_strict_pass(self, tmp_path, capsys):
+        # A symlinked package tree scanned zero files and exited 0; nothing
+        # had been audited.
+        empty = tmp_path / "pkg"
+        empty.mkdir()
+        code, data = audit(empty)
+        assert code == 0 and data["scanned_files"] == 0 and data["empty_scan"] is True
+        assert "no files scanned" in capsys.readouterr().err
+        code, data = audit(empty, "--strict")
+        assert code == 1 and data["exit_code"] == 1
+
+    def test_text_report_warns_about_an_empty_scan(self, tmp_path, capsys):
+        empty = tmp_path / "pkg"
+        empty.mkdir()
+        assert qos_audit.main([str(empty)]) == 0
+        out = capsys.readouterr()
+        assert "WARNING: no files were scanned" in out.out
+        assert "no files scanned" in out.err
+
+    def test_a_real_scan_is_not_empty(self, tmp_path):
+        write(tmp_path, "node.py", py_node(explicit(), explicit()))
+        code, data = audit(tmp_path, "--strict")
+        assert data["empty_scan"] is False and data["scanned_files"] == 1
