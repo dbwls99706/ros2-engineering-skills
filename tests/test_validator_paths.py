@@ -95,3 +95,16 @@ def test_check_file_read_error_and_comment_heuristics(tmp_path):
     content = 'value = "#"; time.sleep(1)'
     assert not legacy._is_in_comment(content, content.index('time.sleep'))
     assert legacy.check_content(content, 'node.py')
+
+
+@pytest.mark.parametrize('path,expected', [
+    ('/w/README.md', 0), ('/w/docs/notes.txt', 0), ('/w/scripts/deploy.sh', 0),
+    ('/w/config/params.yaml', 0), ('/w/src/node.py', 1), ('/w/src/node.cpp', 1), ('', 1)])
+def test_event_mode_checks_only_source_files(monkeypatch, capsys, path, expected):
+    # Manual --file and check_file() skip unsupported extensions, but event
+    # mode flagged prose that merely mentions the pattern (most time.sleep
+    # findings in one project came from .md, .sh and test notes). A payload
+    # without a path is still checked.
+    code, out = invoke(monkeypatch, capsys, [], {'tool_name': 'Write', 'tool_input': {
+        'file_path': path, 'content': 'Avoid time.sleep(1) in callbacks\n'}})
+    assert code == 0 and json.loads(out.out)['issues_count'] == expected

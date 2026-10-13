@@ -69,6 +69,23 @@ import sys
 #                    when the filter returns True. Default: applies to all
 #                    checkable files. Use to scope launch-only or
 #                    ROS-specific patterns to where they are real signals.
+#   distro_filter  - callable(ros_distro) -> bool, where ros_distro is the
+#                    lower-cased ROS_DISTRO of the environment ('' when
+#                    unset); if present, regex only runs when the filter
+#                    returns True. Use for advice that is wrong on older
+#                    distributions.
+
+# ROS_AUTOMATIC_DISCOVERY_RANGE arrived in Iron, which also deprecated
+# ROS_LOCALHOST_ONLY. On these earlier distributions the deprecated variable is
+# the only way to confine discovery, so recommending its replacement there
+# would make a follower open the robot's DDS traffic to the network.
+_DISTROS_WITHOUT_DISCOVERY_RANGE = frozenset(('foxy', 'galactic', 'humble'))
+
+
+def _ros_distro():
+    return os.environ.get('ROS_DISTRO', '').strip().lower()
+
+
 ANTIPATTERN_CHECKS = [
     {
         'pattern': r'time\.sleep\s*\(',
@@ -93,9 +110,11 @@ ANTIPATTERN_CHECKS = [
     },
     {
         'pattern': r'ROS_LOCALHOST_ONLY',
-        'message': ('ROS_LOCALHOST_ONLY is deprecated in Jazzy+. '
+        'message': ('ROS_LOCALHOST_ONLY is deprecated since Iron. '
                     'Use ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST instead'),
         'severity': 'warning',
+        # Unknown distro: keep warning, as before.
+        'distro_filter': lambda distro: distro not in _DISTROS_WITHOUT_DISCOVERY_RANGE,
     },
     {
         'pattern': r'node_executable\s*=',
@@ -198,9 +217,13 @@ def check_content(content, filename='<input>'):
     """
     issues = []
     markers = _comment_markers(filename)
+    distro = _ros_distro()
     for check in ANTIPATTERN_CHECKS:
         file_filter = check.get('file_filter')
         if file_filter and not file_filter(filename):
+            continue
+        distro_filter = check.get('distro_filter')
+        if distro_filter and not distro_filter(distro):
             continue
         flags = check.get('pattern_flags', 0)
         matches = list(re.finditer(check['pattern'], content, flags))
@@ -234,55 +257,88 @@ def check_file(filepath):
 # NOT a security boundary — see module docstring. These exist to catch
 # accidental literal commands like `rm -rf /`, not to defend against an
 # adversary or an LLM that knows about $IFS, $(...), or `eval`.
+#
+# Two kinds of pattern, marked by `position`:
+#   'command'  - the dangerous word is a program name, so it only counts in
+#                command position: start of the input or of a line, after a
+#                shell separator / grouping character / `$(`, or right after
+#                the opening quote of an argument (`bash -c '...'`,
+#                `ssh host '...'`), optionally behind variable assignments and
+#                wrappers (`sudo -u root`, `env A=1`, `xargs`, `timeout 5`).
+#                The same word as a mere argument (`grep mkfs`, `man
+#                mkfs.ext4`, a commit message, a sentence in a here-doc) is
+#                data, and refusing it with the blocking exit code is a false
+#                positive that stops read-only work.
+#   'anywhere' - the pattern is a shell operator or a structure (`> /dev/sda`,
+#                a fork bomb, `Remove-Item ... -Recurse -Force <root>`) that is
+#                dangerous wherever it appears, so it keeps matching anywhere.
+# `flags` carries `re` flags; an inline `(?i)` cannot follow the position prefix.
+_ASSIGNMENTS = r'(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*'
+_WRAPPER = (r'(?:(?:sudo|doas|exec|nohup|time|command|builtin|xargs|env|nice|ionice|stdbuf)'
+            r'(?:\s+-\S+(?:\s+[^\s;&|-][^\s;&|]*)?)*'
+            r'|timeout(?:\s+-\S+)*\s+\S+)\s+')
+_CMD = (r'(?:^|(?<=[\n;&|(){}`])|(?<=\$\()|(?<=[\s=]["\']))\s*' + _ASSIGNMENTS
+        + r'(?:' + _WRAPPER + _ASSIGNMENTS + r')*')
+
 DANGEROUS_COMMAND_PATTERNS = [
     # `(?=\s|$|[;&|])` terminates a target path at whitespace, end of input,
     # or a shell separator, so compound commands (`rm -rf /; echo done`,
     # `rm -rf / && true`) are still caught, while longer paths under the
     # same root (`rm -rf /var/lib/apt/lists/*`) are not.
     {
-        'pattern': r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/(?=\s|$|[;&|])',
+        'pattern': _CMD + r'rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/(?=\s|$|[;&|])',
+        'position': 'command',
         'message': 'Refusing to remove root filesystem (rm -rf /)',
     },
     {
-        'pattern': r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/\*',
+        'pattern': _CMD + r'rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/\*',
+        'position': 'command',
         'message': 'Refusing to remove all files from root (rm -rf /*)',
     },
     {
-        'pattern': r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)/opt/ros\b',
+        'pattern': _CMD + r'rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)/opt/ros\b',
+        'position': 'command',
         'message': 'Refusing to remove ROS installation directory',
     },
     {
         # Matches removal of the critical directory itself (optionally with
         # a trailing / or /*), NOT of arbitrary subpaths beneath it.
-        'pattern': (r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)'
+        'pattern': (_CMD + r'rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)'
                     r'/(usr|bin|sbin|etc|var|boot|lib|lib64)'
                     r'(?:/\*)?/?(?=\s|$|[;&|])'),
+        'position': 'command',
         'message': 'Refusing to remove critical system directory',
     },
     {
-        'pattern': (r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)'
+        'pattern': (_CMD + r'rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)'
                     r'(~|\$HOME)/?(?=\s|$|[;&|])'),
+        'position': 'command',
         'message': 'Refusing to remove home directory',
     },
     {
-        'pattern': r'\bmkfs\b',
+        'pattern': _CMD + r'mkfs\b',
+        'position': 'command',
         'message': 'Refusing to format filesystem (mkfs)',
     },
     {
-        'pattern': r'\bdd\s+.*\bof\s*=\s*/dev/(sd|nvme|vd|hd)',
+        'pattern': _CMD + r'dd\s+.*\bof\s*=\s*/dev/(sd|nvme|vd|hd)',
+        'position': 'command',
         'message': 'Refusing to write directly to block device (dd)',
     },
     {
         # Only the filesystem root itself (`/` or `/*`), not any absolute path.
-        'pattern': r'\bchmod\s+(-[a-zA-Z]*R[a-zA-Z]*\s+)777\s+/\*?(?=\s|$|[;&|])',
+        'pattern': _CMD + r'chmod\s+(-[a-zA-Z]*R[a-zA-Z]*\s+)777\s+/\*?(?=\s|$|[;&|])',
+        'position': 'command',
         'message': 'Refusing to recursively chmod 777 on root filesystem',
     },
     {
         'pattern': r':\s*\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:',
+        'position': 'anywhere',
         'message': 'Refusing to execute fork bomb',
     },
     {
         'pattern': r'>\s*/dev/(sd|nvme|vd|hd)',
+        'position': 'anywhere',
         'message': 'Refusing to overwrite block device',
     },
     # PowerShell / Windows equivalents. Maintainer works on Windows and the
@@ -291,7 +347,7 @@ DANGEROUS_COMMAND_PATTERNS = [
     # Same best-effort caveat as above: these are not a security boundary.
     #
     # Implementation notes:
-    #   * (?i) inline flag — PowerShell cmdlets are case-insensitive
+    #   * `flags: re.IGNORECASE` — PowerShell cmdlets are case-insensitive
     #     (`remove-item` == `Remove-Item`).
     #   * `\b` only attaches to alphanumeric ends; on a hyphen-prefixed flag
     #     like `-Recurse` the leading `\b` would fail (space → `-` is not a
@@ -300,41 +356,55 @@ DANGEROUS_COMMAND_PATTERNS = [
     #   * Drive-root regex requires `:` then `/` or `\` then nothing else
     #     meaningful, so `C:/Users/me/build` (a real subdir) does NOT match.
     {
-        'pattern': (r'(?i)\bRemove-Item\b'
+        'pattern': (r'\bRemove-Item\b'
                     r'(?=[^;\n]*\s-Recurse\b)'
                     r'(?=[^;\n]*\s-Force\b)'
                     r'[^;\n]*[A-Za-z]:[\\/]\s*(?:["\']?\s*)?(?:[;\n]|$)'),
+        'position': 'anywhere',
+        'flags': re.IGNORECASE,
         'message': 'Refusing to recursively force-remove a drive root (Remove-Item)',
     },
     {
-        'pattern': (r'(?i)\bRemove-Item\b'
+        'pattern': (r'\bRemove-Item\b'
                     r'(?=[^;\n]*\s-Recurse\b)'
                     r'(?=[^;\n]*\s-Force\b)'
                     r'[^;\n]*(?:\$HOME|\$env:USERPROFILE|~)\s*'
                     r'(?:["\']?\s*)?(?:[;\n]|$)'),
+        'position': 'anywhere',
+        'flags': re.IGNORECASE,
         'message': 'Refusing to recursively force-remove the home directory (Remove-Item)',
     },
     {
-        'pattern': (r'(?i)\bRemove-Item\b'
+        'pattern': (r'\bRemove-Item\b'
                     r'(?=[^;\n]*\s-Recurse\b)'
                     r'(?=[^;\n]*\s-Force\b)'
                     r'[^;\n]*[A-Za-z]:[\\/](?:Windows|Program Files|Program Files \(x86\)|Users)\b'),
+        'position': 'anywhere',
+        'flags': re.IGNORECASE,
         'message': 'Refusing to recursively force-remove a critical Windows directory',
     },
     {
-        'pattern': r'(?i)\bFormat-Volume\b',
+        'pattern': _CMD + r'Format-Volume\b',
+        'position': 'command',
+        'flags': re.IGNORECASE,
         'message': 'Refusing to format volume (Format-Volume)',
     },
     {
-        'pattern': r'(?i)\bClear-Disk\b',
+        'pattern': _CMD + r'Clear-Disk\b',
+        'position': 'command',
+        'flags': re.IGNORECASE,
         'message': 'Refusing to clear disk (Clear-Disk)',
     },
     {
-        'pattern': r'(?i)\bRemove-Partition\b',
+        'pattern': _CMD + r'Remove-Partition\b',
+        'position': 'command',
+        'flags': re.IGNORECASE,
         'message': 'Refusing to remove partition (Remove-Partition)',
     },
     {
-        'pattern': r'(?i)\brmdir\b\s+/s\s+/q\s+[A-Za-z]:[\\/]?\s*$',
+        'pattern': r'\brmdir\b\s+/s\s+/q\s+[A-Za-z]:[\\/]?\s*$',
+        'position': 'anywhere',
+        'flags': re.IGNORECASE,
         'message': 'Refusing to silently recursively remove drive root (rmdir /s /q)',
     },
 ]
@@ -344,7 +414,7 @@ def _check_dangerous_commands(command):
     """Check a bash command string for dangerous patterns."""
     issues = []
     for check in DANGEROUS_COMMAND_PATTERNS:
-        if re.search(check['pattern'], command):
+        if re.search(check['pattern'], command, check.get('flags', 0)):
             issues.append({
                 'file': '<bash>',
                 'line': 0,
@@ -500,7 +570,12 @@ def _event_mode_issues():
         else:
             content = (tool_input.get('content', '')
                        or tool_input.get('new_string', ''))
-        if content:
+        # Same scope as check_file() and manual --file: these are source-code
+        # patterns. Prose (README.md, notes.txt), shell scripts and parameter
+        # files that mention time.sleep() or ROS_LOCALHOST_ONLY are not ROS 2
+        # nodes. A payload without a path is still checked.
+        ext = os.path.splitext(filepath)[1] if isinstance(filepath, str) else ''
+        if content and (not filepath or ext in CHECKABLE_EXTENSIONS):
             issues = check_content(content, filepath)
 
     # For shell-style tools, check for dangerous patterns. Includes PowerShell

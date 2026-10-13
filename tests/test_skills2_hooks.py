@@ -12,6 +12,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), '..', 'scripts')
 
 sys.path.insert(0, SCRIPTS_DIR)
@@ -593,11 +595,30 @@ class TestValidateHookAntiPatterns:
         assert len(issues) >= 1
         assert any('Global' in i['message'] for i in issues)
 
-    def test_detects_ros_localhost_only(self):
+    def test_detects_ros_localhost_only(self, monkeypatch):
+        monkeypatch.delenv('ROS_DISTRO', raising=False)  # unknown distro keeps warning
         issues = check_content(
             'os.environ["ROS_LOCALHOST_ONLY"] = "1"', 'test.py')
         assert len(issues) >= 1
         assert any('ROS_LOCALHOST_ONLY' in i['message'] for i in issues)
+        assert any('since Iron' in i['message'] for i in issues)
+
+    @pytest.mark.parametrize('distro,expected', [
+        ('foxy', 0), ('galactic', 0), ('humble', 0), ('Humble', 0),
+        ('iron', 1), ('jazzy', 1), ('rolling', 1), ('', 1), (None, 1)])
+    def test_ros_localhost_only_advice_follows_the_distro(self, monkeypatch, distro, expected):
+        # ROS_AUTOMATIC_DISCOVERY_RANGE does not exist before Iron, so on Foxy
+        # or Humble ROS_LOCALHOST_ONLY is the correct variable and the advice
+        # would open discovery to the network. One robot project saw this
+        # warning 27 times on Foxy.
+        if distro is None:
+            monkeypatch.delenv('ROS_DISTRO', raising=False)
+        else:
+            monkeypatch.setenv('ROS_DISTRO', distro)
+        issues = check_content('export ROS_LOCALHOST_ONLY=1\nnode = 1\n', 'bringup.py')
+        assert len([i for i in issues if 'ROS_LOCALHOST_ONLY' in i['message']]) == expected
+        # Other checks are unaffected by the distro gate.
+        assert len(check_content('time.sleep(1)', 'node.py')) == 1
 
     def test_detects_deprecated_node_executable(self):
         # Deprecated launch_ros kwarg - check only fires on .launch.py files
@@ -822,6 +843,65 @@ class TestDangerousCommandDetection:
 
     def test_dangerous_patterns_non_empty(self):
         assert len(DANGEROUS_COMMAND_PATTERNS) >= 5
+
+    def test_all_dangerous_patterns_compile_and_declare_a_position(self):
+        # The command-position prefix is prepended to a pattern string, so an
+        # inline (?i) would raise "global flags not at the start"; flags live
+        # in the `flags` field instead.
+        import re
+        positions = {check['position'] for check in DANGEROUS_COMMAND_PATTERNS}
+        assert positions == {'command', 'anywhere'}
+        for check in DANGEROUS_COMMAND_PATTERNS:
+            assert '(?i)' not in check['pattern'], check['message']
+            re.compile(check['pattern'], check.get('flags', 0))
+
+    def test_mentioning_a_dangerous_command_is_not_running_it(self):
+        # Exit 2 refuses the tool call outright, so these read-only commands
+        # were blocked although nothing destructive would run.
+        for cmd in ['grep -rn mkfs tests/*.py',
+                    'man mkfs.ext4 | head',
+                    'which mkfs.vfat',
+                    "git commit -m 'docs: never run mkfs on the robot SD card'",
+                    "printf '%s\\n' 'never run rm -rf / on the robot' >> NOTES.md",
+                    "cat > SAFETY.md <<'EOF'\nDo not run rm -rf / or "
+                    "dd if=x of=/dev/sda here.\nEOF",
+                    'python3 -c "print(\'Format-Volume is Windows only\')"',
+                    'Get-Help Clear-Disk -Full',
+                    'apt list --installed | grep -i chmod']:
+            assert _check_dangerous_commands(cmd) == [], cmd
+
+    def test_dangerous_command_behind_wrappers_or_quotes_is_blocked(self):
+        for cmd in ['sudo mkfs.ext4 /dev/sdb1',
+                    'sudo -u root mkfs.vfat /dev/sdc1',
+                    'FOO=1 env A=2 rm -rf /',
+                    'timeout 5 dd if=/dev/zero of=/dev/sda',
+                    'nice -n 19 rm -rf /usr',
+                    'echo y | sudo mkfs /dev/sdb',
+                    'ls; mkfs.ext4 /dev/sdb',
+                    'x=$(mkfs.ext4 /dev/sdb)',
+                    "ssh robot 'sudo mkfs.ext4 /dev/mmcblk0p1'",
+                    'bash -c "rm -rf / && echo gone"',
+                    "cat > wipe.sh <<'EOF'\nrm -rf /\nEOF",
+                    'Get-Disk 1 | Clear-Disk -RemoveData',
+                    'pwsh -Command "Format-Volume -DriveLetter D"',
+                    'REMOVE-PARTITION -DiskNumber 1 -PartitionNumber 1']:
+            assert _check_dangerous_commands(cmd), cmd
+
+    def test_operator_patterns_still_match_anywhere(self):
+        # Redirections and structures are not program names: `>` in the middle
+        # of a pipeline is as destructive as at its start.
+        for cmd in ['echo something > /dev/sda',
+                    'cat image.img >/dev/nvme0n1',
+                    ':(){ :|:& };:',
+                    'rmdir /s /q C:\\',
+                    'Get-ChildItem; Remove-Item -Recurse -Force C:/']:
+            assert _check_dangerous_commands(cmd), cmd
+
+    def test_wrapper_prefix_stays_linear_on_long_input(self):
+        import time
+        start = time.monotonic()
+        _check_dangerous_commands('sudo ' + '-a b ' * 20000 + 'true')
+        assert time.monotonic() - start < 2.0
 
 
 class TestPowerShellDangerousCommands:
