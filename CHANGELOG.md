@@ -2,6 +2,118 @@
 
 All notable changes are documented here.
 
+## Unreleased
+
+Corrections from field use on a Foxy robot fleet (September to October 2026):
+false positives in both hooks, an installer that could delete a client
+configuration directory, validators that misread inputs, and guidance that was
+wrong or missing for Foxy. No new capability. The next release is a patch
+release; the bundle version surfaces are unchanged until then.
+
+Hooks:
+
+- Stop hook: a `*_launch.py` file is validated as a launch file only when it
+  imports a launch package or binds `generate_launch_description`; pytest
+  modules and process stubs that merely end in `_launch.py` are no longer
+  reported as "Missing generate_launch_description". `launch_testing` modules
+  (`generate_test_description`) are recognised. A `.launch.py` file stays
+  strict, and a syntax error in launch code is still reported.
+- Stop hook: `git status` runs with `--no-optional-locks`, so it no longer
+  rewrites `.git/index` at every turn end and no longer makes a concurrent
+  `git add`/`git commit` fail with `index.lock: File exists`.
+- Stop hook: YAML files without a Nav2 marker are not parsed, files above 1 MiB
+  are reported in `checks_skipped` instead of consuming the whole time budget,
+  and a non-UTF-8 source or YAML file is a finding instead of a crash that
+  dropped every other finding. Launch files are decoded as the launch loader
+  does (PEP 263 coding line, strict UTF-8 otherwise).
+- Stop hook: loop bodies and loop `else` clauses are no longer treated as
+  certain module-scope bindings; a loop over an empty literal never binds.
+- Adapter: an unchanged Stop advisory is shown once per session and again only
+  when a finding or one of its files changes; any cache failure shows it as
+  before. `ROS2_SKILL_DISABLE_HOOKS` (`Stop`, `PreToolUse`, `all`) turns an
+  adapter off; a knowledge-only installation (`INSTALL_PROVENANCE.json`)
+  never runs hooks even for a session that registered them before the
+  reinstall. Hooks run Python with `-B` so no `__pycache__` appears in a
+  provenance-tracked installation.
+- PreToolUse: destructive-command words count only in command position
+  (`sudo mkfs`, `ssh host 'rm -rf /'`, a here-doc script line), so `grep mkfs`,
+  `man mkfs.ext4`, a commit message or a sentence in a document are no longer
+  refused with the blocking exit code. Operator patterns (`> /dev/sda`, fork
+  bomb, `Remove-Item -Recurse -Force <root>`) still match anywhere. Pattern
+  flags moved from inline `(?i)` to a `flags` field.
+- PreToolUse: Write/Edit content is checked only for source extensions, the
+  same scope as `check_file()` and manual `--file`; Markdown, shell and
+  parameter files that mention `time.sleep()` or `ROS_LOCALHOST_ONLY` are not
+  nodes.
+- PreToolUse: the `ROS_LOCALHOST_ONLY` warning is suppressed on Foxy, Galactic
+  and Humble, where `ROS_AUTOMATIC_DISCOVERY_RANGE` does not exist and the
+  advice would open discovery to the network; the message now says "since
+  Iron".
+
+Installers and validators:
+
+- `install.sh --force` / `install.ps1 -Force` replace only a previous
+  installation of this skill (`SKILL.md` naming it, `references/`, and a
+  matching `INSTALL_PROVENANCE.json` when present). Client configuration
+  directories such as `~/.claude`, `~/.codex` or any `skills/` parent are
+  refused even when empty; `--dry-run` applies the same judgement. The
+  directory name itself is not restricted. `--link` explains that a linked
+  checkout may register hooks on a client that scans it. `install_skill.py
+  --verify` names the resolved directory when the target is a symlink.
+  Bundled `scripts/*.py` are executable.
+- `launch_validator.py`: duplicate node names in different branches of one
+  `if` or in different `return` statements of one function are a warning, not
+  an error; duplicates inside one return list stay an error. The entry point
+  is resolved from module-scope bindings (re-exports and aliases count, nested
+  defs do not, loops are conditional). Sources are decoded like Python's
+  import, independent of the locale. Directory scans skip `build/`,
+  `install/`, `log/`, hidden directories, and `_launch.py` modules that are
+  not launch code.
+- `rosbag2_qos_checker.py` accepts the bag directory, reads metadata as bytes
+  so a non-UTF-8 locale cannot misread it, and reports invalid YAML or a
+  malformed structure as an error with exit 1 instead of a traceback or a
+  partial result. Both metadata layouts and an empty file still parse.
+- `qos_audit.py` reports a scan that found no files (`empty_scan`, a warning
+  on stderr) and fails it under `--strict`.
+- `qos_checker.py` warns that a TRANSIENT_LOCAL publisher with a VOLATILE
+  subscriber connects but delivers no history to a late joiner.
+- Test suite: `tests/test_qos_property.py` skips without Hypothesis instead of
+  aborting collection (CI asserts the import); the skill-name test checks the
+  installer's output directory instead of the checkout's name.
+
+Guidance (`references/`), with the distribution each statement was verified on:
+
+- `communication.md`: TRANSIENT_LOCAL publisher with VOLATILE subscriber
+  connects but delivers no history; Foxy `ros2 topic echo` has no `--field`.
+- `debugging.md`: `ros2 topic echo` defaults (Foxy `sensor_data` preset,
+  Humble+ adaptive) and latched topics; interface pinning needs the running
+  processes' DDS configuration and an A/B/A check; `pgrep -f` must not match
+  its own shell.
+- `runtime-provenance.md`: `pgrep -f '[c]ontroller_server'` plus `/proc`
+  confirmation; `CYCLONEDDS_URI` and `FASTRTPS_DEFAULT_PROFILES_FILE` in the
+  environment check; copying a symlinked tree with `cp -rL` only after
+  confirming no link leaves the tree.
+- `lifecycle-components.md`: `component_container_isolated` is executor
+  isolation in one process, not crash isolation, and does not exist on Foxy.
+- `nodes-executors.md`: a Foxy SIGTERM example (handler records, cleanup after
+  the spin); the service-call rule separates callback-group-bound response
+  handling from done callbacks, which belong to no group and need their own
+  locking; "never `call()`" is stated with its conditions; rclpy runs ready
+  timers before waiting subscriptions after a long callback; rclpy cost scales
+  with delivered samples; the log severity of a call site is fixed.
+- `message-types.md` and `testing.md`: ROS_TIME is the wall clock without
+  sim time; ages and timeouts are computed on the steady clock; wait helpers
+  use `time.monotonic()`; four more test failure causes.
+- `launch-system.md`: SIGTERM to `ros2 launch` cancels without a `Shutdown`
+  event, so `OnShutdown` never runs (launch 0.10.10 and 1.0.14 source).
+- `evidence-progression.md`, `system-bringup.md`, `navigation.md`: find the
+  other check that reads the same quantity; confirm persistent journald before
+  trusting a watchdog reboot; start LIO mapping from rest.
+
+Known limits of this change: `install.ps1` is exercised by CI only (no local
+PowerShell); Foxy-specific statements come from reading the Foxy sources and
+from field runs, not from this repository's CI matrix (Humble and later).
+
 ## 1.7.0 - 2026-10-02
 
 Source bundle version 1.7.0. Release publication follows
