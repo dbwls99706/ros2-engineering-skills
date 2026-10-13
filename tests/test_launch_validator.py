@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "launch_validator.py")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -978,3 +980,84 @@ class TestDirectoryScope:
             "some_other_function", "generate_launch_description").replace(
             "LaunchDescription([])", "None"))
         assert validate_directory(str(tmp_path)).files_checked == 1
+
+
+# Entry-point shapes shared with the Stop hook: both validators must reach the
+# same verdict, since one runs at turn end and the other in CI and by hand.
+ENTRY_POINT_CASES = [
+    ("def", "def generate_launch_description():\n    return None\n", []),
+    ("reexport", "from my_pkg.common import generate_launch_description\n", []),
+    ("alias", "def _b():\n    return None\ngenerate_launch_description = _b\n", []),
+    ("lambda", "generate_launch_description = lambda: None\n", []),
+    ("factory", "import f\ngenerate_launch_description = f.make()\n", []),
+    ("none", "generate_launch_description = None\n", ["error"]),
+    ("literal", "generate_launch_description = 'x'\n", ["error"]),
+    ("list", "generate_launch_description = []\n", ["error"]),
+    ("module", "import os as generate_launch_description\n", ["error"]),
+    ("async", "async def generate_launch_description():\n    return None\n", ["error"]),
+    ("async-alias", "async def _b():\n    return None\ngenerate_launch_description = _b\n", ["error"]),
+    ("none-alias", "x = None\ngenerate_launch_description = x\n", ["error"]),
+    ("rebound", "def generate_launch_description():\n    return None\n"
+                "generate_launch_description = None\n", ["error"]),
+    ("deleted", "def generate_launch_description():\n    return None\n"
+                "del generate_launch_description\n", ["error"]),
+    ("missing", "def other():\n    return None\n", ["error"]),
+    ("if-only", "if flag:\n    def generate_launch_description():\n        return None\n", ["warning"]),
+    ("empty-loop", "for _ in []:\n    def generate_launch_description():\n        return None\n",
+     ["error"]),
+]
+
+
+def _entry_issues(issues):
+    return sorted(i.severity for i in issues if "generate_launch_description" in i.message)
+
+
+class TestEntryPointMustBeASyncCallable:
+    @pytest.mark.parametrize("label,source,expected", ENTRY_POINT_CASES,
+                             ids=[case[0] for case in ENTRY_POINT_CASES])
+    def test_entry_point_verdict(self, tmp_path, label, source, expected):
+        # A name that is bound to None, a literal, a module or a coroutine
+        # function is provably not a callable that returns a LaunchDescription.
+        path = write_launch_file(tmp_path, f"{label}.launch.py", source)
+        assert _entry_issues(validate_file(path)) == expected
+        assert run_script(path).returncode == (1 if "error" in expected else 0)
+
+    @pytest.mark.parametrize("label,source,expected", ENTRY_POINT_CASES,
+                             ids=[case[0] for case in ENTRY_POINT_CASES])
+    def test_stop_hook_reaches_the_same_verdict(self, tmp_path, label, source, expected):
+        import skill_stop_hook
+        path = write_launch_file(tmp_path, f"{label}.launch.py", source)
+        hook = sorted(i["severity"] for i in skill_stop_hook.validate_launch_file_syntax(path))
+        assert hook == _entry_issues(validate_file(path)) == expected
+
+
+class TestCandidateSelectionUsesTheSyntaxTree:
+    def test_a_mention_in_a_comment_is_not_launch_code(self, tmp_path):
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "test").mkdir()
+        (tmp_path / "tools" / "helper_launch.py").write_text(
+            "# see generate_launch_description in launch/robot.launch.py\nimport os\n")
+        (tmp_path / "test" / "test_http_launch.py").write_text(
+            '"""generate_launch_description is covered elsewhere."""\nimport pytest\n')
+        assert validate_directory(str(tmp_path)).files_checked == 0
+
+    def test_bound_entry_points_and_launch_imports_are_candidates(self, tmp_path):
+        (tmp_path / "launch").mkdir()
+        (tmp_path / "test").mkdir()
+        (tmp_path / "launch" / "a_launch.py").write_text(
+            "async def generate_launch_description():\n    return None\n")
+        (tmp_path / "launch" / "b_launch.py").write_text(
+            "def build():\n    from launch import LaunchDescription\n    return LaunchDescription([])\n")
+        (tmp_path / "test" / "test_c_launch.py").write_text(
+            "generate_launch_description = None\n")
+        result = validate_directory(str(tmp_path))
+        assert result.files_checked == 3 and result.error_count == 3
+
+    def test_unparseable_file_falls_back_to_its_text(self, tmp_path):
+        (tmp_path / "launch").mkdir()
+        (tmp_path / "launch" / "broken_launch.py").write_text(
+            "from launch import LaunchDescription\ndef generate_launch_description(:\n")
+        (tmp_path / "launch" / "noise_launch.py").write_text("import os\ndef main(:\n")
+        result = validate_directory(str(tmp_path))
+        assert result.files_checked == 1
+        assert any("Syntax error" in i.message for i in result.issues)

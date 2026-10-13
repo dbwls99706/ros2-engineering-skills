@@ -68,10 +68,13 @@ Installers and validators:
   `if` or in different `return` statements of one function are a warning, not
   an error; duplicates inside one return list stay an error. The entry point
   is resolved from module-scope bindings (re-exports and aliases count, nested
-  defs do not, loops are conditional). Sources are decoded like Python's
-  import, independent of the locale. Directory scans skip `build/`,
+  defs do not, loops are conditional) and must be a synchronous callable: an
+  entry point bound to `None`, a literal, a module or an `async def` is an
+  error, the same verdict the Stop hook reaches. Sources are decoded like
+  Python's import, independent of the locale. Directory scans skip `build/`,
   `install/`, `log/`, hidden directories, and `_launch.py` modules that are
-  not launch code.
+  not launch code, judged from the syntax tree rather than from a mention in
+  a comment (the raw text decides only when a file cannot be parsed).
 - `rosbag2_qos_checker.py` accepts the bag directory, reads metadata as bytes
   so a non-UTF-8 locale cannot misread it, and reports invalid YAML or a
   malformed structure as an error with exit 1 instead of a traceback or a

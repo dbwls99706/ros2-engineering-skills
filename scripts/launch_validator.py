@@ -644,8 +644,15 @@ def check_raw_patterns(filepath: str, source: str) -> list[Issue]:
     return issues
 
 
-_CERTAIN = "certain"
-_CONDITIONAL = "conditional"
+# What a module-scope name is bound to once the module has run. The launch
+# loader imports the file and calls the attribute afterwards, so the final
+# binding decides. These states and the rules below mirror
+# skill_stop_hook._module_symbols; a test keeps the two verdicts identical.
+_MISSING = "missing"
+_SYNC = "sync"                  # callable and not a coroutine function
+_ASYNC = "async"                # calling it returns a coroutine
+_NON_CALLABLE = "non_callable"  # None, a literal, a container or a module
+_UNKNOWN = "unknown"            # bound only on some execution paths
 
 
 def _is_falsy_literal(test: ast.AST) -> bool:
@@ -669,72 +676,111 @@ def _loop_never_runs(node: ast.AST) -> bool:
     return isinstance(it, ast.Constant) and it.value in ("", b"")
 
 
-def _merge_bindings(variants: list) -> dict:
+def _classify_value(value: ast.AST, symbols: dict) -> str:
+    """State that assigning *value* leaves the target in."""
+    if isinstance(value, ast.Lambda):
+        return _SYNC
+    if isinstance(value, (ast.Constant, ast.Dict, ast.List, ast.Tuple,
+                          ast.Set, ast.JoinedStr)):
+        return _NON_CALLABLE
+    if isinstance(value, ast.Name):
+        # An alias is only as good as its target; a name this module never
+        # bound (a star-import) is assumed to be the callable it was meant to be.
+        return symbols.get(value.id, _SYNC)
+    if isinstance(value, (ast.Attribute, ast.Call, ast.Subscript)):
+        return _SYNC  # cannot resolve statically; assume a callable
+    return _UNKNOWN
+
+
+def _merge_symbols(variants: list) -> dict:
+    """Combine per-path symbol tables; disagreement means unknown."""
     merged: dict = {}
     for name in set().union(*(set(v) for v in variants)):
-        states = [v.get(name) for v in variants]
-        merged[name] = _CERTAIN if all(s == _CERTAIN for s in states) else _CONDITIONAL
+        states = {v.get(name, _MISSING) for v in variants}
+        merged[name] = states.pop() if len(states) == 1 else _UNKNOWN
     return merged
 
 
-def _module_bindings(body: list, bound: Optional[dict] = None) -> dict:
-    """Names bound at module scope once *body* has run, and how surely.
+def _module_symbols(body: list, symbols: Optional[dict] = None) -> dict:
+    """Map every module-scope name to what it is bound to after *body*.
 
-    This is what the launch loader sees: it imports the module and reads
-    the attribute afterwards. A def nested in a function or class binds
-    nothing at module scope; a re-export (`from pkg.common import
-    generate_launch_description`) or an alias assignment does. `if`, `try`
-    and loop bodies bind only on some execution paths: a loop may run zero
-    times and its `else` is skipped after `break`, so neither is certain,
-    while a loop over an empty literal provably never runs its body.
+    Later bindings overwrite earlier ones, as the interpreter does. A def
+    nested in a function or class binds nothing at module scope; a re-export
+    (`from pkg.common import generate_launch_description`) or an alias does.
+    `if`, `try` and loops bind only on some execution paths: a loop may run
+    zero times and its `else` is skipped after `break`, while a loop over an
+    empty literal provably never runs its body.
     """
-    bound = {} if bound is None else bound
+    symbols = {} if symbols is None else symbols
     for node in body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bound[node.name] = _CERTAIN
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+        if isinstance(node, ast.FunctionDef):
+            symbols[node.name] = _SYNC
+        elif isinstance(node, ast.AsyncFunctionDef):
+            symbols[node.name] = _ASYNC
+        elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                bound[(alias.asname or alias.name).split(".")[0]] = _CERTAIN
+                symbols[alias.asname or alias.name] = _SYNC
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                # `import pkg as name` binds a module, which is not callable.
+                symbols[alias.asname or alias.name.split(".")[0]] = _NON_CALLABLE
         elif isinstance(node, ast.Assign):
+            state = _classify_value(node.value, symbols)
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    bound[target.id] = _CERTAIN
+                    symbols[target.id] = state
         elif isinstance(node, ast.AnnAssign):
             if node.value is not None and isinstance(node.target, ast.Name):
-                bound[node.target.id] = _CERTAIN
+                symbols[node.target.id] = _classify_value(node.value, symbols)
         elif isinstance(node, ast.Delete):
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    bound.pop(target.id, None)
+                    symbols.pop(target.id, None)
         elif isinstance(node, ast.If):
             if _is_falsy_literal(node.test):
-                _module_bindings(node.orelse, bound)
+                _module_symbols(node.orelse, symbols)
             elif _is_truthy_literal(node.test):
-                _module_bindings(node.body, bound)
+                _module_symbols(node.body, symbols)
             else:
-                variants = [_module_bindings(node.body, dict(bound)),
-                            _module_bindings(node.orelse, dict(bound))]
-                bound.clear()
-                bound.update(_merge_bindings(variants))
+                variants = [_module_symbols(node.body, dict(symbols)),
+                            _module_symbols(node.orelse, dict(symbols))]
+                symbols.clear()
+                symbols.update(_merge_symbols(variants))
         elif isinstance(node, ast.Try):
-            variants = [_module_bindings(node.body + node.orelse, dict(bound))]
-            variants.extend(_module_bindings(handler.body, dict(bound))
+            variants = [_module_symbols(node.body + node.orelse, dict(symbols))]
+            variants.extend(_module_symbols(handler.body, dict(symbols))
                             for handler in node.handlers)
-            bound.clear()
-            bound.update(_merge_bindings(variants))
-            _module_bindings(node.finalbody, bound)
+            symbols.clear()
+            symbols.update(_merge_symbols(variants))
+            _module_symbols(node.finalbody, symbols)
         elif isinstance(node, ast.With):
-            _module_bindings(node.body, bound)
+            _module_symbols(node.body, symbols)
         elif isinstance(node, (ast.For, ast.While)):
             if _loop_never_runs(node):
-                _module_bindings(node.orelse, bound)
+                _module_symbols(node.orelse, symbols)
             else:
-                variants = [_module_bindings(node.orelse, dict(bound)),
-                            _module_bindings(node.body + node.orelse, dict(bound)),
-                            _module_bindings(node.body, dict(bound))]
-                bound.clear()
-                bound.update(_merge_bindings(variants))
-    return bound
+                variants = [_module_symbols(node.orelse, dict(symbols)),              # zero iterations
+                            _module_symbols(node.body + node.orelse, dict(symbols)),  # ran, no break
+                            _module_symbols(node.body, dict(symbols))]                # ran, break
+                symbols.clear()
+                symbols.update(_merge_symbols(variants))
+    return symbols
+
+
+_LAUNCH_PACKAGES = frozenset(("launch", "launch_ros", "launch_testing",
+                              "launch_xml", "launch_yaml"))
+
+
+def _imports_launch(tree: ast.AST) -> bool:
+    """True when the module imports a launch package anywhere, functions included."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name.split(".")[0] in _LAUNCH_PACKAGES for alias in node.names):
+                return True
+        elif (isinstance(node, ast.ImportFrom) and not node.level and node.module
+              and node.module.split(".")[0] in _LAUNCH_PACKAGES):
+            return True
+    return False
 
 
 def validate_file(filepath: str) -> list[Issue]:
@@ -762,15 +808,28 @@ def validate_file(filepath: str) -> list[Issue]:
     visitor.visit(tree)
     visitor.check_duplicates()
 
-    bound = _module_bindings(tree.body)
-    entry = bound.get("generate_launch_description")
-    # launch_testing modules export generate_test_description instead.
-    if entry is None and "generate_test_description" not in bound:
+    symbols = _module_symbols(tree.body)
+    entry = symbols.get("generate_launch_description", _MISSING)
+    if entry == _MISSING:
+        # launch_testing modules export generate_test_description instead.
+        if symbols.get("generate_test_description", _MISSING) == _MISSING:
+            issues.append(Issue(
+                filepath, 0, "error",
+                "Missing generate_launch_description() function. "
+                "Every ROS 2 launch file must define this function."))
+    elif entry == _ASYNC:
         issues.append(Issue(
             filepath, 0, "error",
-            "Missing generate_launch_description() function. "
-            "Every ROS 2 launch file must define this function."))
-    elif entry == _CONDITIONAL:
+            "generate_launch_description resolves to a coroutine function; the "
+            "launch loader calls it directly and gets a coroutine, not a "
+            "LaunchDescription."))
+    elif entry == _NON_CALLABLE:
+        issues.append(Issue(
+            filepath, 0, "error",
+            "generate_launch_description is bound to something that is not "
+            "callable (None, a literal, a container or a module); the launch "
+            "loader calls whatever the module exports under that name."))
+    elif entry == _UNKNOWN:
         issues.append(Issue(
             filepath, 0, "warning",
             "generate_launch_description() is bound only on some execution "
@@ -794,8 +853,10 @@ def validate_file(filepath: str) -> list[Issue]:
 # colcon output and tool caches hold copies of the sources (install/ share
 # trees, build/ ament_python copies); scanning them repeats every finding.
 _SKIP_DIRS = frozenset(("build", "install", "log", "__pycache__", "node_modules"))
-_LAUNCH_IMPORT = re.compile(
-    r"^\s*(?:from|import)\s+launch(?:_ros|_testing|_xml|_yaml)?\b", re.MULTILINE)
+# Raw-text fallback, only for files the parser rejects.
+_LAUNCH_SOURCE_HINT = re.compile(
+    r"^\s*(?:from|import)\s+launch(?:_ros|_testing|_xml|_yaml)?\b"
+    r"|generate_launch_description", re.MULTILINE)
 
 
 def _is_test_module(filepath: str) -> bool:
@@ -810,22 +871,27 @@ def _is_launch_candidate(filepath: str, name: str) -> bool:
 
     The underscore suffix is also an ordinary module name ending (a pytest
     `test_http_launch.py`, a `fake_launch.py` process stub). Such a file
-    counts only when it binds the entry point, or imports a launch package
-    outside a test module.
+    counts only when its syntax tree binds the entry point at module scope,
+    or imports a launch package outside a test module. A mention in a
+    comment or docstring does neither. The raw text decides only when the
+    file cannot be parsed, so a broken launch file is still reported. Same
+    rule as the Stop hook's launch check.
     """
     if name.endswith(".launch.py"):
         return True
     if not name.endswith("_launch.py"):
         return False
     try:
-        text = Path(filepath).read_bytes().decode("utf-8", "replace")
+        raw = Path(filepath).read_bytes()
     except OSError:
         return True  # let validate_file report the read error
-    if "generate_launch_description" in text:
+    try:
+        tree = ast.parse(importlib.util.decode_source(raw), filename=filepath)
+    except (SyntaxError, UnicodeDecodeError, ValueError):
+        return bool(_LAUNCH_SOURCE_HINT.search(raw.decode("utf-8", "replace")))
+    if _module_symbols(tree.body).get("generate_launch_description", _MISSING) != _MISSING:
         return True
-    if _is_test_module(filepath):
-        return False
-    return bool(_LAUNCH_IMPORT.search(text))
+    return not _is_test_module(filepath) and _imports_launch(tree)
 
 
 def validate_directory(dirpath: str) -> ValidationResult:
