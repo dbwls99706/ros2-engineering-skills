@@ -84,6 +84,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
+      - name: Property tests must actually run
+        # tests/test_qos_property.py skips itself without Hypothesis so a
+        # local run without dev dependencies still collects; CI must have it.
+        run: python -c "import hypothesis, setuptools"
       - name: Run tests with coverage
         run: |
           set -o pipefail

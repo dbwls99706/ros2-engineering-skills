@@ -7,8 +7,14 @@ not just hand-picked examples. This catches edge cases that example-based tests 
 import os
 import sys
 
-from hypothesis import given, assume, settings
-from hypothesis import strategies as st
+import pytest
+
+# A dev dependency (requirements-dev.txt). Without it the whole collection
+# used to abort, taking every other test file down with this one; CI checks
+# the import explicitly so the property tests cannot silently stop running.
+pytest.importorskip("hypothesis")
+from hypothesis import given, assume, settings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from qos_checker import (

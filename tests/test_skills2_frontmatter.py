@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,8 +61,21 @@ class TestAgentSkillsMetadata:
         assert 1 <= len(metadata['description']) <= 1024
         assert metadata['license'] == 'Apache-2.0'
 
-    def test_directory_matches_skill_name(self):
-        assert ROOT.name == _parse_frontmatter()['name']
+    def test_installed_directory_matches_skill_name(self, tmp_path):
+        # Clients resolve a skill by its directory name, so the installer
+        # must produce (and only accept) a directory named like SKILL.md. The
+        # source checkout itself may live under any name.
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        try:
+            import install_skill
+        finally:
+            sys.path.pop(0)
+        name = _parse_frontmatter()['name']
+        assert install_skill.NAME == name
+        result = install_skill.install(ROOT, tmp_path / name, dry_run=True)
+        assert Path(result['target']).name == name
+        with pytest.raises(ValueError, match='named ' + name):
+            install_skill.install(ROOT, tmp_path / 'skill', dry_run=True)
 
     def test_compatibility_is_bounded(self):
         compatibility = _parse_frontmatter()['compatibility']
