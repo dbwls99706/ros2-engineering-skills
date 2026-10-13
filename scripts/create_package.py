@@ -76,6 +76,58 @@ _APACHE2_CPP = """// Copyright 2024 {maintainer}
 """
 
 
+# Generated Python entry points own SIGINT/SIGTERM. With rclpy's default
+# handlers a signal makes a native signal thread shut the context down and
+# trigger the executor's guard conditions while the main thread, woken by
+# KeyboardInterrupt, is already destroying the node and executor: an
+# intermittent SIGSEGV at shutdown (observed on Humble, rclpy 3.3). Here the
+# handler only records the request; the main thread leaves the spin loop and
+# cleans up once, in order (references/nodes-executors.md section 1).
+_PYTHON_SIGNAL_IMPORT = """
+try:
+    from rclpy.signals import SignalHandlerOptions
+except ImportError:  # Foxy predates SignalHandlerOptions
+    SignalHandlerOptions = None"""
+
+
+def _python_main(class_name: str) -> str:
+    return f"""def main(args=None):
+    stop_requested = []
+
+    def request_stop(signum, frame):
+        stop_requested.append(signum)  # record only; no cleanup, no exception
+
+    if SignalHandlerOptions is None:
+        rclpy.init(args=args)
+    else:
+        rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    previous = {{sig: signal.signal(sig, request_stop)
+                for sig in (signal.SIGINT, signal.SIGTERM)}}
+    node = None
+    executor = None
+    try:
+        node = {class_name}Node()
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
+        while rclpy.ok() and not stop_requested:
+            executor.spin_once(timeout_sec=0.1)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # an interrupt before the handler was installed, or an external shutdown
+    finally:
+        try:
+            if executor is not None:
+                if node is not None:
+                    executor.remove_node(node)
+                executor.shutdown()
+            if node is not None:
+                node.destroy_node()
+        finally:
+            rclpy.try_shutdown()
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+"""
+
+
 def _copyright_py(maintainer: str = "TODO") -> str:
     _validate_maintainer_name(maintainer)
     return _APACHE2_PY.format(maintainer=maintainer)
@@ -521,10 +573,12 @@ def _generate_python_lifecycle_node(name: str, class_name: str,
     py_header = _copyright_py(maintainer_name)
     return py_header + f"""
 import math
+import signal
 
 import rclpy
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+{_PYTHON_SIGNAL_IMPORT}
 
 
 class {class_name}Node(LifecycleNode):
@@ -596,22 +650,7 @@ class {class_name}Node(LifecycleNode):
         pass  # Implement your logic here
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = None
-    try:
-        node = {class_name}Node()
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        try:
-            if node is not None:
-                node.destroy_node()
-        finally:
-            # A signal handler may already have shut down the context.
-            rclpy.try_shutdown()
-
+{_python_main(class_name)}
 
 if __name__ == '__main__':
     main()
@@ -647,10 +686,12 @@ def create_python_package(name: str, dest: Path,
     else:
         _write(pkg / name / f"{name}_node.py", py_header + f"""
 import math
+import signal
 
 import rclpy
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
+{_PYTHON_SIGNAL_IMPORT}
 
 
 class {class_name}Node(Node):
@@ -682,22 +723,7 @@ class {class_name}Node(Node):
             f'QoS incompatibility detected: {{event.last_policy_kind}}')
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = None
-    try:
-        node = {class_name}Node()
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        try:
-            if node is not None:
-                node.destroy_node()
-        finally:
-            # A signal handler may already have shut down the context.
-            rclpy.try_shutdown()
-
+{_python_main(class_name)}
 
 if __name__ == '__main__':
     main()

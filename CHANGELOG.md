@@ -83,6 +83,17 @@ Installers and validators:
   layouts and an empty file still parse.
 - `qos_audit.py` reports a scan that found no files (`empty_scan`, a warning
   on stderr) and fails it under `--strict`.
+- `create_package.py --type python` (plain and `--lifecycle`): the generated
+  `main()` owns SIGINT/SIGTERM. rclpy is initialised with
+  `SignalHandlerOptions.NO` (plain `rclpy.init()` on Foxy), the handler only
+  records the request, and the main thread leaves a `spin_once` loop and
+  removes the node, shuts the executor down, destroys the node and the
+  context once, in that order. rclpy's default handler shuts the context down
+  from its signal thread while the main thread, woken by `KeyboardInterrupt`,
+  is already destroying the node; that race crashed a generated node with
+  SIGSEGV at shutdown on Humble (rclpy 3.3) in the generated-fleet CI gate.
+  This is the pattern `references/nodes-executors.md` section 1 already
+  recommends.
 - `qos_checker.py` warns that a TRANSIENT_LOCAL publisher with a VOLATILE
   subscriber connects but delivers no history to a late joiner.
 - Test suite: `tests/test_qos_property.py` skips without Hypothesis instead of
