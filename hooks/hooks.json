@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" PreToolUse",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" PreToolUse",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" Stop",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" Stop",
             "timeout": 15
           }
         ]

@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import subprocess
 from unittest.mock import Mock
 
@@ -25,7 +26,8 @@ def test_clean_event_does_not_grant_permission(monkeypatch):
     monkeypatch.setattr(hook.subprocess, 'run', run)
     assert hook.run_hook('PreToolUse', payload()) == ({}, '', 0)
     args, kwargs = run.call_args
-    assert args[0][1].endswith('/scripts/skill_validate_hook.py')
+    assert args[0][-1].endswith('/scripts/skill_validate_hook.py')
+    assert args[0][1] == '-B'  # no __pycache__ in a provenance-tracked install
     assert kwargs['timeout'] == 8
     assert 'shell' not in kwargs
     assert 'TOOL_INPUT' not in kwargs['env']
@@ -208,3 +210,102 @@ def test_excessively_nested_json_stays_advisory(monkeypatch, capsys):
     monkeypatch.setattr(hook.sys, 'stdin', io.StringIO('[' * 2000 + '0' + ']' * 2000))
     assert hook.main(['Stop']) == 0
     assert 'skipped' in json.loads(capsys.readouterr().out)['systemMessage']
+
+
+def _stop_report(path):
+    return completed(code=1, status='fail', issues=[{
+        'file': str(path), 'severity': 'error', 'message': 'broken launch'}])
+
+
+def test_same_stop_advisory_is_shown_once_per_session(monkeypatch, tmp_path):
+    # Git status cannot attribute an untracked file to a session, so an
+    # unchanged finding would otherwise repeat at every turn end (18 of 26
+    # Stops in one session).
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    broken = tmp_path / 'robot.launch.py'
+    broken.write_text('x = 1\n')
+    monkeypatch.setattr(hook.subprocess, 'run', Mock(return_value=_stop_report(broken)))
+    first = hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]
+    assert 'broken launch' in first['systemMessage']
+    assert hook.run_hook('Stop', payload('Stop', session_id='s1')) == ({}, '', 0)
+    other = hook.run_hook('Stop', payload('Stop', session_id='s2'))[0]
+    assert 'broken launch' in other['systemMessage']
+    stamp = broken.stat().st_mtime_ns + 5_000_000_000
+    os.utime(broken, ns=(stamp, stamp))  # edited again: report again
+    again = hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]
+    assert 'broken launch' in again['systemMessage']
+    # A different finding on the same file is new information.
+    monkeypatch.setattr(hook.subprocess, 'run', Mock(return_value=completed(
+        code=1, status='fail', issues=[{'file': str(broken), 'severity': 'error',
+                                        'message': 'async entry point'}])))
+    assert 'async entry point' in hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]['systemMessage']
+    state_dir = tmp_path / 'cache' / 'ros2-engineering-skills' / 'stop-advisories'
+    assert (state_dir.stat().st_mode & 0o777) == 0o700
+
+
+@pytest.mark.parametrize('session_id', [None, '', 7, 'x' * 65, 'a/b', 'a b', '../x'])
+def test_stop_without_a_usable_session_id_is_always_shown(monkeypatch, tmp_path, session_id):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    monkeypatch.setattr(hook.subprocess, 'run',
+                        Mock(return_value=_stop_report(tmp_path / 'gone.launch.py')))
+    extra = {} if session_id is None else {'session_id': session_id}
+    for _ in range(2):
+        assert 'broken launch' in hook.run_hook('Stop', payload('Stop', **extra))[0]['systemMessage']
+    assert not (tmp_path / 'cache').exists()
+
+
+def test_stop_cache_failures_fall_back_to_showing(monkeypatch, tmp_path):
+    # The cache only reduces repetition: unwritable state, a symlinked state
+    # file or garbage content must never hide a finding or change exit codes.
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    monkeypatch.setattr(hook.subprocess, 'run',
+                        Mock(return_value=_stop_report(tmp_path / 'gone.launch.py')))
+    (tmp_path / 'cache').mkdir()
+    (tmp_path / 'cache' / 'ros2-engineering-skills').write_text('not a directory')
+    for _ in range(2):
+        result = hook.run_hook('Stop', payload('Stop', session_id='blocked'))
+        assert result[1:] == ('', 0) and 'broken launch' in result[0]['systemMessage']
+    (tmp_path / 'cache' / 'ros2-engineering-skills').unlink()
+    shown = hook.run_hook('Stop', payload('Stop', session_id='linked'))[0]
+    assert 'broken launch' in shown['systemMessage']
+    state = hook._advisory_state_path('linked')
+    content = state.read_text()
+    state.unlink()
+    (tmp_path / 'elsewhere').write_text(content)
+    state.symlink_to(tmp_path / 'elsewhere')
+    assert 'broken launch' in hook.run_hook('Stop', payload('Stop', session_id='linked'))[0]['systemMessage']
+    assert state.is_symlink() and (tmp_path / 'elsewhere').read_text() == content
+    state.unlink()
+    state.write_text('garbage')
+    assert 'broken launch' in hook.run_hook('Stop', payload('Stop', session_id='linked'))[0]['systemMessage']
+    assert hook.run_hook('Stop', payload('Stop', session_id='linked')) == ({}, '', 0)
+
+
+@pytest.mark.parametrize('value,event,disabled', [
+    ('all', 'Stop', True), ('stop', 'Stop', True), ('Stop', 'PreToolUse', False),
+    ('pretooluse, stop', 'PreToolUse', True), ('', 'Stop', False), (' ALL ', 'PreToolUse', True)])
+def test_hooks_can_be_disabled_per_event(monkeypatch, value, event, disabled):
+    monkeypatch.setenv(hook.DISABLE_ENV, value)
+    run = Mock(return_value=completed())
+    monkeypatch.setattr(hook.subprocess, 'run', run)
+    assert hook.hooks_disabled(event) is disabled
+    if disabled:
+        assert hook.run_hook(event, payload(event)) == ({}, '', 0)
+        run.assert_not_called()
+
+
+def test_knowledge_only_installation_never_runs_hooks(monkeypatch, tmp_path):
+    # A session that registered the plugin before a knowledge-only reinstall
+    # keeps invoking scripts/claude_hook.py from the replaced directory.
+    monkeypatch.delenv(hook.DISABLE_ENV, raising=False)
+    manifest = tmp_path / 'INSTALL_PROVENANCE.json'
+    manifest.write_text(json.dumps({'layout': 'knowledge-only'}))
+    assert hook.hooks_disabled('PreToolUse', root=tmp_path)
+    manifest.write_text(json.dumps({'layout': 'plugin'}))
+    assert not hook.hooks_disabled('PreToolUse', root=tmp_path)
+    manifest.write_text('[]')
+    assert not hook.hooks_disabled('PreToolUse', root=tmp_path)
+    manifest.write_text('{broken')
+    assert not hook.hooks_disabled('PreToolUse', root=tmp_path)
+    assert not hook.hooks_disabled('PreToolUse', root=tmp_path / 'missing')
+    assert not hook.hooks_disabled('Stop')  # this checkout carries no manifest

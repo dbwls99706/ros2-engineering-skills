@@ -37,9 +37,11 @@ Exit codes:
 
 import json
 import os
+import re
 import subprocess
 import sys
 import ast
+import importlib.util
 from pathlib import Path
 
 
@@ -75,6 +77,11 @@ try:
     _HAVE_YAML = True
 except ImportError:
     _HAVE_YAML = False
+
+# Nav2 parameter files are kilobytes. Anything larger is not parsed at Stop:
+# PyYAML's pure-Python loader needs about 12 s for a 9 MB recorded point list,
+# which is the whole Stop budget, at every turn end.
+_MAX_YAML_BYTES = 1024 * 1024
 
 # Top-level keys that mark a YAML file as a Nav2 parameter file.
 _NAV2_KEY_HINTS = frozenset((
@@ -234,8 +241,89 @@ def _module_symbols(body, symbols=None):
             _module_symbols(node.finalbody, symbols)
         elif isinstance(node, ast.With):
             _module_symbols(node.body, symbols)
+        elif isinstance(node, (ast.For, ast.While)):
+            # A loop body runs zero or more times and `else` runs only when
+            # the loop was not left by `break`, so neither is a certain
+            # binding. Over an empty literal (`for _ in []`) the body
+            # provably never runs and only `else` executes.
+            if _loop_never_runs(node):
+                _module_symbols(node.orelse, symbols)
+            else:
+                variants = [
+                    _module_symbols(node.orelse, dict(symbols)),              # zero iterations
+                    _module_symbols(node.body + node.orelse, dict(symbols)),  # ran, no break
+                    _module_symbols(node.body, dict(symbols)),                # ran, break
+                ]
+                symbols.clear()
+                symbols.update(_merge_symbols(variants))
 
     return symbols
+
+
+def _loop_never_runs(node):
+    """True for `for _ in []:` / `while False:` — a body that cannot run."""
+    if isinstance(node, ast.While):
+        return _is_falsy_literal(node.test)
+    it = node.iter
+    if isinstance(it, (ast.List, ast.Tuple, ast.Set)):
+        return not it.elts
+    if isinstance(it, ast.Dict):
+        return not it.keys
+    return isinstance(it, ast.Constant) and it.value in ('', b'')
+
+
+# Top-level packages whose import marks a module as launch code.
+_LAUNCH_PACKAGES = frozenset(('launch', 'launch_ros', 'launch_testing',
+                              'launch_xml', 'launch_yaml'))
+_LAUNCH_SOURCE_HINT = re.compile(
+    r'^\s*(?:from|import)\s+launch(?:_ros|_testing|_xml|_yaml)?\b'
+    r'|generate_launch_description', re.MULTILINE)
+
+
+def _imports_launch(tree):
+    """True when the module imports a launch package anywhere, functions included."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name.split('.')[0] in _LAUNCH_PACKAGES for alias in node.names):
+                return True
+        elif (isinstance(node, ast.ImportFrom) and not node.level and node.module
+              and node.module.split('.')[0] in _LAUNCH_PACKAGES):
+            return True
+    return False
+
+
+def _is_test_module(filepath):
+    """pytest-style module: `test_*.py`, or anything under test/ or tests/."""
+    path = Path(filepath)
+    return path.name.startswith('test_') or any(
+        part in ('test', 'tests') for part in path.parts[:-1])
+
+
+def _looks_like_launch_source(raw):
+    """Raw-text fallback for files the parser rejects."""
+    return bool(_LAUNCH_SOURCE_HINT.search(raw.decode('utf-8', errors='replace')))
+
+
+def _not_a_launch_description(filepath, tree, symbols):
+    """Name-matched files without an entry point that are provably something else.
+
+    * A launch_testing module exports generate_test_description instead.
+    * `_launch.py` is also an ordinary module name ending: a pytest
+      `test_integrated_http_launch.py`, a `fake_launch.py` that impersonates
+      the `ros2 launch` process for signal tests. Without an import of a
+      launch package such a file cannot build a LaunchDescription, and a
+      test module that merely imports `launch` is still a test. The
+      unambiguous `.launch.py` convention stays strict.
+
+    A `_launch.py` launch file that neither imports launch code nor binds
+    the entry point is missed here; `ros2 launch` would fail on it too, and
+    naming it `.launch.py` restores the strict check.
+    """
+    if symbols.get('generate_test_description', _MISSING) != _MISSING:
+        return True
+    if filepath.endswith('.launch.py'):
+        return False
+    return _is_test_module(filepath) or not _imports_launch(tree)
 
 
 def _entry_point_state(body, wanted):
@@ -247,52 +335,73 @@ def validate_launch_file_syntax(filepath):
     """Check that a launch file is valid Python and has generate_launch_description."""
     issues = []
     entry = 'generate_launch_description'
+    strict = filepath.endswith('.launch.py')
     try:
-        with open(filepath, 'r', encoding='utf-8') as fh:
-            source = fh.read()
+        with open(filepath, 'rb') as fh:
+            raw = fh.read()
+    except OSError:
+        return issues  # File may have been removed during session
+    try:
+        # Decode as the launch loader's import does (PEP 263 coding line,
+        # strict UTF-8 otherwise). Undecodable source is a finding, not a
+        # UnicodeDecodeError that aborts the whole hook. A `_launch.py` the
+        # parser rejects is still judged by its text, so a launch file with
+        # a syntax error is reported rather than skipped.
+        source = importlib.util.decode_source(raw)
         tree = ast.parse(source, filename=filepath)
-        state = _entry_point_state(tree.body, entry)
-        if state == _ASYNC:
+    except UnicodeDecodeError as e:
+        if strict or _looks_like_launch_source(raw):
             issues.append({
                 'file': filepath,
                 'severity': 'error',
-                'message': (f'{entry} resolves to a coroutine function — the '
-                            f'launch loader calls it directly and would get a '
-                            f'coroutine, not a LaunchDescription'),
+                'message': f'Source cannot be decoded for import (encoding): {e}',
             })
-        elif state == _NON_CALLABLE:
-            issues.append({
-                'file': filepath,
-                'severity': 'error',
-                'message': (f'{entry} ends up bound to something that is not '
-                            f'callable — the launch loader calls whatever the '
-                            f'module exports under that name'),
-            })
-        elif state == _UNKNOWN:
-            # Only some execution paths bind it. Not provably broken, so a
-            # warning rather than an error: the hook must not fail a launch
-            # file whose guard is always true in practice.
-            issues.append({
-                'file': filepath,
-                'severity': 'warning',
-                'message': (f'{entry} is only bound on some execution paths '
-                            f'— the launch loader fails on any path that '
-                            f'leaves it unset'),
-            })
-        elif state != _SYNC:
-            issues.append({
-                'file': filepath,
-                'severity': 'error',
-                'message': 'Missing generate_launch_description function',
-            })
+        return issues
     except SyntaxError as e:
+        if strict or _looks_like_launch_source(raw):
+            issues.append({
+                'file': filepath,
+                'severity': 'error',
+                'message': f'Syntax error: {e}',
+            })
+        return issues
+    symbols = _module_symbols(tree.body)
+    state = symbols.get(entry, _MISSING)
+    if state == _MISSING and _not_a_launch_description(filepath, tree, symbols):
+        return issues
+    if state == _ASYNC:
         issues.append({
             'file': filepath,
             'severity': 'error',
-            'message': f'Syntax error: {e}',
+            'message': (f'{entry} resolves to a coroutine function — the '
+                        f'launch loader calls it directly and would get a '
+                        f'coroutine, not a LaunchDescription'),
         })
-    except OSError:
-        pass  # File may have been removed during session
+    elif state == _NON_CALLABLE:
+        issues.append({
+            'file': filepath,
+            'severity': 'error',
+            'message': (f'{entry} ends up bound to something that is not '
+                        f'callable — the launch loader calls whatever the '
+                        f'module exports under that name'),
+        })
+    elif state == _UNKNOWN:
+        # Only some execution paths bind it. Not provably broken, so a
+        # warning rather than an error: the hook must not fail a launch
+        # file whose guard is always true in practice.
+        issues.append({
+            'file': filepath,
+            'severity': 'warning',
+            'message': (f'{entry} is only bound on some execution paths '
+                        f'— the launch loader fails on any path that '
+                        f'leaves it unset'),
+        })
+    elif state != _SYNC:
+        issues.append({
+            'file': filepath,
+            'severity': 'error',
+            'message': 'Missing generate_launch_description function',
+        })
     return issues
 
 
@@ -415,13 +524,31 @@ def validate_nav2_yaml(filepath):
         return issues
     import yaml  # type: ignore[import-untyped]
 
+    nav2_path = 'nav2' in filepath.lower()
     try:
-        with open(filepath, 'r', encoding='utf-8') as fh:
-            docs = list(yaml.safe_load_all(fh))
+        with open(filepath, 'rb') as fh:
+            raw = fh.read(_MAX_YAML_BYTES + 1)
     except OSError:
         return issues
+    # Only a file that mentions a Nav2 marker can produce a finding below, so
+    # the pure-Python parse is skipped for everything else (map dumps,
+    # recorded point lists, calibration files) instead of repeating it at
+    # every Stop. Decoding with replacement keeps a non-UTF-8 file from
+    # raising here; PyYAML reports its own encoding errors as YAMLError.
+    text = raw.decode('utf-8', errors='replace')
+    if not nav2_path and 'nav2_' not in text and not any(
+            hint in text for hint in _NAV2_KEY_HINTS):
+        return issues
+    if len(raw) > _MAX_YAML_BYTES:
+        return [{
+            'file': filepath,
+            'severity': 'skipped',
+            'message': f'larger than {_MAX_YAML_BYTES} bytes; not parsed',
+        }]
+    try:
+        docs = list(yaml.safe_load_all(raw))
     except yaml.YAMLError as e:
-        if 'nav2' in filepath.lower():
+        if nav2_path:
             issues.append({
                 'file': filepath,
                 'severity': 'error',
@@ -548,9 +675,15 @@ def _git_touched_paths(workspace):
             capture_output=True, text=True, timeout=10)
         if root.returncode != 0:
             return None
+        # --no-optional-locks: a plain `git status` refreshes and rewrites
+        # .git/index under index.lock. Run at every Stop, that made a
+        # concurrent `git add`/`git commit` in the same repository fail with
+        # "index.lock: File exists" (16 of 890 adds in one measurement), and
+        # it writes into a workspace the hook must otherwise leave alone.
         proc = subprocess.run(
-            ['git', '-C', workspace, 'status', '--porcelain', '-z',
-             '--untracked-files=all', '--no-renames', '--', '.'],
+            ['git', '--no-optional-locks', '-C', workspace, 'status',
+             '--porcelain', '-z', '--untracked-files=all', '--no-renames',
+             '--', '.'],
             capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -618,13 +751,17 @@ def main():
     for px in package_xmls:
         all_issues.extend(validate_package_xml(px))
 
-    for yf in yaml_files:
-        all_issues.extend(validate_nav2_yaml(yf))
-
     # Distinguish "no findings" from "check never ran": the key is always
     # present so consumers get a stable schema, and the PyYAML entry is
     # only added when there was actually YAML in scope to check.
     checks_skipped = []
+    for yf in yaml_files:
+        for issue in validate_nav2_yaml(yf):
+            if issue['severity'] == 'skipped':
+                checks_skipped.append(f"nav2_yaml: {issue['file']}: {issue['message']}")
+            else:
+                all_issues.append(issue)
+
     if yaml_files and not _HAVE_YAML:
         checks_skipped.append('nav2_yaml: PyYAML is not installed')
 

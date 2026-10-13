@@ -41,7 +41,7 @@ Read `references/test.md` and [a reference](references/test.md#example).
         'name': 'ros2-engineering', 'version': '1.3.0', 'source': './'}]})
     save(root / 'hooks/hooks.json', {'hooks': {event: [{'hooks': [{
         'type': 'command', 'timeout': 10,
-        'command': 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event,
+        'command': 'python3 -B "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event,
     }]}] for event in ('PreToolUse', 'Stop')}})
     (root / 'agents/openai.yaml').write_text('''interface:
   display_name: "ROS 2 Engineering"

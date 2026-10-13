@@ -7,11 +7,14 @@ Malformed input and internal failures are reported as skipped, not as passes.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+import tempfile
 
 SCRIPTS = {
     'PreToolUse': 'skill_validate_hook.py',
@@ -19,6 +22,83 @@ SCRIPTS = {
 }
 MAX_INPUT = 1024 * 1024
 MAX_FEEDBACK = 4000
+# Comma-separated event names, or "all": those events do nothing.
+DISABLE_ENV = 'ROS2_SKILL_DISABLE_HOOKS'
+_SESSION_ID = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
+
+
+def hooks_disabled(event, root=None):
+    """True when the user opted out or this copy was installed hook-free.
+
+    A session that registered the plugin hooks keeps calling this file after
+    the directory is replaced by install_skill.py's knowledge-only layout,
+    which promises no hooks; that manifest is honoured here. Anything
+    unreadable or unexpected means "not disabled".
+    """
+    raw = os.environ.get(DISABLE_ENV, '')
+    names = {part.strip().lower() for part in raw.split(',') if part.strip()}
+    if 'all' in names or event.lower() in names:
+        return True
+    manifest = Path(root or Path(__file__).resolve().parents[1]) / 'INSTALL_PROVENANCE.json'
+    try:
+        layout = json.loads(manifest.read_text(encoding='utf-8')).get('layout')
+    except (OSError, ValueError, AttributeError):
+        return False
+    return layout == 'knowledge-only'
+
+
+def _advisory_state_path(session_id):
+    base = os.environ.get('XDG_CACHE_HOME') or os.path.join(Path.home(), '.cache')
+    digest = hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:32]
+    return Path(base) / 'ros2-engineering-skills' / 'stop-advisories' / digest
+
+
+def _advisory_fingerprint(report, feedback):
+    """Same findings on unchanged files give the same fingerprint."""
+    digest = hashlib.sha256(feedback.encode('utf-8'))
+    for issue in report.get('issues', []):
+        path = issue.get('file') if isinstance(issue, dict) else None
+        try:
+            stat = os.stat(path) if isinstance(path, str) else None
+        except OSError:
+            stat = None
+        digest.update(repr((path, stat and stat.st_mtime_ns,
+                            stat and stat.st_size)).encode('utf-8'))
+    return digest.hexdigest()
+
+
+def already_shown(payload, report, feedback):
+    """Show a Stop advisory once per session until a finding or file changes.
+
+    Git status cannot tell which session created an untracked file, so the
+    same findings otherwise repeat at every turn end of every session. The
+    cache only reduces repetition: a missing or malformed session_id, an
+    unwritable cache, a symlinked state file or a concurrent writer all fall
+    back to showing the advisory, never to hiding it or changing the report.
+    """
+    session_id = payload.get('session_id')
+    if not isinstance(session_id, str) or not _SESSION_ID.match(session_id):
+        return False
+    fingerprint = _advisory_fingerprint(report, feedback)
+    path = _advisory_state_path(session_id)
+    try:
+        if path.is_symlink():
+            return False
+        if path.read_text(encoding='utf-8').strip() == fingerprint:
+            return True
+    except OSError:
+        pass
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if path.parent.is_symlink():
+            return False
+        fd, tmp = tempfile.mkstemp(dir=path.parent)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(fingerprint)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return False
 
 
 def notice(message):
@@ -86,6 +166,8 @@ def summarize(report):
 
 
 def run_hook(event, payload):
+    if hooks_disabled(event):
+        return {}, '', 0
     try:
         payload = normalize_payload(payload, event)
     except ValueError as exc:
@@ -100,8 +182,10 @@ def run_hook(event, payload):
     env.pop('TOOL_NAME', None)
     env.pop('TOOL_INPUT', None)
     try:
+        # -B: the validators must not leave __pycache__ in an installation
+        # whose provenance manifest is compared file by file.
         result = subprocess.run(
-            [sys.executable, str(script)], input=json.dumps(payload),
+            [sys.executable, '-B', str(script)], input=json.dumps(payload),
             text=True, capture_output=True, timeout=8 if event == 'PreToolUse' else 12,
             env=env,
         )
@@ -123,6 +207,8 @@ def run_hook(event, payload):
     if not feedback:
         return {}, '', 0
     if event == 'Stop':
+        if already_shown(payload, report, feedback):
+            return {}, '', 0
         # additionalContext would continue Stop on newer clients. Deliberately
         # keep this advisory user-facing and never return decision=block.
         return notice(feedback), '', 0

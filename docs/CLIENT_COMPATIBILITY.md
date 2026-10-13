@@ -123,6 +123,22 @@ client exposes PowerShell or `cmd` as a native tool. A working `python3` command
 is required by this hook configuration. A Windows copy-installer test does not
 establish Windows hook interpreter availability.
 
+The Stop advisory scopes its candidates by `git status`, which cannot tell
+which session created an untracked file, so a file left by another session or
+agent in the same checkout is reported here too. An unchanged advisory is shown
+once per session and again only when a finding or one of its files changes; the
+per-session state lives under `$XDG_CACHE_HOME/ros2-engineering-skills/`
+(`~/.cache` by default) and any failure to read or write it shows the advisory
+as before. Set `ROS2_SKILL_DISABLE_HOOKS=Stop` (or `PreToolUse`, or `all`;
+comma-separated) in the client environment to turn an adapter off without
+uninstalling the plugin. A directory whose `INSTALL_PROVENANCE.json` records
+the knowledge-only layout never runs hooks, even for a session that registered
+them before the reinstall. The hooks run Python with `-B` so they never leave
+`__pycache__` in a provenance-tracked installation. A `_launch.py` file is only
+validated as a launch file when it imports a launch package or binds
+`generate_launch_description`; a pytest module or process stub that merely ends
+in `_launch.py` is not. Name real launch files `.launch.py` for the strict check.
+
 ## Codex metadata and permission boundary
 
 `agents/openai.yaml` supplies a display name, short description, explicit default

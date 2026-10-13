@@ -114,6 +114,134 @@ class TestStopHookLaunchValidation:
         assert validate_launch_file_syntax(str(launch)) == []
 
 
+class TestStopHookNameMatchedNonLaunchFiles:
+    """`*_launch.py` is also an ordinary module suffix; only launch code counts.
+
+    Three files in one robot project were flagged "Missing
+    generate_launch_description" at every turn end for weeks: two pytest
+    modules and a stub that impersonates the `ros2 launch` process. None of
+    them is a launch file.
+    """
+
+    def _issues(self, tmp_path, relative, source):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(source, bytes):
+            path.write_bytes(source)
+        else:
+            path.write_text(source)
+        return validate_launch_file_syntax(str(path))
+
+    def test_process_fake_named_launch_is_not_a_launch_file(self, tmp_path):
+        assert self._issues(tmp_path, 'tests/fakes/fake_launch.py',
+                            'import signal\nimport sys\n'
+                            'def main():\n'
+                            '    signal.signal(signal.SIGINT, lambda *a: sys.exit(0))\n'
+                            "if __name__ == '__main__':\n"
+                            '    main()\n') == []
+
+    def test_pytest_module_named_launch_is_not_a_launch_file(self, tmp_path):
+        assert self._issues(tmp_path, 'test/test_integrated_http_launch.py',
+                            'import subprocess\n'
+                            'def test_starts():\n'
+                            "    assert subprocess.run(['true']).returncode == 0\n") == []
+
+    def test_test_module_importing_launch_is_still_a_test(self, tmp_path):
+        # A pytest module may drive `ros2 launch` through the launch API; the
+        # import alone does not make it a launch description.
+        for relative in ('test/test_bringup_launch.py', 'src/pkg/test_bringup_launch.py',
+                         'tests/integration/http_launch.py'):
+            assert self._issues(tmp_path, relative,
+                                'import launch\nimport pytest\n'
+                                'def test_up():\n    assert launch\n') == [], relative
+
+    def test_test_module_with_an_entry_point_is_validated(self, tmp_path):
+        issues = self._issues(tmp_path, 'test/test_bringup_launch.py',
+                              'from launch import LaunchDescription\n'
+                              'async def generate_launch_description():\n'
+                              '    return LaunchDescription([])\n')
+        assert len(issues) == 1 and 'coroutine' in issues[0]['message']
+
+    def test_launch_testing_module_is_not_a_launch_description(self, tmp_path):
+        assert self._issues(tmp_path, 'test/test_talker.launch.py',
+                            'import launch\n'
+                            'import launch_testing.actions\n'
+                            'def generate_test_description():\n'
+                            '    return launch.LaunchDescription(\n'
+                            '        [launch_testing.actions.ReadyToTest()])\n') == []
+
+    def test_underscore_launch_file_importing_launch_still_fails(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot_launch.py',
+                              'from launch import LaunchDescription\n'
+                              'def generate_description():\n'
+                              '    return LaunchDescription([])\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+        assert 'Missing' in issues[0]['message']
+
+    def test_import_inside_a_function_counts(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot_launch.py',
+                              'def build():\n'
+                              '    from launch_ros.actions import Node\n'
+                              '    return Node(package="p", executable="e")\n')
+        assert len(issues) == 1 and 'Missing' in issues[0]['message']
+
+    def test_entry_point_without_launch_import_is_validated(self, tmp_path):
+        # Launch objects may come from a shared helper module.
+        assert self._issues(tmp_path, 'launch/robot_launch.py',
+                            'from my_pkg.common import make_description\n'
+                            'def generate_launch_description():\n'
+                            '    return make_description()\n') == []
+
+    def test_dot_launch_file_without_imports_still_fails(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot.launch.py',
+                              'def generate_description():\n    return None\n')
+        assert len(issues) == 1
+        assert 'Missing' in issues[0]['message']
+
+    def test_syntax_error_in_a_launch_file_is_still_reported(self, tmp_path):
+        # The parser rejects the file before imports can be inspected, so the
+        # text decides: launch code with a syntax error is the finding that
+        # matters most.
+        for relative in ('launch/robot.launch.py', 'launch/robot_launch.py'):
+            issues = self._issues(tmp_path, relative,
+                                  'from launch import LaunchDescription\n'
+                                  'def generate_launch_description(:\n')
+            assert len(issues) == 1 and 'Syntax error' in issues[0]['message'], relative
+        assert self._issues(tmp_path, 'tests/fake_launch.py',
+                            'import signal\ndef main(:\n') == []
+
+    def test_undecodable_launch_file_is_a_finding(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot.launch.py',
+                              '# 로봇\nfrom launch import LaunchDescription\n'.encode('cp949'))
+        assert len(issues) == 1 and 'encoding' in issues[0]['message']
+        assert self._issues(tmp_path, 'launch/legacy.launch.py',
+                            '# -*- coding: cp949 -*-\n# 로봇\n'
+                            'def generate_launch_description():\n'
+                            '    return None\n'.encode('cp949')) == []
+
+    def test_loop_bodies_are_not_certain_bindings(self, tmp_path):
+        # `for _ in []` provably never binds: error. Other loops may run zero
+        # times and `else` is skipped after `break`: only some paths bind.
+        issues = self._issues(tmp_path, 'launch/a.launch.py',
+                              'for _ in []:\n'
+                              '    def generate_launch_description():\n'
+                              '        return None\n')
+        assert [i['severity'] for i in issues] == ['error'] and 'Missing' in issues[0]['message']
+        for source in ('for i in range(1):\n    break\nelse:\n'
+                       '    def generate_launch_description():\n        return None\n',
+                       'for i in range(1):\n    def generate_launch_description():\n'
+                       '        return None\n',
+                       'while flag:\n    def generate_launch_description():\n'
+                       '        return None\n'):
+            issues = self._issues(tmp_path, 'launch/b.launch.py', source)
+            assert [i['severity'] for i in issues] == ['warning'], source
+            assert 'some execution paths' in issues[0]['message']
+        assert self._issues(tmp_path, 'launch/c.launch.py',
+                            'for _ in []:\n    pass\nelse:\n'
+                            '    def generate_launch_description():\n        return None\n') == []
+
+
 class TestStopHookLaunchEntryPointRejections:
     """The loader imports the module and calls the top-level attribute.
 

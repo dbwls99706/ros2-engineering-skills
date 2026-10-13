@@ -197,9 +197,14 @@ def validate(root, installed=False, sources=False, today=None, portable=False):
                     if not group['hooks']:
                         raise ValueError('Empty hook group: ' + event)
                     for hook in group['hooks']:
-                        expected = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event
+                        # -B keeps __pycache__ out of a provenance-tracked
+                        # installation; the pre-1.7.1 form is still accepted.
+                        expected = {
+                            'python3 -B "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event,
+                            'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event,
+                        }
                         if (not isinstance(hook, dict) or hook.get('type') != 'command'
-                                or hook.get('command') != expected):
+                                or hook.get('command') not in expected):
                             raise ValueError('Unexpected hook command: ' + event)
                         timeout = hook.get('timeout')
                         if type(timeout) not in (int, float) or not 0 < timeout <= 600:

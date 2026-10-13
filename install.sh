@@ -122,7 +122,7 @@ if [[ -e "$TARGET" ]]; then
     refuse_replace "not an existing ros2-engineering-skills installation"
   fi
   if [[ -e "$TARGET/INSTALL_PROVENANCE.json" ]]; then
-    python3 - "$TARGET/INSTALL_PROVENANCE.json" "$ROOT_DIR/scripts" <<'PROVENANCE' ||
+    python3 -B - "$TARGET/INSTALL_PROVENANCE.json" "$ROOT_DIR/scripts" <<'PROVENANCE' ||
 import json
 import sys
 sys.path.insert(0, sys.argv[2])

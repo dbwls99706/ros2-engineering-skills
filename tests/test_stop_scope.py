@@ -116,3 +116,77 @@ def test_candidate_links_cannot_escape_workspace(tmp_path, monkeypatch):
     git(workspace, 'init', '-q')
     monkeypatch.setattr(hook.os, 'walk', no_walk)
     assert hook._validation_files(str(workspace))[0] == [str(workspace / 'alias.launch.py')]
+
+
+def test_git_scope_query_never_rewrites_the_index(tmp_path):
+    # A plain `git status` refreshes stat data and rewrites .git/index under
+    # index.lock, racing any concurrent `git add`/`git commit` in the repo.
+    git(tmp_path, 'init', '-q')
+    tracked = tmp_path / 'robot.launch.py'
+    tracked.write_text('baseline')
+    git(tmp_path, 'add', '.')
+    git(tmp_path, 'commit', '-qm', 'baseline')
+    index = tmp_path / '.git' / 'index'
+    before = index.read_bytes()
+    stamp = os.stat(tracked).st_mtime_ns + 5_000_000_000
+    os.utime(tracked, ns=(stamp, stamp))  # stat-dirty, content unchanged
+    assert hook._git_touched_paths(str(tmp_path)) == set()
+    assert index.read_bytes() == before
+
+
+def _run_main(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(hook, '_resolve_workspace', lambda: str(tmp_path))
+    monkeypatch.setattr(hook, '_resolve_log_path', lambda workspace: None)
+    with pytest.raises(SystemExit) as result:
+        hook.main()
+    return result.value.code, json.loads(capsys.readouterr().out)
+
+
+def test_large_point_list_yaml_is_not_parsed(tmp_path, monkeypatch):
+    # A recorded point list is not a Nav2 parameter file; parsing 9 MB of it
+    # with pure-Python PyYAML took the whole 12 s Stop budget at every turn.
+    yaml = pytest.importorskip('yaml')
+    big = tmp_path / 'route_points.yaml'
+    big.write_text('points:\n' + '  - [1.0, 2.0, 3.0]\n' * 200000)
+
+    def no_parse(*args, **kwargs):
+        pytest.fail('a YAML file without any Nav2 marker must not be parsed')
+    monkeypatch.setattr(yaml, 'safe_load_all', no_parse)
+    assert hook.validate_nav2_yaml(str(big)) == []
+
+
+def test_oversized_nav2_yaml_is_reported_as_skipped(tmp_path, monkeypatch, capsys):
+    pytest.importorskip('yaml')
+    git(tmp_path, 'init', '-q')
+    (tmp_path / 'nav2_params.yaml').write_text(
+        'amcl:\n  ros__parameters:\n    poses:\n' + '      - [1.0, 2.0]\n' * 80000)
+    code, report = _run_main(tmp_path, monkeypatch, capsys)
+    assert code == 0 and report['issues'] == []
+    assert any('not parsed' in item for item in report['checks_skipped'])
+
+
+def test_small_nav2_yaml_is_still_linted(tmp_path, monkeypatch, capsys):
+    pytest.importorskip('yaml')
+    git(tmp_path, 'init', '-q')
+    (tmp_path / 'nav2_params.yaml').write_text('amcl:\n  ros__parameters: [unclosed\n')
+    code, report = _run_main(tmp_path, monkeypatch, capsys)
+    assert code == 1 and any('YAML syntax error' in i['message'] for i in report['issues'])
+    assert report['checks_skipped'] == []
+
+
+def test_non_utf8_files_do_not_abort_the_hook(tmp_path, monkeypatch, capsys):
+    # One EUC-KR calibration file used to raise UnicodeDecodeError, so no
+    # JSON was printed and every other finding was lost.
+    pytest.importorskip('yaml')
+    git(tmp_path, 'init', '-q')
+    (tmp_path / 'camera.yaml').write_bytes(
+        '# 카메라 보정\ncamera_name: front\n'.encode('cp949'))
+    (tmp_path / 'nav2_params.yaml').write_bytes(
+        '# 내비게이션\namcl:\n  ros__parameters:\n    x: 1\n'.encode('cp949'))
+    (tmp_path / 'robot.launch.py').write_bytes(
+        '# 로봇\nfrom launch import LaunchDescription\n'.encode('cp949'))
+    code, report = _run_main(tmp_path, monkeypatch, capsys)
+    assert code == 1
+    files = sorted(i['file'] for i in report['issues'])
+    assert files == sorted([str(tmp_path / 'robot.launch.py'), str(tmp_path / 'nav2_params.yaml')])
+    assert any('encoding' in i['message'] for i in report['issues'])

@@ -25,8 +25,9 @@ def test_plugin_hooks_use_repository_scripts():
     for event, groups in hooks.items():
         for group in groups:
             for hook in group['hooks']:
+                # -B keeps __pycache__ out of a provenance-tracked installation.
                 assert hook['command'] == (
-                    'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event)
+                    'python3 -B "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event)
     adapter = (ROOT / 'scripts/claude_hook.py').read_text(encoding='utf-8')
     for script in ('skill_validate_hook.py', 'skill_stop_hook.py'):
         assert script in adapter and (ROOT / 'scripts' / script).is_file()
