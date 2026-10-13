@@ -129,15 +129,49 @@ def test_force_never_deletes_a_directory_that_is_not_this_skill(tmp_path):
     assert afile.read_text(encoding='utf-8') == 'keep'
 
 
+# Manifests that must never authorise deleting the directory: another skill,
+# an unsupported or mistyped schema version (a string "1" or JSON true equals
+# 1 under loose comparison), and a top level that is not one object
+# (PowerShell's ConvertFrom-Json unrolls a one-element array into its object).
+REFUSED_MANIFESTS = (
+    '{"schema_version": 1, "skill_name": "other"}',
+    '{"skill_name": "ros2-engineering-skills"}',
+    '{"schema_version": 2, "skill_name": "ros2-engineering-skills"}',
+    '{"schema_version": "1", "skill_name": "ros2-engineering-skills"}',
+    '{"schema_version": true, "skill_name": "ros2-engineering-skills"}',
+    '{"schema_version": 1.0, "skill_name": "ros2-engineering-skills"}',
+    '[{"schema_version": 1, "skill_name": "ros2-engineering-skills"}]',
+    '[]',
+    '{not json',
+    '',
+)
+
+
 def test_force_refuses_a_provenance_manifest_for_another_skill(tmp_path):
     target = tmp_path / 'ros2-engineering-skills'
     _fake_install(target)
-    for manifest in ('{"schema_version": 1, "skill_name": "other"}',
-                     '{"skill_name": "ros2-engineering-skills"}',
-                     '{not json'):
+    for manifest in REFUSED_MANIFESTS:
         (target / 'INSTALL_PROVENANCE.json').write_text(manifest, encoding='utf-8')
-        _assert_refused(_run('--target', target, '--force'), 'provenance manifest')
+        for extra in ((), ('--dry-run',)):
+            result = _run('--target', target, '--force', *extra)
+            assert result.returncode == 1, (manifest, extra, result.stdout)
+            assert 'provenance manifest' in result.stderr, manifest
     assert (target / 'stale.txt').is_file()
+
+
+def test_powershell_installer_pins_the_same_provenance_schema():
+    # install.ps1 cannot import install_skill.py; keep its constant in step.
+    import re
+    import sys
+    sys.path.insert(0, str(ROOT / 'scripts'))
+    try:
+        import install_skill
+    finally:
+        sys.path.pop(0)
+    match = re.search(r'^\s*\$ProvenanceSchema\s*=\s*(\d+)\s*$',
+                      INSTALL_PS1.read_text(encoding='utf-8'), re.MULTILINE)
+    assert match, 'install.ps1 must declare $ProvenanceSchema'
+    assert int(match.group(1)) == install_skill.PROVENANCE_SCHEMA
 
 
 def test_link_install(tmp_path):

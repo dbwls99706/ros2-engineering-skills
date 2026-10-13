@@ -180,7 +180,9 @@ def parse_metadata(metadata_path: str) -> list[dict]:
         malformed("rosbag2_bagfile_information is not a mapping")
 
     topics_with_qos = []
-    topics = bag_info.get("topics_with_message_count") or []
+    # Only an absent key means "no topics". null, "", {}, 0 or false is a
+    # damaged file and must not read as an empty bag that passes.
+    topics = bag_info.get("topics_with_message_count", [])
     if not isinstance(topics, list):
         malformed("topics_with_message_count is not a list")
     for index, topic_entry in enumerate(topics):

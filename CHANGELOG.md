@@ -54,7 +54,10 @@ Installers and validators:
 
 - `install.sh --force` / `install.ps1 -Force` replace only a previous
   installation of this skill (`SKILL.md` naming it, `references/`, and a
-  matching `INSTALL_PROVENANCE.json` when present). Client configuration
+  matching `INSTALL_PROVENANCE.json` when present: one JSON object whose
+  `skill_name` is this skill and whose `schema_version` is exactly the
+  integer 1, so `"1"`, `true`, `1.0` or a one-element array are refused on
+  both platforms). Client configuration
   directories such as `~/.claude`, `~/.codex` or any `skills/` parent are
   refused even when empty; `--dry-run` applies the same judgement. The
   directory name itself is not restricted. `--link` explains that a linked
@@ -72,7 +75,9 @@ Installers and validators:
 - `rosbag2_qos_checker.py` accepts the bag directory, reads metadata as bytes
   so a non-UTF-8 locale cannot misread it, and reports invalid YAML or a
   malformed structure as an error with exit 1 instead of a traceback or a
-  partial result. Both metadata layouts and an empty file still parse.
+  partial result; only an absent `topics_with_message_count` means no
+  topics, while `null`, `""`, `{}`, `0` or `false` is an error. Both metadata
+  layouts and an empty file still parse.
 - `qos_audit.py` reports a scan that found no files (`empty_scan`, a warning
   on stderr) and fails it under `--strict`.
 - `qos_checker.py` warns that a TRANSIENT_LOCAL publisher with a VOLATILE

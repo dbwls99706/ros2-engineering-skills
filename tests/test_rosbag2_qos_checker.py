@@ -517,6 +517,20 @@ class TestMetadataInput:
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["total_topics"] == 1
 
+    @pytest.mark.parametrize("text", [
+        "rosbag2_bagfile_information:\n  version: 4\n",
+        "rosbag2_bagfile_information:\n  topics_with_message_count: []\n",
+        "version: 4\n",
+        "topics_with_message_count: []\n",
+        "",
+    ])
+    def test_absent_or_empty_topic_list_is_an_empty_bag(self, tmp_path, text):
+        meta = tmp_path / "metadata.yaml"
+        meta.write_text(text, encoding="utf-8")
+        result = self._run(meta, "--json")
+        assert result.returncode == 0, (text, result.stderr)
+        assert json.loads(result.stdout)["total_topics"] == 0
+
     def test_both_metadata_layouts_and_empty_file_still_parse(self, tmp_path):
         for text in (self.WRAPPED, self.UNWRAPPED, ""):
             meta = tmp_path / "metadata.yaml"
@@ -545,6 +559,14 @@ class TestMetadataInput:
         "just a string\n",
         "rosbag2_bagfile_information: 3\n",
         "topics_with_message_count: 'x'\n",
+        # Present but mistyped is not "no topics": none of these may read as
+        # an empty, passing bag.
+        "topics_with_message_count: null\n",
+        "topics_with_message_count: ''\n",
+        "topics_with_message_count: {}\n",
+        "topics_with_message_count: 0\n",
+        "topics_with_message_count: false\n",
+        "rosbag2_bagfile_information:\n  topics_with_message_count: null\n",
         "topics_with_message_count:\n  - just_a_string\n",
         "topics_with_message_count:\n  - topic_metadata: 7\n",
     ])

@@ -60,15 +60,30 @@ if ($Exists) {
     }
     $Manifest = Join-Path $Target 'INSTALL_PROVENANCE.json'
     if (Test-Path -LiteralPath $Manifest -PathType Leaf) {
-        $Provenance = $null
+        # Must equal PROVENANCE_SCHEMA in scripts/install_skill.py (a test
+        # keeps the two in step).
+        $ProvenanceSchema = 1
+        $Described = $false
         try {
-            $Provenance = Get-Content -LiteralPath $Manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+            $Raw = Get-Content -LiteralPath $Manifest -Raw -Encoding UTF8
+            # ConvertFrom-Json unrolls a one-element array into its object, so
+            # the raw text decides that the top level is a single object.
+            if ($null -ne $Raw -and $Raw.TrimStart().StartsWith('{')) {
+                $Provenance = $Raw | ConvertFrom-Json
+                $Version = $Provenance.schema_version
+                # Exact types: -eq converts to the left operand's type, so a
+                # string "1" or JSON true would otherwise pass for 1.
+                $Described = ($Provenance -is [System.Management.Automation.PSCustomObject]) -and
+                    ($Provenance.skill_name -is [string]) -and
+                    ($Provenance.skill_name -ceq 'ros2-engineering-skills') -and
+                    ($Version -is [int] -or $Version -is [long]) -and
+                    ($Version -eq $ProvenanceSchema)
+            }
         }
         catch {
-            throw "Refusing to replace ${Target}: provenance manifest does not describe this skill"
+            $Described = $false
         }
-        if ($null -eq $Provenance -or $Provenance.skill_name -ne 'ros2-engineering-skills' -or
-            $null -eq $Provenance.schema_version) {
+        if (-not $Described) {
             throw "Refusing to replace ${Target}: provenance manifest does not describe this skill"
         }
     }

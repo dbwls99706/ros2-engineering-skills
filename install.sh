@@ -132,9 +132,11 @@ try:
         manifest = json.load(fh)
 except (OSError, ValueError):
     sys.exit(1)
+# Exact types: JSON true, 1.0 or "1" must not pass for schema version 1.
+version = manifest.get('schema_version') if isinstance(manifest, dict) else None
 ok = (isinstance(manifest, dict)
       and manifest.get('skill_name') == NAME
-      and manifest.get('schema_version') == PROVENANCE_SCHEMA)
+      and type(version) is int and version == PROVENANCE_SCHEMA)
 sys.exit(0 if ok else 1)
 PROVENANCE
       refuse_replace "provenance manifest does not describe this skill"

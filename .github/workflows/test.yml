@@ -190,6 +190,47 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $claude 'skills/other/SKILL.md'))) { throw 'another skill was deleted' }
           if (-not (Test-Path -LiteralPath (Join-Path $fakeHome '.codex/skills'))) { throw 'empty skills parent was deleted' }
           if (-not (Test-Path -LiteralPath (Join-Path $noRefs 'SKILL.md'))) { throw 'directory without references/ was deleted' }
+      - name: Refuse a provenance manifest that does not describe this skill
+        shell: pwsh
+        run: |
+          # A wrong or mistyped manifest must never authorise -Force to delete
+          # the directory: another skill, an unsupported schema, "1"/true/1.0
+          # for 1, and a one-element array that ConvertFrom-Json would unroll.
+          $skill = Join-Path $env:RUNNER_TEMP 'manifest-check/ros2-engineering-skills'
+          New-Item -ItemType Directory -Path (Join-Path $skill 'references') -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $skill 'SKILL.md') -Value "---`nname: ros2-engineering-skills`n---"
+          Set-Content -LiteralPath (Join-Path $skill 'stale.txt') -Value 'stale'
+          $manifest = Join-Path $skill 'INSTALL_PROVENANCE.json'
+          $bad = @(
+            '{"schema_version": 1, "skill_name": "other"}',
+            '{"schema_version": 2, "skill_name": "ros2-engineering-skills"}',
+            '{"schema_version": "1", "skill_name": "ros2-engineering-skills"}',
+            '{"schema_version": true, "skill_name": "ros2-engineering-skills"}',
+            '{"schema_version": 1.0, "skill_name": "ros2-engineering-skills"}',
+            '[{"schema_version": 1, "skill_name": "ros2-engineering-skills"}]',
+            '{not json'
+          )
+          foreach ($text in $bad) {
+            Set-Content -LiteralPath $manifest -Value $text -NoNewline
+            foreach ($dryRun in @($false, $true)) {
+              $rejected = $false
+              try {
+                if ($dryRun) { .\install.ps1 -Target $skill -Force -DryRun }
+                else { .\install.ps1 -Target $skill -Force }
+                throw "Expected installer to refuse manifest: $text"
+              }
+              catch {
+                if ($_.Exception.Message -notmatch 'provenance manifest does not describe this skill') { throw }
+                $rejected = $true
+              }
+              if (-not $rejected) { throw "Installer did not refuse manifest: $text" }
+              if (-not (Test-Path -LiteralPath (Join-Path $skill 'stale.txt'))) { throw "Installation deleted for manifest: $text" }
+            }
+          }
+          Set-Content -LiteralPath $manifest -Value '{"schema_version": 1, "skill_name": "ros2-engineering-skills"}'
+          .\install.ps1 -Target $skill -Force
+          if (Test-Path -LiteralPath (Join-Path $skill 'stale.txt')) { throw 'A valid manifest did not allow replacement' }
+          if (-not (Test-Path -LiteralPath (Join-Path $skill 'SKILL.md') -PathType Leaf)) { throw 'SKILL.md missing after replacement' }
       - name: Refuse to replace a reparse-point target
         shell: pwsh
         run: |
