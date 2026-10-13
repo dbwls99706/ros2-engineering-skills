@@ -180,6 +180,32 @@ def main(args=None):
         rclpy.try_shutdown()
 ```
 
+**Foxy (rclpy 1.0.x).** `rclpy.init()` has no `signal_handler_options`, and the
+handler it installs covers SIGINT only (`_rclpy_signal_handler.c`, read on the
+Foxy source; not re-verified on Galactic). A SIGTERM from systemd or from a
+supervisor therefore ends the process before `finally` runs, and a lock the node
+holds (one field case: a joystick permit) stays set. Register SIGTERM yourself.
+The handler still only records the request; cleanup happens once, after the
+spin, never inside the handler:
+
+```python
+def main_foxy(args=None):
+    rclpy.init(args=args)
+    signal.signal(signal.SIGTERM, request_stop)  # record only, as above
+    signal.signal(signal.SIGINT, request_stop)   # replaces rclpy's own handler
+    node = JointPublisher()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    try:
+        while rclpy.ok() and not stop_requested:
+            executor.spin_once(timeout_sec=0.1)
+    finally:
+        # One idempotent cleanup after the spin; the handler never cleans up.
+        executor.remove_node(node)
+        node.destroy_node()
+        rclpy.shutdown()
+```
+
 The cleanup routine invokes the application's documented bounded stop/cleanup
 contract. Publishing a stop message alone is not proof that it was delivered or
 that the actuator stopped; the stop semantics belong to
@@ -593,10 +619,24 @@ private:
 **Rule:** Never wait synchronously on a service future inside a callback.
 Register a response callback — rclcpp: `async_send_request(request, callback)`;
 rclpy: `future = client.call_async(request)` then
-`future.add_done_callback(...)` — and return; that is safe even when client
-and caller share a `MutuallyExclusiveCallbackGroup`. If a synchronous wait is
-truly unavoidable, the client must live in a different callback group (or a
-`ReentrantCallbackGroup`) **and** the executor must be multi-threaded. Do not
+`future.add_done_callback(...)` — and return. Two separate facts govern this,
+and they must not be mixed up:
+
+1. **Response handling is bound to the client's callback group.** A synchronous
+   wait inside a callback of the same `MutuallyExclusiveCallbackGroup`, or on a
+   single-threaded executor, can never be satisfied: that is the deadlock. A
+   synchronous wait is possible only when the client lives in a different
+   callback group (or a `ReentrantCallbackGroup`) **and** the executor has enough
+   threads; even then the asynchronous form is the recommended one.
+2. **A done callback belongs to no callback group.** rclpy schedules the
+   function passed to `add_done_callback` as an executor task of its own (Foxy
+   `(task, None, None)`, Humble `TaskData()`; read from those two sources, not
+   re-verified on later distributions), so under a `MultiThreadedExecutor` it can
+   run concurrently with any group, including the one that made the request.
+   Shared state touched from a done callback needs a lock or a hand-off into a
+   guarded callback; the caller's group does not protect it.
+
+Do not
 assume plain-executor `async def` callback patterns are safe until tested with
 your executor configuration; Lyrical's `rclpy.experimental.AsyncNode` is a
 separate execution model that officially supports `await client.call(...)`
@@ -666,8 +706,8 @@ class MultiGroupNode(Node):
         # Group 2: state callbacks (mutually exclusive — shared state)
         self.state_group = MutuallyExclusiveCallbackGroup()
 
-        # Group 3: service clients (needed only for synchronous waits —
-        # call_async + add_done_callback is safe even in the caller's group)
+        # Group 3: service clients. Needed only for synchronous waits; a
+        # call_async done callback runs outside every group (§3 rule, point 2)
         self.client_group = MutuallyExclusiveCallbackGroup()
 
         # Subscriptions assigned to groups
@@ -699,7 +739,8 @@ class MultiGroupNode(Node):
         self.get_logger().debug('IMU received')
 
     def cmd_cb(self, msg):
-        self.latest_cmd = msg  # Shared state, safe — state_group is MutuallyExclusive
+        self.latest_cmd = msg  # Serialized against other state_group callbacks only;
+                               # a done callback or another group still needs a lock
 
     def control_loop(self):
         # Also in state_group, so never runs concurrently with cmd_cb
@@ -722,8 +763,11 @@ def main(args=None):
 ### Python async service call pattern (rclpy)
 
 In rclpy, calling a service from within a callback requires `call_async()`.
-Never use the synchronous `call()` inside a callback -- it blocks the executor
-thread and deadlocks.
+The synchronous `call()` inside a callback deadlocks whenever the client shares
+the caller's `MutuallyExclusiveCallbackGroup` or the executor is single-threaded.
+It is tolerated only under the §3 rule (a separate or reentrant client group
+**and** enough executor threads), and even then `call_async()` is the
+recommended form.
 
 ```python
 # WRONG — blocks the executor thread, causes deadlock
@@ -762,10 +806,12 @@ class AsyncServiceCallerNode(Node):
 
 **Key rules for rclpy service calls from callbacks:**
 
-- Always use `call_async()`, never `call()`, inside a callback
+- Use `call_async()` inside a callback; `call()` only under the §3 conditions
 - Make the callback `async def` and `await` the future
 - Put the service client in a separate `MutuallyExclusiveCallbackGroup`
 - Use `MultiThreadedExecutor` to allow the client group to process the response
+- A done callback runs outside every callback group: lock shared state it
+  touches, or hand the result to a guarded callback
 
 ## 4. Intra-process communication
 
@@ -900,6 +946,16 @@ int main(int argc, char ** argv)
 WaitSets are powerful because you decide *exactly* the order in which to check
 and process entities. If the timer is more important than the subscription, you
 check the timer first and process it before taking the message.
+
+rclpy's executors already do something like this on their own: after a long
+callback, the next `wait_for_ready_callbacks` round hands out the timers that
+became ready **before** the subscriptions that have been waiting (Foxy rclpy
+1.0.13 source; same ordering observed on Humble). A freshness check inside a
+timer therefore sees the executor's own delay as stale input: one field case
+pinned a handover state machine in LOST for as long as a 2-second inline planner
+ran in another callback. Measure input age from the message stamp against the
+steady clock, and treat an age that equals the executor's own latency as a
+scheduling symptom, not as a sensor dropout.
 
 > **Note:** The `rclcpp::Executor` protected API varies across distros and is not
 > fully stable. The following shows the architectural pattern — adapt method names
@@ -1263,6 +1319,14 @@ class ImageProcessor : public rclcpp::Node
 - **Measure with `ros2 topic delay`** and **tracing** before optimizing.
 - **Python GIL:** For CPU-bound Python nodes, use `ProcessPoolExecutor` for
   parallel computation, or rewrite the hot path in C++ as a component.
+- **rclpy cost scales with delivered samples, not with topics:** every sample
+  that reaches a Python subscription costs executor time whether or not the
+  callback does anything (about 0.7 ms per sample on a Foxy Jetson, field
+  measurement). For a pure pass-through path (relay, bridge, re-publisher) that
+  nobody downstream consumes, `publisher.get_subscription_count()` can gate the
+  upstream subscription on and off. Do **not** apply that to inputs the node
+  uses for its own state, for recording, or for a safety monitor: those must
+  keep flowing with zero downstream subscribers.
 - **MultiThreadedExecutor starvation (EmSoft 2024):** A 2024 research paper
   ("Thread Carefully: Preventing Starvation in the ROS 2 Multi-Threaded
   Executor") identified a priority-inversion pattern where high-frequency timers
@@ -1284,7 +1348,8 @@ class ImageProcessor : public rclcpp::Node
 | Callbacks run serially despite MultiThreadedExecutor | All in default MutuallyExclusive group | Assign Reentrant callback group explicitly |
 | Timer drifts under load | Wall timer + heavy callbacks | Use a dedicated callback group or reduce callback work |
 | Intra-process not working | Missing `use_intra_process_comms(true)` or nodes not in same process | Enable in NodeOptions for all participating nodes; ensure they run in the same process (composition, same main(), etc.) |
-| Service call deadlocks executor | Synchronous wait on the future inside the callback | Register a response callback (`async_send_request(request, cb)` / `call_async` + `add_done_callback`) and return; move the client to a separate group only for unavoidable synchronous waits |
+| Service call deadlocks executor | Synchronous wait on the future inside the callback | Register a response callback (`async_send_request(request, cb)` / `call_async` + `add_done_callback`) and return; move the client to a separate group only for unavoidable synchronous waits. The done callback is not group-protected: lock the state it touches |
+| rclpy node dies with `ValueError` on a log call | The severity of a log call is fixed per call site (`rcutils_logger.py`, Foxy and Humble): `log = logger.info if ok else logger.warning; log(...)` reuses one site with two severities | Write the two calls on separate lines, or use `logger.log(msg, severity)` with the severity as an argument |
 | Cleanup skipped or run twice on SIGTERM | Handler raised into a callback or ran cleanup itself | Record the request in the handler; finish the spin; one idempotent cleanup (§1) |
 
 ---

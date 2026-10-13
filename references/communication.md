@@ -516,7 +516,7 @@ silently fails.
 | BEST_EFFORT | RELIABLE | **No** — subscriber demands reliability publisher cannot guarantee |
 | BEST_EFFORT | BEST_EFFORT | Yes |
 | TRANSIENT_LOCAL | TRANSIENT_LOCAL | Yes |
-| TRANSIENT_LOCAL | VOLATILE | Yes |
+| TRANSIENT_LOCAL | VOLATILE | Yes — connects, but delivers no history. A late-joining subscriber that needs the last sample (map, static TF, a latched plan) must request TRANSIENT_LOCAL itself |
 | VOLATILE | TRANSIENT_LOCAL | **No** — subscriber expects history publisher does not retain |
 
 ### QoS profiles for common scenarios
@@ -651,6 +651,8 @@ ros2 topic info /cmd_vel -v
 
 # Check for incompatible QoS events (logged to /rosout)
 ros2 topic echo /rosout --qos-reliability reliable --field msg | grep -i "incompatible"
+# Foxy has no --field: drop it and grep the whole record
+ros2 topic echo /rosout --qos-reliability reliable | grep -i "incompatible"
 ```
 
 Before running anything, `scripts/qos_audit.py <package>` statically pairs

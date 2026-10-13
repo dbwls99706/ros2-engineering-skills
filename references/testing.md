@@ -237,9 +237,9 @@ def test_node_publishes_status(monitor_node):
     executor.add_node(monitor_node)
     executor.add_node(helper)
 
-    # Spin for up to 3 seconds
-    start = time.time()
-    while len(received) == 0 and time.time() - start < 3.0:
+    # Spin for up to 3 seconds (monotonic: a wall-clock step must not end the wait)
+    start = time.monotonic()
+    while len(received) == 0 and time.monotonic() - start < 3.0:
         executor.spin_once(timeout_sec=0.1)
 
     assert len(received) > 0
@@ -529,8 +529,8 @@ protected:
 def wait_for_condition(node, condition_fn, timeout_sec=5.0):
     """Spin the node until condition_fn() returns True or timeout."""
     import time
-    start = time.time()
-    while time.time() - start < timeout_sec:
+    start = time.monotonic()  # timeouts live on the steady clock
+    while time.monotonic() - start < timeout_sec:
         rclpy.spin_once(node, timeout_sec=0.1)
         if condition_fn():
             return True
@@ -760,6 +760,10 @@ class TestPerceptionRegression(unittest.TestCase):
 | Mock hardware behaves differently than real | GenericSystem has perfect response | Test with realistic delays and noise in mock hardware |
 | CI build takes too long | No caching, full rebuild every time | Cache `.ccache/` and the rosdep/apt layer; add `build/`/`install/` only with strict invalidation (section 8) |
 | CI green, but it tests code that was deleted | Restored `build/`/`install/` cache still holds artifacts of removed sources | Drop the partial-restore keys; key the cache on toolchain + deps + source hash |
+| A test passes alone and fails in the suite (or the reverse) | Process-global state leaks between tests: thread pools (`cv2.setNumThreads(1)` in one test), environment variables, a module-level rclpy context | Reset the global in a fixture teardown; run the failing pair in isolation (`pytest a.py b.py`) to find the leak |
+| `python3 -m unittest test.x` imports something unrelated | The standard library's `test` package shadows a local `test/` directory | Name the directory `tests/` or run from the package root with `python3 -m pytest` |
+| A regression test never ran, yet the run was green | A pytest plugin autoloaded from the environment changed collection, so the module was silently not collected (five regressions hid this way in one project) | Run with `-p no:cacheprovider` and `--collect-only` in CI; assert the expected test count or use `-ra` and check the summary |
+| Fixtures pass, real data fails | Fixture samples sit exactly on the grid or threshold the gate expects, so a gate that rejects every real scan passes the test | Build at least one fixture from a recorded real sample and assert the gate accepts it |
 
 ## 11. Verification levels
 

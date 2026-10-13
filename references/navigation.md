@@ -110,6 +110,12 @@ def generate_launch_description():
 
 ## 2. SLAM integration
 
+Start any LiDAR-inertial (LIO) mapper with the robot stationary and level for
+its initialization window: the first IMU samples define the gravity direction
+for the whole map. A map started while driving was tilted 3.6° in one field
+run; the same route started from rest was within 0.22°. Check the mapper's
+startup log for its gravity/initialization message before the first motion.
+
 ### slam_toolbox (recommended)
 
 ```yaml

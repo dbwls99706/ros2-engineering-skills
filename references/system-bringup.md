@@ -399,6 +399,14 @@ cannot:
 A process can pet the systemd watchdog from a healthy main thread while its DDS
 publishing thread is deadlocked — only a topic-level watchdog sees that.
 
+Before relying on a watchdog reboot as a recovery path, confirm that the logs
+of the boot being recovered from survive it: `journalctl --list-boots` must show
+earlier boots, which requires persistent journald storage
+(`Storage=persistent` in `/etc/systemd/journald.conf` or an existing
+`/var/log/journal/`). With volatile storage the reboot erases the evidence of
+what the watchdog fired on (one field unit lost the logs of every boot before
+the last).
+
 ### Topic-level heartbeat watchdog (DEADLINE events)
 
 The publisher declares a DEADLINE contract; the subscriber gets an event callback the

@@ -39,6 +39,14 @@ Clear or transition condition:
 Change owner / version:
 ```
 
+When a gate is widened and the behaviour does not change at all, do not widen
+it further: find the **other** check that reads the same quantity. Thresholds
+are often duplicated along a pipeline (a validator, a planner input filter, a
+safety monitor), and the tightest copy decides. One field case approved a
+0.25/0.60 limit that stayed inert because a second check downstream still held
+0.05. Grep for the quantity, not the parameter name, and record every reader
+under "Source" above.
+
 Classify the gate before deciding how changeable it is:
 
 | Gate class | Typical source | Default treatment |

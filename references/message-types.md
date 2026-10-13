@@ -66,9 +66,16 @@ msg.header.frame_id = 'camera_optical_frame'
 
 | Clock type | Source | When to use |
 |---|---|---|
-| `ROS_TIME` | `/clock` topic (when `use_sim_time: true`) or system clock | Default — works in sim and real |
-| `SYSTEM_TIME` | OS wall clock (may jump due to NTP) | Never for message stamps |
-| `STEADY_TIME` | Monotonic, never adjusted | Internal timing (loop measurement), not for messages |
+| `ROS_TIME` | `/clock` topic when `use_sim_time: true`; otherwise **the system wall clock** — on a real robot ROS_TIME is not a separate clock | Default for message stamps and for anything compared against a stamp |
+| `SYSTEM_TIME` | OS wall clock; jumps when NTP/timesyncd steps it (a Jetson without an RTC battery boots in 1970 and jumps forward once synchronized) | Never for message stamps |
+| `STEADY_TIME` | Monotonic, never adjusted | Ages, timeouts, loop measurement — durations are computed here |
+
+Compute ages and timeouts on the steady clock, and never subtract across
+clocks: `now(ROS_TIME) - stamp` is a wall-clock difference on a real robot and
+inherits every time step, while `time.monotonic()` against a stamp that was
+taken from the wall clock is meaningless in both directions. Note the clock a
+stamp came from before computing with it (one review found latency computed
+across the two clocks after a timesyncd step).
 
 ### Common time mistakes
 

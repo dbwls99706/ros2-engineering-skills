@@ -425,6 +425,13 @@ shutdown_handler = RegisterEventHandler(
 )
 ```
 
+`OnShutdown` runs on a `Shutdown` event. SIGINT produces one; **SIGTERM does
+not**: `LaunchService._on_sigterm` cancels the run loop without emitting
+`Shutdown` (launch 0.10.10 on Foxy and 1.0.14 on Humble, read from source; later
+versions not re-verified), so these actions never run and child processes can be
+left orphaned. Supervisors and systemd units must send SIGINT first and escalate
+to SIGTERM/SIGKILL only after a deadline (§10).
+
 **Technical sources:** [OnProcessExit](https://github.com/ros2/launch/blob/humble/launch/launch/event_handlers/on_process_exit.py),
 [boolean substitutions](https://github.com/ros2/launch/blob/humble/launch/launch/substitutions/boolean_substitution.py).
 
@@ -778,7 +785,9 @@ python3 scripts/launch_supervisor.py \
 This POSIX entry point starts the real launch graph using `LaunchService` with
 its own asyncio loop. Its non-raising SIGINT handler stays active through task,
 async-generator, and executor cleanup, then restores the prior handler. Send
-SIGINT to the supervisor PID for graceful shutdown. It does not impose a hardware
+SIGINT to the supervisor PID for graceful shutdown; a bare SIGTERM to `ros2
+launch` skips the `Shutdown` event and every `OnShutdown` handler (§4), which is
+how a field stack was left with orphaned children. It does not impose a hardware
 stop deadline or guarantee exit from an unresponsive user callback. A process
 manager must still enforce its shutdown deadline and account for every child.
 

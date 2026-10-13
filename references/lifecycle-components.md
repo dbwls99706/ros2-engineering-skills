@@ -485,13 +485,18 @@ ros2 component unload /my_container 1
 |---|---|---|
 | `component_container` | Single-threaded executor | Simple pipelines, no concurrency needed |
 | `component_container_mt` | Multi-threaded executor | Components with slow callbacks or independent data paths |
-| `component_container_isolated` | Per-component executor | Maximum isolation, each component has its own executor thread(s) |
+| `component_container_isolated` | Per-component executor, still one process | A slow callback in one component must not block another. Not crash isolation: a SIGSEGV in any component ends the whole container. Not available on Foxy |
 
 **Selection guide:**
 
 - Default to `component_container_mt` — most flexible
 - Use `component_container_isolated` when one component's slow callback
   must not block others (e.g., ML inference alongside control)
+- Executor isolation is not fault isolation. Every container type is one
+  process: a crash in a vendor codec or GPU library (one field case: NVJPEG
+  SIGSEGV in a camera component, twice) takes every component with it. Run
+  crash-prone work in a child process or in a separate container process, and
+  keep the components that own actuators out of that process
 - Use `component_container` only for trivial pipelines with lightweight callbacks
 
 ### `component_container_isolated` launch example

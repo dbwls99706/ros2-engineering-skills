@@ -56,13 +56,17 @@ package right now — which is what a command you launch *from here* will get.
 For a claim about a running node, read that process:
 
 ```bash
-pid=$(pgrep -f controller_server | head -1)
+# '[c]ontroller_server' matches the process but not this shell: a plain
+# `pgrep -f controller_server` run through `bash -c` or ssh returns the
+# wrapper's own PID, so a stopped stack looks alive and exit 0 proves nothing.
+pid=$(pgrep -f '[c]ontroller_server' | head -1)
+[ -n "$pid" ] && tr '\0' ' ' < /proc/$pid/cmdline | grep -q controller_server || echo "not running"
 
 tr '\0' ' ' < /proc/$pid/cmdline     # how it was actually invoked (args, remaps, params-file)
 readlink /proc/$pid/exe              # the executing binary
 readlink /proc/$pid/cwd              # working directory — relative paths resolve here
 tr '\0' '\n' < /proc/$pid/environ |
-  grep -E 'AMENT_PREFIX_PATH|COLCON_PREFIX_PATH|PYTHONPATH|LD_LIBRARY_PATH|ROS_DISTRO|ROS_DOMAIN_ID|RMW_IMPLEMENTATION'
+  grep -E 'AMENT_PREFIX_PATH|COLCON_PREFIX_PATH|PYTHONPATH|LD_LIBRARY_PATH|ROS_DISTRO|ROS_DOMAIN_ID|RMW_IMPLEMENTATION|CYCLONEDDS_URI|FASTRTPS_DEFAULT_PROFILES_FILE'
 
 ls -l /proc/$pid/fd | grep -v socket  # config/log/device files it holds open
 ```
@@ -162,6 +166,18 @@ not establish that runtime node or config bytes changed, and a commit alone does
 not establish that any artifact was deployed. After any deployment, re-read the
 installed files on the target and record their current hashes instead of
 reusing the report.
+
+**Copying a symlinked install tree.** `cp -r` copies symbolic links as links,
+so a "copy" of an install space that was linked into place still points at the
+deployed sources, and editing the copy edits the deployment. Before copying,
+list where the links go and refuse any that leave the tree; then copy with
+`-L` so the result is self-contained, and check that no link survived:
+
+```bash
+find "$share" -type l -exec sh -c 'printf "%s -> %s\n" "$1" "$(readlink -f "$1")"' _ {} \; |
+  grep -v " -> $share" && echo "links leave the tree: copy the needed files explicitly" ||
+  { cp -rL "$share" /tmp/share_copy && find /tmp/share_copy -type l | grep -q . && echo "symlinks remain"; }
+```
 
 ## 5. Which parameters are actually in effect?
 
@@ -304,7 +320,7 @@ restarted (`references/deployment.md` §"ROS 2 daemon").
 Then confirm against the operating system, which does not cache:
 
 ```bash
-pgrep -af 'ros2|controller_server|robot_state_publisher'
+pgrep -af '[r]os2|[c]ontroller_server|[r]obot_state_publisher'   # bracket: never match this shell
 ps -eo pid,ppid,etime,cmd | grep -i my_robot | grep -v grep
 systemctl status my-robot-bringup.service      # if launched by systemd
 ```
