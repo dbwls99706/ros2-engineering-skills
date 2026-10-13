@@ -519,6 +519,9 @@ def test_verify_never_follows_a_target_symlink(source, capsys):
     link.symlink_to(dst, target_is_directory=True)
     code, report = installer.main(['--verify', '--target', str(link)]), json.loads(capsys.readouterr().out)
     assert code == 1 and report['reason'] == 'target is a symlink'
+    # The real directory is named so the caller can verify it directly.
+    assert report['resolved'] == str(dst.resolve()) and 'resolved path' in report['hint']
+    assert verify(Path(report['resolved']), capsys)[0] == 0
     assert verify(dst.parent / 'absent', capsys)[1]['reason'] == 'target does not exist'
 
 

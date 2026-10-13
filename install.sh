@@ -21,6 +21,9 @@ Options:
   -h, --help     Show this help
 
 Symbolic-link targets are never replaced; pass the resolved path instead.
+--force only replaces an existing ros2-engineering-skills installation
+(SKILL.md naming this skill plus references/); client configuration
+directories such as ~/.claude or a skills/ parent are never removed.
 USAGE
 }
 
@@ -86,10 +89,55 @@ PY
   exit 1
 fi
 
+refuse_replace() {
+  echo "error: refusing to replace $TARGET: $1" >&2
+  exit 1
+}
+
 if [[ -e "$TARGET" ]]; then
   if [[ "$FORCE" -ne 1 ]]; then
     echo "error: target already exists: $TARGET (use --force to replace it)" >&2
     exit 1
+  fi
+  # --force replaces a previous installation of this skill and nothing else.
+  # The rm -rf below would otherwise delete a mistyped parent such as
+  # ~/.claude/skills or ~/.claude (settings, transcripts, other skills).
+  # The same judgement applies to --dry-run so a rehearsal cannot pass where
+  # the real run would refuse.
+  case "$(basename -- "$TARGET")" in
+    skills|.claude|.codex|.cursor|.gemini|.agents|.config)
+      refuse_replace "client configuration directory"
+      ;;
+  esac
+  case "$TARGET" in
+    "$HOME_DIR"/.*)
+      rel="${TARGET#"$HOME_DIR"/}"
+      if [[ "$rel" != */* ]]; then
+        refuse_replace "client configuration directory"
+      fi
+      ;;
+  esac
+  if [[ ! -d "$TARGET" || ! -f "$TARGET/SKILL.md" || ! -d "$TARGET/references" ]] ||
+     ! grep -q '^name: ros2-engineering-skills$' "$TARGET/SKILL.md"; then
+    refuse_replace "not an existing ros2-engineering-skills installation"
+  fi
+  if [[ -e "$TARGET/INSTALL_PROVENANCE.json" ]]; then
+    python3 - "$TARGET/INSTALL_PROVENANCE.json" "$ROOT_DIR/scripts" <<'PROVENANCE' ||
+import json
+import sys
+sys.path.insert(0, sys.argv[2])
+from install_skill import NAME, PROVENANCE_SCHEMA
+try:
+    with open(sys.argv[1], encoding='utf-8') as fh:
+        manifest = json.load(fh)
+except (OSError, ValueError):
+    sys.exit(1)
+ok = (isinstance(manifest, dict)
+      and manifest.get('skill_name') == NAME
+      and manifest.get('schema_version') == PROVENANCE_SCHEMA)
+sys.exit(0 if ok else 1)
+PROVENANCE
+      refuse_replace "provenance manifest does not describe this skill"
   fi
 fi
 
@@ -129,3 +177,12 @@ grep -q '^name: ros2-engineering-skills$' "$TARGET/SKILL.md" || {
 }
 
 echo "installed ros2-engineering-skills at $TARGET ($MODE)"
+if [[ "$MODE" == "link" ]]; then
+  cat <<NOTE
+note: the linked checkout contains .claude-plugin/plugin.json and hooks/hooks.json,
+so a client that scans $TARGET for plugins may register its PreToolUse and Stop
+hooks. Whether that happens depends on the client and its version; this installer
+does not configure hooks. Restart running sessions after changing the link, and
+use scripts/install_skill.py for a hook-free knowledge-only copy.
+NOTE
+fi

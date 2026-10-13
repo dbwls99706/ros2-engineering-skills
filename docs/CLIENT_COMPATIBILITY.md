@@ -49,7 +49,30 @@ name a non-default directory with `--target`.
 The legacy `install.sh` and `install.ps1` remain full-checkout copy/link tools.
 They write no manifest and refuse to replace a target that is a symbolic link or
 reparse point, so a link shared by several clients is never replaced by a copy;
-re-run with the resolved path as the target instead.
+re-run with the resolved path as the target instead. `--force` (`-Force`) only
+replaces a directory that is a previous installation of this skill: `SKILL.md`
+naming `ros2-engineering-skills`, a `references/` directory, and, when an
+`INSTALL_PROVENANCE.json` is present, a manifest whose `skill_name` is this
+skill. Client configuration directories (`~/.claude`, `~/.codex`, any `skills/`
+parent) are refused even when empty, and `--dry-run` applies the same judgement.
+The directory name itself is not restricted, so an older install under a custom
+name can still be updated in place. `--verify` never follows a symlinked target;
+its report names the resolved directory to verify instead.
+
+A `--link` install points the client at the whole checkout, including
+`.claude-plugin/plugin.json` and `hooks/hooks.json`. A client that scans the
+link's parent for plugins may therefore register the PreToolUse and Stop hooks;
+one field report observed this with a Claude Code 2.1.x build after a link was
+created under `~/.claude/skills`, with the plugin data directory appearing under
+`~/.claude/plugins/data/`. That observation is not reproduced by this
+repository's CI (plugin validation runs a pinned CLI and installs the plugin
+explicitly), so treat hook registration through a link as possible, not
+guaranteed. To check a host: create the link in an environment without an
+existing plugin data directory, start a new session, run one `Bash` tool call
+and end the turn, then look for `ROS 2 validation:` output and a new plugin
+data directory. Sessions started before a link or manifest change keep the hook
+configuration they read at start-up; restart them. Use
+`scripts/install_skill.py` for a hook-free knowledge-only copy.
 Portable installs are serialized with a sibling `.ros2-engineering-skills.install-lock`
 directory. After an interrupted process, remove that lock only after confirming
 no installer is still running. If replacement and rollback both fail, the error

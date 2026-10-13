@@ -233,7 +233,14 @@ def drift_report(target):
     target = Path(target)
     report = {'target': str(target)}
     if target.is_symlink():
-        report.update(status='unverified', reason='target is a symlink')
+        # Never verified through the link: name the real directory so the
+        # caller can re-run against it (a ~/.claude/skills alias is common).
+        try:
+            resolved = str(target.resolve(strict=True))
+        except OSError:
+            resolved = None
+        report.update(status='unverified', reason='target is a symlink', resolved=resolved,
+                      hint='re-run --verify with the resolved path')
         return report
     if not target.is_dir():
         report.update(status='unverified', reason='target does not exist')

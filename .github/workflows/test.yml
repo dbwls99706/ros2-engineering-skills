@@ -146,6 +146,46 @@ jobs:
           if (Test-Path -LiteralPath (Join-Path $target 'stale.txt')) {
             throw 'Force did not replace the existing target'
           }
+      - name: Refuse to replace anything that is not this skill
+        shell: pwsh
+        run: |
+          # -Force must only ever remove a previous installation of this skill.
+          $fakeHome = Join-Path $env:RUNNER_TEMP 'fakehome'
+          $claude = Join-Path $fakeHome '.claude'
+          New-Item -ItemType Directory -Path (Join-Path $claude 'skills/other') -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $claude 'skills/other/SKILL.md') -Value "---`nname: other`n---"
+          Set-Content -LiteralPath (Join-Path $claude 'settings.json') -Value '{}'
+          New-Item -ItemType Directory -Path (Join-Path $fakeHome '.codex/skills') -Force | Out-Null
+          $noRefs = Join-Path $env:RUNNER_TEMP 'norefs'
+          New-Item -ItemType Directory -Path $noRefs -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $noRefs 'SKILL.md') -Value "---`nname: ros2-engineering-skills`n---"
+          $cases = @(
+            @{ Target = $claude; Reason = 'client configuration directory' },
+            @{ Target = (Join-Path $claude 'skills'); Reason = 'client configuration directory' },
+            @{ Target = (Join-Path $fakeHome '.codex/skills'); Reason = 'client configuration directory' },
+            @{ Target = (Join-Path $claude 'skills/other'); Reason = 'not an existing ros2-engineering-skills installation' },
+            @{ Target = $noRefs; Reason = 'not an existing ros2-engineering-skills installation' },
+            @{ Target = (Join-Path $claude 'settings.json'); Reason = 'not an existing ros2-engineering-skills installation' }
+          )
+          foreach ($case in $cases) {
+            foreach ($dryRun in @($false, $true)) {
+              $rejected = $false
+              try {
+                if ($dryRun) { .\install.ps1 -Target $case.Target -Force -DryRun }
+                else { .\install.ps1 -Target $case.Target -Force }
+                throw "Expected installer to refuse $($case.Target)"
+              }
+              catch {
+                if ($_.Exception.Message -notmatch [regex]::Escape($case.Reason)) { throw }
+                $rejected = $true
+              }
+              if (-not $rejected) { throw "Installer did not refuse $($case.Target)" }
+            }
+          }
+          if ((Get-Content -LiteralPath (Join-Path $claude 'settings.json')) -ne '{}') { throw 'settings.json was modified' }
+          if (-not (Test-Path -LiteralPath (Join-Path $claude 'skills/other/SKILL.md'))) { throw 'another skill was deleted' }
+          if (-not (Test-Path -LiteralPath (Join-Path $fakeHome '.codex/skills'))) { throw 'empty skills parent was deleted' }
+          if (-not (Test-Path -LiteralPath (Join-Path $noRefs 'SKILL.md'))) { throw 'directory without references/ was deleted' }
       - name: Refuse to replace a reparse-point target
         shell: pwsh
         run: |
