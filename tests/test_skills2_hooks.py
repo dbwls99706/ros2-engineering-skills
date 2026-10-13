@@ -220,6 +220,33 @@ class TestStopHookNameMatchedNonLaunchFiles:
                             'def generate_launch_description():\n'
                             '    return None\n'.encode('cp949')) == []
 
+    def test_plain_import_of_a_launch_package_counts(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot_launch.py',
+                              'import launch_ros.actions\n'
+                              'def build():\n    return launch_ros.actions.Node(package="p")\n')
+        assert len(issues) == 1 and 'Missing' in issues[0]['message']
+
+    def test_helper_module_outside_tests_without_launch_code_is_skipped(self, tmp_path):
+        assert self._issues(tmp_path, 'scripts/helper_launch.py',
+                            'import os\n\ndef main():\n    return os.getcwd()\n') == []
+
+    def test_undecodable_bytes_after_the_header_are_a_finding(self, tmp_path):
+        # tokenize only inspects the first two lines for the coding cookie, so
+        # bad bytes further down surface as UnicodeDecodeError, not SyntaxError.
+        for relative, expected in (('launch/a.launch.py', 1), ('launch/a_launch.py', 1),
+                                   ('scripts/fake_launch.py', 0)):
+            tail = 'from launch import LaunchDescription\n' if expected else 'x = 1\n'
+            body = 'import os\nimport sys\n' + tail
+            issues = self._issues(tmp_path, relative, body.encode('utf-8') + '# 로봇\n'.encode('cp949'))
+            assert len(issues) == expected, relative
+            assert not issues or 'encoding' in issues[0]['message']
+
+    def test_empty_string_loop_never_runs(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/s.launch.py',
+                              "for ch in '':\n    def generate_launch_description():\n"
+                              "        return None\n")
+        assert [i['severity'] for i in issues] == ['error']
+
     def test_loop_bodies_are_not_certain_bindings(self, tmp_path):
         # `for _ in []` provably never binds: error. Other loops may run zero
         # times and `else` is skipped after `break`: only some paths bind.

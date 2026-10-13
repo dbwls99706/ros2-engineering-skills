@@ -309,3 +309,16 @@ def test_knowledge_only_installation_never_runs_hooks(monkeypatch, tmp_path):
     assert not hook.hooks_disabled('PreToolUse', root=tmp_path)
     assert not hook.hooks_disabled('PreToolUse', root=tmp_path / 'missing')
     assert not hook.hooks_disabled('Stop')  # this checkout carries no manifest
+
+
+def test_symlinked_advisory_state_directory_is_not_used(monkeypatch, tmp_path):
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    monkeypatch.setattr(hook.subprocess, 'run',
+                        Mock(return_value=_stop_report(tmp_path / 'gone.launch.py')))
+    state_dir = tmp_path / 'cache' / 'ros2-engineering-skills' / 'stop-advisories'
+    state_dir.parent.mkdir(parents=True)
+    (tmp_path / 'elsewhere').mkdir()
+    state_dir.symlink_to(tmp_path / 'elsewhere', target_is_directory=True)
+    for _ in range(2):
+        assert 'broken launch' in hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]['systemMessage']
+    assert list((tmp_path / 'elsewhere').iterdir()) == []

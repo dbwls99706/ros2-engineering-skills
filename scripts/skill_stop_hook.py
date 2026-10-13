@@ -326,11 +326,6 @@ def _not_a_launch_description(filepath, tree, symbols):
     return _is_test_module(filepath) or not _imports_launch(tree)
 
 
-def _entry_point_state(body, wanted):
-    """What *wanted* is bound to once the module has finished executing."""
-    return _module_symbols(body).get(wanted, _MISSING)
-
-
 def validate_launch_file_syntax(filepath):
     """Check that a launch file is valid Python and has generate_launch_description."""
     issues = []
