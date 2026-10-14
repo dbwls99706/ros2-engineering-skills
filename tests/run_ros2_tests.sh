@@ -72,10 +72,10 @@ run_distro() (
     fi
     timeout -k 2s 15s docker image inspect "$tag" > "$out/image.json" 2>&1 || exit $?
     printf '=== %s: fresh isolated container / all applicable ROS gates ===\n' "$distro"
-    if timeout --signal=TERM --kill-after=10s 390s docker run \
+    if timeout --signal=TERM --kill-after=10s 630s docker run \
         --name "$container" --init --network none \
         -e ROS_DOMAIN_ID=83 -e ROS_LOCALHOST_ONLY=1 "$tag" \
-        timeout --signal=TERM --kill-after=10s 360s bash tests/run_ros2_container_tests.sh \
+        timeout --signal=TERM --kill-after=10s 600s bash tests/run_ros2_container_tests.sh \
         2>&1 | tee "$out/runtime.log"; then
         printf '[PASS] ROS 2 %s: build AND all applicable runtime gates completed\n' "$distro"
     else

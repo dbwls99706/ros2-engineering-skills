@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -154,7 +155,7 @@ def test_workflow_summary_does_not_accept_non_success(outcome):
     assert (result.returncode == 0) == (outcome == 'success')
     integration = jobs['ros2-integration']
     assert integration['strategy']['matrix']['ros_distro'] == ['humble', 'jazzy', 'kilted', 'lyrical', 'rolling']
-    assert integration['timeout-minutes'] == 30
+    assert integration['timeout-minutes'] == 35
     assert 'run_ros2_tests.sh' in integration['steps'][1]['run']
     assert integration['steps'][2]['if'] == 'always()'
     assert all(not step.get('continue-on-error') for step in integration['steps'])
@@ -184,3 +185,23 @@ def test_context_gate_requires_real_measurement_and_preserves_failure():
     assert workflow['jobs']['lint-scripts']['timeout-minutes'] == 10
     assert not gate.get('continue-on-error')
     assert any('tiktoken' in step.get('run', '') for step in steps)
+
+
+def _seconds(value):
+    return int(value[:-1]) * {'s': 1, 'm': 60}[value[-1]]
+
+
+def test_runtime_budgets_nest_inside_the_job_limit():
+    # Under runner load the Humble suite needs ~1.7x its idle time; the runtime
+    # budget must cover that, and image build plus runtime (with each kill
+    # grace) must end before GitHub kills the job, so evidence still uploads.
+    text = (ROOT / 'tests/run_ros2_tests.sh').read_text()
+    timed = re.findall(r'timeout --signal=TERM --kill-after=(\d+[sm]) (\d+[sm]) (docker \w+|bash tests/)', text)
+    budget = {cmd: (_seconds(limit), _seconds(grace)) for grace, limit, cmd in timed}
+    build, run, suite = budget['docker buildx'], budget['docker run'], budget['bash tests/']
+    assert suite[0] >= 600
+    assert suite[0] + suite[1] < run[0]
+    workflow = yaml.safe_load((ROOT / '.github/workflows/test.yml').read_text())
+    job_limit = workflow['jobs']['ros2-integration']['timeout-minutes'] * 60
+    setup_and_upload = 180
+    assert sum(build) + sum(run) + setup_and_upload <= job_limit
