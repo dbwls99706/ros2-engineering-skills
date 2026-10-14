@@ -30,7 +30,7 @@ Hooks:
   certain module-scope bindings; a loop over an empty literal never binds.
 - Adapter: an unchanged Stop advisory is shown once per session and again only
   when a finding or one of its files changes; any cache failure, including a
-  symlinked cache directory, shows it as before. `ROS2_SKILL_DISABLE_HOOKS` (`Stop`, `PreToolUse`, `all`) turns an
+  symlinked cache directory or undecodable state, shows it as before. `ROS2_SKILL_DISABLE_HOOKS` (`Stop`, `PreToolUse`, `all`) turns an
   adapter off; a knowledge-only installation (`INSTALL_PROVENANCE.json`)
   never runs hooks even for a session that registered them before the
   reinstall. Hooks run Python with `-B` so no `__pycache__` appears in a

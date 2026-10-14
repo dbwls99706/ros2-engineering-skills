@@ -341,3 +341,16 @@ def test_symlinked_state_directory_cannot_hide_a_finding(monkeypatch, tmp_path, 
     for _ in range(2):
         assert 'broken launch' in hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]['systemMessage']
     assert sorted(p.read_bytes() for p in moved.rglob('*') if p.is_file()) == before
+
+
+def test_undecodable_state_file_shows_the_advisory(monkeypatch, tmp_path):
+    # Corrupt cache bytes are a cache failure: show the advisory, then replace
+    # the state so the next unchanged turn is quiet again.
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    monkeypatch.setattr(hook.subprocess, 'run',
+                        Mock(return_value=_stop_report(tmp_path / 'gone.launch.py')))
+    assert 'broken launch' in hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]['systemMessage']
+    hook._advisory_state_path('s1').write_bytes(b'\xff\xfe\x80 not utf-8')
+    result = hook.run_hook('Stop', payload('Stop', session_id='s1'))
+    assert result[1:] == ('', 0) and 'broken launch' in result[0]['systemMessage']
+    assert hook.run_hook('Stop', payload('Stop', session_id='s1')) == ({}, '', 0)

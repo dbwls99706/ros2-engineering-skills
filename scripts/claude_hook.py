@@ -89,7 +89,7 @@ def already_shown(payload, report, feedback):
             return False
         if path.read_text(encoding='utf-8').strip() == fingerprint:
             return True
-    except OSError:
+    except (OSError, UnicodeError):  # unreadable or corrupt state: show it
         pass
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
