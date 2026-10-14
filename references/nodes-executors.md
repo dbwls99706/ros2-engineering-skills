@@ -953,9 +953,13 @@ became ready **before** the subscriptions that have been waiting (Foxy rclpy
 1.0.13 source; same ordering observed on Humble). A freshness check inside a
 timer therefore sees the executor's own delay as stale input: one field case
 pinned a handover state machine in LOST for as long as a 2-second inline planner
-ran in another callback. Measure input age from the message stamp against the
-steady clock, and treat an age that equals the executor's own latency as a
-scheduling symptom, not as a sensor dropout.
+ran in another callback. Record `time.monotonic()` when the subscription
+callback runs and time out on monotonic time since that receipt. A message still
+waiting in the queue has not been received, so before declaring a dropout
+compare how late the timer itself fired on the same monotonic clock: staleness
+that equals the executor's own latency is a scheduling symptom, not a sensor
+dropout. The stamp's own age belongs on the node's ROS clock, never against
+`time.monotonic()` (`references/message-types.md`, Time sources).
 
 > **Note:** The `rclcpp::Executor` protected API varies across distros and is not
 > fully stable. The following shows the architectural pattern — adapt method names

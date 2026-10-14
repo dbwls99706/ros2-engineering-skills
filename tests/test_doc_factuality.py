@@ -19,6 +19,10 @@ Background (found during a real Humble/Nav2 field diagnosis):
 
 import os
 import re
+import shutil
+import subprocess
+
+import pytest
 
 ROOT = os.path.join(os.path.dirname(__file__), '..')
 NAVIGATION_MD = os.path.join(ROOT, 'references', 'navigation.md')
@@ -1521,3 +1525,57 @@ class TestCounterfactualBaseline:
         assert 'reacted to the real trajectory, not the simulated one' in flat
         assert 'check the instrument and its inputs with a positive control' in flat
         assert _read(LINEAGE_MD).count('```python') == 1
+
+
+class TestSelfContainedTreeCopy:
+    """The symlink check compares whole path components, not a string prefix."""
+
+    @staticmethod
+    def _run(tmp_path, link_target):
+        if not shutil.which('sh') or not shutil.which('readlink'):
+            pytest.skip('POSIX shell tools unavailable')
+        section = _md_section(PROVENANCE_MD, '## 4. Source tree vs installed copy')
+        block = section.split('**Copying a symlinked install tree.**', 1)[1]
+        script = block.split('```bash\n', 1)[1].split('```', 1)[0]
+        share = tmp_path / 'share'
+        (share / 'lib').mkdir(parents=True)
+        (share / 'lib' / 'node.py').write_text('x = 1\n')
+        (tmp_path / 'share-outside').mkdir()
+        (tmp_path / 'share-outside' / 'key').write_text('secret\n')
+        (share / 'link').symlink_to(link_target)
+        return subprocess.run(['sh', '-c', script.replace('/tmp/share_copy', '"$copy"')],
+                              env={**os.environ, 'share': str(share), 'copy': str(tmp_path / 'copy')},
+                              capture_output=True, text=True, timeout=30)
+
+    def test_sibling_with_the_same_prefix_is_outside(self, tmp_path):
+        result = self._run(tmp_path, '../share-outside/key')
+        assert result.returncode != 0 and 'leave the tree' in result.stdout
+        assert not (tmp_path / 'copy').exists()
+
+    def test_dangling_link_is_refused(self, tmp_path):
+        result = self._run(tmp_path, 'missing')
+        assert result.returncode != 0 and '(unresolved)' in result.stdout
+        assert not (tmp_path / 'copy').exists()
+
+    def test_link_inside_the_tree_is_copied_as_a_file(self, tmp_path):
+        result = self._run(tmp_path, 'lib/node.py')
+        assert result.returncode == 0, result.stdout + result.stderr
+        copied = tmp_path / 'copy' / 'link'
+        assert copied.is_file() and not copied.is_symlink()
+
+
+class TestClockDomains:
+    """A message stamp is never compared with the steady clock."""
+
+    def test_executor_freshness_uses_receipt_time(self):
+        flat = _flat(_read(EXECUTORS_MD))
+        assert 'message stamp against the steady clock' not in flat
+        assert 'time out on monotonic time since that receipt' in flat
+        assert "The stamp's own age belongs on the node's ROS clock" in flat
+
+    def test_time_sources_separate_data_age_from_receipt_time(self):
+        flat = _flat(_read(MESSAGE_TYPES_MD))
+        assert 'Compute ages and timeouts on the steady clock' not in flat
+        assert "compute on the node's own ROS clock" in flat
+        assert 'Time since receipt, timeouts, executor delay.' in flat
+        assert '`time.monotonic()` against a stamp is meaningless' in flat

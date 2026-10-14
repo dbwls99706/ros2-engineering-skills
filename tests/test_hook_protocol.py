@@ -322,3 +322,22 @@ def test_symlinked_advisory_state_directory_is_not_used(monkeypatch, tmp_path):
     for _ in range(2):
         assert 'broken launch' in hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]['systemMessage']
     assert list((tmp_path / 'elsewhere').iterdir()) == []
+
+
+@pytest.mark.parametrize('linked', ['stop-advisories', 'ros2-engineering-skills'])
+def test_symlinked_state_directory_cannot_hide_a_finding(monkeypatch, tmp_path, linked):
+    # A matching fingerprint behind a symlinked cache directory must not be
+    # read: the advisory is shown and nothing is written through the link.
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    monkeypatch.setattr(hook.subprocess, 'run',
+                        Mock(return_value=_stop_report(tmp_path / 'gone.launch.py')))
+    assert 'broken launch' in hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]['systemMessage']
+    state = hook._advisory_state_path('s1')
+    real = state.parent if linked == 'stop-advisories' else state.parent.parent
+    moved = tmp_path / 'elsewhere'
+    real.rename(moved)
+    real.symlink_to(moved, target_is_directory=True)
+    before = sorted(p.read_bytes() for p in moved.rglob('*') if p.is_file())
+    for _ in range(2):
+        assert 'broken launch' in hook.run_hook('Stop', payload('Stop', session_id='s1'))[0]['systemMessage']
+    assert sorted(p.read_bytes() for p in moved.rglob('*') if p.is_file()) == before

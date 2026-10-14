@@ -81,8 +81,11 @@ def already_shown(payload, report, feedback):
         return False
     fingerprint = _advisory_fingerprint(report, feedback)
     path = _advisory_state_path(session_id)
+    # Check every directory this module creates, before reading: a matching
+    # fingerprint behind a symlink must not hide a finding.
+    owned = (path, path.parent, path.parent.parent)
     try:
-        if path.is_symlink():
+        if any(part.is_symlink() for part in owned):
             return False
         if path.read_text(encoding='utf-8').strip() == fingerprint:
             return True
@@ -90,7 +93,7 @@ def already_shown(payload, report, feedback):
         pass
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if path.parent.is_symlink():
+        if any(part.is_symlink() for part in owned):
             return False
         fd, tmp = tempfile.mkstemp(dir=path.parent)
         with os.fdopen(fd, 'w', encoding='utf-8') as handle:

@@ -68,14 +68,23 @@ msg.header.frame_id = 'camera_optical_frame'
 |---|---|---|
 | `ROS_TIME` | `/clock` topic when `use_sim_time: true`; otherwise **the system wall clock** — on a real robot ROS_TIME is not a separate clock | Default for message stamps and for anything compared against a stamp |
 | `SYSTEM_TIME` | OS wall clock; jumps when NTP/timesyncd steps it (a Jetson without an RTC battery boots in 1970 and jumps forward once synchronized) | Never for message stamps |
-| `STEADY_TIME` | Monotonic, never adjusted | Ages, timeouts, loop measurement — durations are computed here |
+| `STEADY_TIME` | Monotonic, never adjusted | Timeouts, time since receipt, loop and executor-delay measurement |
 
-Compute ages and timeouts on the steady clock, and never subtract across
-clocks: `now(ROS_TIME) - stamp` is a wall-clock difference on a real robot and
-inherits every time step, while `time.monotonic()` against a stamp that was
-taken from the wall clock is meaningless in both directions. Note the clock a
-stamp came from before computing with it (one review found latency computed
-across the two clocks after a timesyncd step).
+Never subtract across clocks. Pick the clock by what the two times describe:
+
+- **Age of the data** (`now - msg.header.stamp`). The stamp is ROS_TIME, so
+  compute on the node's own ROS clock (`self.get_clock().now()`). On a real
+  robot that is the wall clock: it inherits every NTP/timesyncd step and, across
+  hosts, the offset between their clocks. Treat a negative or implausibly large
+  age as a clock fault, not as data.
+- **Time since receipt, timeouts, executor delay.** Record `time.monotonic()`
+  (or read a `STEADY_TIME` clock) when the callback receives the message, and
+  compare it later with the same clock. A clock step cannot move it.
+
+`time.monotonic()` against a stamp is meaningless in both directions, since the
+two have different origins. Note the clock a stamp came from before computing
+with it (one review found latency computed across the two clocks after a
+timesyncd step).
 
 ### Common time mistakes
 

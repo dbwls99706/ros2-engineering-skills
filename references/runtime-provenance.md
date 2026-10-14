@@ -170,13 +170,33 @@ reusing the report.
 **Copying a symlinked install tree.** `cp -r` copies symbolic links as links,
 so a "copy" of an install space that was linked into place still points at the
 deployed sources, and editing the copy edits the deployment. Before copying,
-list where the links go and refuse any that leave the tree; then copy with
-`-L` so the result is self-contained, and check that no link survived:
+resolve every link and refuse the copy if any link leaves the tree or does not
+resolve. Compare whole path components: a prefix test such as
+`grep -v " -> $share"` accepts `/opt/share-outside/key` as inside `/opt/share`.
+Only then copy with `-L` so the result is self-contained, and check that no link
+survived:
 
 ```bash
-find "$share" -type l -exec sh -c 'printf "%s -> %s\n" "$1" "$(readlink -f "$1")"' _ {} \; |
-  grep -v " -> $share" && echo "links leave the tree: copy the needed files explicitly" ||
-  { cp -rL "$share" /tmp/share_copy && find /tmp/share_copy -type l | grep -q . && echo "symlinks remain"; }
+# copy_tree_self_contained <tree> <dest>: copies nothing when a link leaves
+# <tree> or dangles. A link cycle makes cp itself fail.
+copy_tree_self_contained() {
+  root=$(readlink -f -- "$1") && [ -d "$root" ] || { echo "not a directory: $1"; return 1; }
+  [ ! -e "$2" ] || { echo "destination exists: $2"; return 1; }
+  escaping=$(find "$root" -type l -exec sh -c '
+    root=$1; shift
+    for link; do
+      target=$(readlink -f -- "$link") && [ -e "$target" ] || { printf "%s -> (unresolved)\n" "$link"; continue; }
+      case $target in "$root"|"$root"/*) ;; *) printf "%s -> %s\n" "$link" "$target" ;; esac
+    done' sh "$root" {} +) || { echo "cannot list links under $root"; return 1; }
+  if [ -n "$escaping" ]; then
+    printf '%s\n' "$escaping"
+    echo "links leave the tree or dangle: copy the needed files explicitly"
+    return 1
+  fi
+  cp -rL -- "$root" "$2" || return 1
+  if [ -n "$(find "$2" -type l)" ]; then echo "symlinks remain in $2"; return 1; fi
+}
+copy_tree_self_contained "$share" /tmp/share_copy
 ```
 
 ## 5. Which parameters are actually in effect?

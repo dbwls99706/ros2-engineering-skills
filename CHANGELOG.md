@@ -29,8 +29,8 @@ Hooks:
 - Stop hook: loop bodies and loop `else` clauses are no longer treated as
   certain module-scope bindings; a loop over an empty literal never binds.
 - Adapter: an unchanged Stop advisory is shown once per session and again only
-  when a finding or one of its files changes; any cache failure shows it as
-  before. `ROS2_SKILL_DISABLE_HOOKS` (`Stop`, `PreToolUse`, `all`) turns an
+  when a finding or one of its files changes; any cache failure, including a
+  symlinked cache directory, shows it as before. `ROS2_SKILL_DISABLE_HOOKS` (`Stop`, `PreToolUse`, `all`) turns an
   adapter off; a knowledge-only installation (`INSTALL_PROVENANCE.json`)
   never runs hooks even for a session that registered them before the
   reinstall. Hooks run Python with `-B` so no `__pycache__` appears in a
@@ -110,8 +110,9 @@ Guidance (`references/`), with the distribution each statement was verified on:
   its own shell.
 - `runtime-provenance.md`: `pgrep -f '[c]ontroller_server'` plus `/proc`
   confirmation; `CYCLONEDDS_URI` and `FASTRTPS_DEFAULT_PROFILES_FILE` in the
-  environment check; copying a symlinked tree with `cp -rL` only after
-  confirming no link leaves the tree.
+  environment check; copying a symlinked tree with `cp -rL` only after every
+  link resolves inside the tree by whole path components (a string prefix
+  accepts a sibling such as `share-outside`).
 - `lifecycle-components.md`: `component_container_isolated` is executor
   isolation in one process, not crash isolation, and does not exist on Foxy.
 - `nodes-executors.md`: a Foxy SIGTERM example (handler records, cleanup after
@@ -121,8 +122,10 @@ Guidance (`references/`), with the distribution each statement was verified on:
   timers before waiting subscriptions after a long callback; rclpy cost scales
   with delivered samples; the log severity of a call site is fixed.
 - `message-types.md` and `testing.md`: ROS_TIME is the wall clock without
-  sim time; ages and timeouts are computed on the steady clock; wait helpers
-  use `time.monotonic()`; four more test failure causes.
+  sim time; the age of a stamp is computed on the node's ROS clock, while
+  time since receipt, timeouts and executor delay use the steady clock, and a
+  stamp is never compared with `time.monotonic()`; wait helpers use
+  `time.monotonic()`; four more test failure causes.
 - `launch-system.md`: SIGTERM to `ros2 launch` cancels without a `Shutdown`
   event, so `OnShutdown` never runs (launch 0.10.10 and 1.0.14 source).
 - `evidence-progression.md`, `system-bringup.md`, `navigation.md`: find the
