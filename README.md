@@ -1,5 +1,7 @@
 # ros2-engineering-skills
 
+![ros2-engineering-skills cover](docs/assets/cover.svg)
+
 Source version: **1.7.0**. See [release notes](CHANGELOG.md#170---2026-10-02) and
 [release procedure](docs/RELEASING.md).
 

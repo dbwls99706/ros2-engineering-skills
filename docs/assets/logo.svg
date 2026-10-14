@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="title">
+  <title id="title">ros2-engineering-skills logo</title>
+  <rect width="128" height="128" rx="24" fill="#0F2D5B"/>
+  <path d="M36 29H25V99H36" fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m49 43 20 21-20 21" fill="none" stroke="#3B82F6" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="87" cy="53" r="6" fill="#93C5FD"/>
+  <circle cx="107" cy="53" r="6" fill="#3B82F6"/>
+  <circle cx="87" cy="75" r="6" fill="#3B82F6"/>
+  <circle cx="107" cy="75" r="6" fill="#93C5FD"/>
+</svg>

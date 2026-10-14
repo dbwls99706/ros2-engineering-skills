@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="title desc">
+  <title id="title">ros2-engineering-skills</title>
+  <desc id="desc">Practical guidance, validators, and tools for reliable ROS 2 development.</desc>
+  <defs>
+    <radialGradient id="wash" cx="0.48" cy="0.42" r="0.82">
+      <stop offset="0" stop-color="#142840"/>
+      <stop offset="1" stop-color="#0C192A"/>
+    </radialGradient>
+    <linearGradient id="blue" x2="1" y2="1">
+      <stop offset="0" stop-color="#71BDFF"/>
+      <stop offset="1" stop-color="#397FFF"/>
+    </linearGradient>
+    <pattern id="grid" width="82" height="82" patternUnits="userSpaceOnUse">
+      <path d="M82 0H0V82" fill="none" stroke="#80ACDA" stroke-opacity=".075" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="640" fill="url(#wash)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <g stroke="#4786BE" stroke-opacity=".2" stroke-width="1.3" fill="none">
+    <circle cx="1320" cy="-86" r="265"/>
+    <circle cx="-47" cy="666" r="290"/>
+    <path d="M112 0V640M0 355H1280" opacity=".3"/>
+  </g>
+  <g transform="translate(110 230)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30 0H4V96H30" stroke="#F7FAFF" stroke-width="13"/>
+    <path d="m54 15 35 33-35 33" stroke="url(#blue)" stroke-width="15"/>
+    <g fill="#5B9FFF" stroke="none">
+      <circle cx="116" cy="32" r="9"/><circle cx="153" cy="32" r="9"/>
+      <circle cx="116" cy="70" r="9"/><circle cx="153" cy="70" r="9"/>
+    </g>
+  </g>
+  <g font-family="Inter, 'DejaVu Sans', 'Liberation Sans', Arial, sans-serif">
+    <text x="328" y="284" fill="#F3F7FF" font-size="66" font-weight="700" letter-spacing="-2.7">ros2-engineering-skills</text>
+    <text x="330" y="355" fill="#C8D7EB" font-size="26" font-weight="400">Practical guidance, validators, and tools for reliable ROS 2 development.</text>
+    <path d="M330 409H388" stroke="#82B4EA" stroke-width="2.4"/>
+    <text x="412" y="418" fill="#8DAED3" font-size="20" letter-spacing="1.3">References  ·  Validators  ·  Tools  ·  Templates  ·  Tests</text>
+  </g>
+</svg>
