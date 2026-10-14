@@ -2,13 +2,13 @@
 
 All notable changes are documented here.
 
-## Unreleased
+## 1.7.1 - 2026-10-14
 
-Corrections from field use on a Foxy robot fleet (September to October 2026):
+Source bundle version 1.7.1. Corrections from field use on a Foxy robot fleet (September to October 2026):
 false positives in both hooks, an installer that could delete a client
 configuration directory, validators that misread inputs, and guidance that was
-wrong or missing for Foxy. No new capability. The next release is a patch
-release; the bundle version surfaces are unchanged until then.
+wrong or missing for Foxy. No new capability. This patch release keeps the hook-report contract at
+version 1.4.0; it is independent of the source bundle version.
 
 Hooks:
 
@@ -99,6 +99,11 @@ Installers and validators:
 - Test suite: `tests/test_qos_property.py` skips without Hypothesis instead of
   aborting collection (CI asserts the import); the skill-name test checks the
   installer's output directory instead of the checkout's name.
+- CI: the ROS 2 runtime container timeout rises from 360 to 600 seconds (outer
+  Docker timeout 630 seconds, GitHub job 35 minutes) to accommodate runner load;
+  per-stage timeouts and failure detection stay unchanged. A regression test
+  checks the nested time budgets.
+- Project presentation: add the README cover and logo under `docs/assets/`.
 
 Guidance (`references/`), with the distribution each statement was verified on:
 
