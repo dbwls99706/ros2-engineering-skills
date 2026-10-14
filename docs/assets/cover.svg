@@ -1,38 +1,40 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
   <title id="title">ros2-engineering-skills</title>
-  <desc id="desc">Practical guidance, validators, and tools for reliable ROS 2 development.</desc>
+  <desc id="desc">Centered project banner with the engineering-skills mark, title, and a short description.</desc>
   <defs>
-    <radialGradient id="wash" cx="0.48" cy="0.42" r="0.82">
-      <stop offset="0" stop-color="#142840"/>
-      <stop offset="1" stop-color="#0C192A"/>
+    <radialGradient id="background" cx="48%" cy="48%" r="88%">
+      <stop offset="0" stop-color="#112C4A"/>
+      <stop offset="1" stop-color="#091A2F"/>
     </radialGradient>
-    <linearGradient id="blue" x2="1" y2="1">
-      <stop offset="0" stop-color="#71BDFF"/>
-      <stop offset="1" stop-color="#397FFF"/>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5EAAFF"/>
+      <stop offset="1" stop-color="#307CFB"/>
     </linearGradient>
     <pattern id="grid" width="82" height="82" patternUnits="userSpaceOnUse">
-      <path d="M82 0H0V82" fill="none" stroke="#80ACDA" stroke-opacity=".075" stroke-width="1"/>
+      <path d="M82 0H0V82" fill="none" stroke="#5B94C9" stroke-width=".9" stroke-opacity=".15"/>
     </pattern>
   </defs>
-  <rect width="1280" height="640" fill="url(#wash)"/>
+  <rect width="1280" height="640" fill="url(#background)"/>
   <rect width="1280" height="640" fill="url(#grid)"/>
-  <g stroke="#4786BE" stroke-opacity=".2" stroke-width="1.3" fill="none">
-    <circle cx="1320" cy="-86" r="265"/>
-    <circle cx="-47" cy="666" r="290"/>
-    <path d="M112 0V640M0 355H1280" opacity=".3"/>
+  <g fill="none" stroke="#3678B7" stroke-width="1.3" stroke-opacity=".44">
+    <circle cx="1330" cy="-86" r="316"/>
+    <circle cx="-36" cy="671" r="280"/>
   </g>
-  <g transform="translate(110 230)" fill="none" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M30 0H4V96H30" stroke="#F7FAFF" stroke-width="13"/>
-    <path d="m54 15 35 33-35 33" stroke="url(#blue)" stroke-width="15"/>
-    <g fill="#5B9FFF" stroke="none">
-      <circle cx="116" cy="32" r="9"/><circle cx="153" cy="32" r="9"/>
-      <circle cx="116" cy="70" r="9"/><circle cx="153" cy="70" r="9"/>
+  <g stroke="#5E9BCE" stroke-width="1" opacity=".36">
+    <path d="M214 121h18m-9-9v18 M1115 516h18m-9-9v18 M1078 166h16m-8-8v16"/>
+  </g>
+  <g transform="translate(218 230)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M26 0H9V86H26" stroke="#F6FAFF" stroke-width="12" fill="none"/>
+    <path d="m48 17 28 26-28 26" stroke="url(#accent)" stroke-width="13" fill="none"/>
+    <g fill="#4E9BFF" stroke="none">
+      <circle cx="101" cy="31" r="7"/><circle cx="122" cy="31" r="7"/>
+      <circle cx="101" cy="57" r="7"/><circle cx="122" cy="57" r="7"/>
     </g>
   </g>
-  <g font-family="Inter, 'DejaVu Sans', 'Liberation Sans', Arial, sans-serif">
-    <text x="328" y="284" fill="#F3F7FF" font-size="66" font-weight="700" letter-spacing="-2.7">ros2-engineering-skills</text>
-    <text x="330" y="355" fill="#C8D7EB" font-size="26" font-weight="400">Practical guidance, validators, and tools for reliable ROS 2 development.</text>
-    <path d="M330 409H388" stroke="#82B4EA" stroke-width="2.4"/>
-    <text x="412" y="418" fill="#8DAED3" font-size="20" letter-spacing="1.3">References  ·  Validators  ·  Tools  ·  Templates  ·  Tests</text>
+  <g font-family="'DejaVu Sans', 'Liberation Sans', Arial, sans-serif">
+    <text x="360" y="291" font-size="54" font-weight="700" fill="#F5F8FF" textLength="651" lengthAdjust="spacingAndGlyphs">ros2-engineering-skills</text>
+    <text x="640" y="365" text-anchor="middle" font-size="21" font-weight="400" fill="#D6E3F2" textLength="732" lengthAdjust="spacingAndGlyphs">Practical guidance, validators, and tools for reliable ROS 2 development.</text>
+    <path d="M278 426H328 M952 426H1002" stroke="#71AFF4" stroke-width="2" fill="none"/>
+    <text x="640" y="432" text-anchor="middle" font-size="19" font-weight="400" fill="#8EBAE8" textLength="580" lengthAdjust="spacingAndGlyphs">References  ·  Validators  ·  Tools  ·  Templates  ·  Tests</text>
   </g>
 </svg>
