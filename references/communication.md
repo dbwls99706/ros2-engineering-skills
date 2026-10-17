@@ -377,9 +377,61 @@ than copied follows the intra-process rules: publish as `unique_ptr`, and
 copies may still occur depending on callback type, subscriber count, and QoS
 (see `references/nodes-executors.md`).
 
-**Industry reference:** NVIDIA NITROS (used in Isaac ROS) builds on type adapters to
-negotiate GPU tensor <-> ROS message conversion, keeping data on the GPU between
-NITROS-accelerated nodes and only converting to CPU ROS messages at the boundary.
+**Industry reference:** NVIDIA NITROS (Isaac ROS 4.x and earlier) built on type
+adaptation and type negotiation to keep data on the GPU between accelerated nodes.
+Isaac ROS 5.0 removed it in favor of `rosidl::Buffer`, described next.
+
+### GPU-resident fields with `rosidl::Buffer` (Lyrical+)
+
+A type adapter changes the type a callback sees; `rosidl::Buffer` changes where a
+field's bytes live. In Lyrical C++, `uint8[]` fields are generated as
+`rosidl::Buffer<uint8_t>` instead of `std::vector<uint8_t>`, while the `.msg` file
+(for example `sensor_msgs/msg/Image`) stays the same. With the default CPU backend
+the field converts implicitly to the vector that most existing code expects.
+Backend plugins, such as the CUDA backend from `ros2/rosidl_buffer_backends`, can
+keep the bytes in device memory. The type alone guarantees no zero-copy, and the
+mechanism covers topics only; services and actions serialize as before. The Lyrical
+how-to names `rmw_fastrtps_cpp` as the first supported RMW, the release notes also
+list `rmw_zenoh_cpp`, and other RMWs deliver CPU data — verify against the
+installed version.
+
+- **Choosing the API:** start with the standard message API or a conversion package
+  for the data model. Use the CUDA backend directly only when custom CUDA code needs
+  device pointers or explicit control of streams, synchronization, allocation, or
+  lifetime. Its read/write handles carry synchronization, not just an address:
+  release a handle only after the stream work that uses it has been recorded,
+  never write through a pointer obtained on the subscriber side, and do not cache
+  a raw pointer once its handle or message is gone. Backend APIs are C++-only;
+  Python sees the field as bytes.
+  `tensor_msgs/msg/ExperimentalTensor` and `torch_conversions` are experimental.
+- **Opt-in and fallback:** a publisher does not advertise backends; it publishes
+  once, with whatever backend the buffer holds. A subscription receives non-CPU data
+  only when it lists that backend in `acceptable_buffer_backends`
+  (`rclcpp::SubscriptionOptions`, or the rclpy keyword); every other peer is
+  serialized through CPU. A backend plugin or descriptor package missing on either
+  side, or a connection the backend cannot serve, also falls back to CPU, with a
+  loader warning in the log rather than an error. The CUDA backend serves
+  intra-process peers and inter-process peers on the same host, GPU, and user;
+  inter-host peers get CPU. Its zero-copy path targets live samples on volatile
+  topics — the CUDA backend does not support a transient-local zero-copy path.
+  Branch on `msg->data.get_backend_type()` and keep both paths correct.
+- **Not a fallback:** a publisher/subscriber RMW mismatch or incompatible QoS can
+  prevent the connection itself. Diagnose those as discovery or QoS faults
+  (section 9), not as a backend downgrade.
+- **CPU-only data:** prefer the plain message API. Within one process use
+  intra-process communication, adding a type adapter when a custom C++ type is
+  needed. Across processes, whether bytes are copied or serialized depends on the
+  RMW, shared-memory transport, loaned-message support, and the message type.
+- **Verifying the path:** treat this as a diagnostic procedure; no single
+  observation proves zero-copy. CUDA being available, or calling `.cuda()` on
+  received data, says nothing about how it travelled — the call itself may copy.
+  Device pointer values are process-local, so comparing them across processes
+  proves nothing. Run publisher and subscriber as separate processes on the
+  production RMW, check `get_backend_type()` on the receiver and the log for
+  fallback warnings, and profile every participating process with a tool that
+  records memory traffic (for example Nsight Systems with CUDA tracing), looking
+  for both host-device memcpy and CPU-side copies per message. Then attach a
+  CPU-only subscriber and confirm it still receives correct data.
 
 ## 7. Content-filtered topics (Jazzy+)
 

@@ -40,6 +40,7 @@
     {"id": "realtime", "mode": "implicit", "should_trigger": true, "prompt": "Our ROS 2 control loop misses its real-time deadline under memory pressure. Review allocations and scheduling evidence."},
     {"id": "sros2", "mode": "implicit", "should_trigger": true, "prompt": "An SROS2 enclave fails to join the DDS domain under Enforce. Diagnose its security configuration."},
     {"id": "micro-ros", "mode": "implicit", "should_trigger": true, "prompt": "A micro-ROS rclc executor on FreeRTOS stops receiving commands through the XRCE-DDS agent. Diagnose the ROS 2 path."},
-    {"id": "multi-robot", "mode": "implicit", "should_trigger": true, "prompt": "Two robots in our Open-RMF fleet receive each other’s ROS 2 navigation commands. Review namespaces and discovery isolation."}
+    {"id": "multi-robot", "mode": "implicit", "should_trigger": true, "prompt": "Two robots in our Open-RMF fleet receive each other’s ROS 2 navigation commands. Review namespaces and discovery isolation."},
+    {"id": "gpu-buffer-shorthand", "mode": "implicit", "should_trigger": true, "prompt": "Build a Lyrical GPU image pipeline that keeps camera frames in device memory between two nodes with rosidl::Buffer, and show how to confirm there are no host copies."}
   ]
 }

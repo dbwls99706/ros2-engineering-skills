@@ -386,9 +386,16 @@ og.Controller.edit(
 
 ### NVIDIA NITROS
 
-Isaac ROS packages use NITROS to keep data on the GPU through the perception
-pipeline, avoiding costly GPU-to-CPU-to-GPU transfers. NITROS-accelerated nodes
-are drop-in replacements but require an NVIDIA GPU.
+Isaac ROS 4.x and earlier use NITROS to keep data on the GPU through the
+perception pipeline, avoiding costly GPU-to-CPU-to-GPU transfers. Isaac ROS 5.0
+moved to ROS 2 Lyrical, removed the NITROS packages, and rebuilt that path on
+`rosidl::Buffer` (`references/communication.md` §6). When upgrading, separate two
+cases: a launch graph built only from supported Isaac ROS nodes keeps those node
+interfaces and needs no redesign for the transport change, while custom code that
+calls NITROS APIs or types (Managed NITROS publishers/subscribers, PyNITROS,
+NITROS adapted types) needs a source-level migration. The Isaac Sim bridge package
+`isaac_ros_nitros_bridge_ros2` is retained in 5.0 but deprecated. The accelerated
+path still requires an NVIDIA GPU.
 
 ### When to choose each
 

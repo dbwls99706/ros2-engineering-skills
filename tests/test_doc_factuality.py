@@ -1579,3 +1579,39 @@ class TestClockDomains:
         assert "compute on the node's own ROS clock" in flat
         assert 'Time since receipt, timeouts, executor delay.' in flat
         assert '`time.monotonic()` against a stamp is meaningless' in flat
+
+
+SIMULATION_MD = os.path.join(ROOT, 'references', 'simulation.md')
+PERCEPTION_MD = os.path.join(ROOT, 'references', 'perception.md')
+
+
+class TestNitrosSupersededByRosidlBuffer:
+    """Isaac ROS 5.0 (Lyrical) removed the NITROS packages and moved GPU
+    transport to rosidl::Buffer. Pinned errors: simulation.md called NITROS
+    nodes "drop-in replacements", perception.md presented NITROS as the
+    current zero-copy path, and its package list named isaac_ros_visual_slam
+    and isaac_ros_depth_segmentation, which the 5.0 package list does not
+    carry as packages."""
+
+    def test_simulation_separates_node_and_source_migration(self):
+        section = _flat(_md_section(SIMULATION_MD, 'NVIDIA NITROS')).lower()
+        assert 'drop-in replacement' not in section
+        assert 'node interfaces' in section
+        assert 'source-level migration' in section
+        assert '4.x' in section and '5.0' in section
+        assert 'removed' in section and 'deprecated' in section
+
+    def test_perception_isaac_section_matches_5_0_packages(self):
+        section = _flat(_md_section(PERCEPTION_MD, 'Isaac ROS for GPU-accelerated'))
+        assert 'These use NITROS for zero-copy' not in section
+        assert '`rosidl::Buffer`' in section
+        assert '`isaac_ros_cuvslam`' in section
+        assert '`isaac_ros_rtdetr`' in section and '`isaac_ros_yolov8`' in section
+        assert '`isaac_ros_visual_slam`' not in section
+        assert 'isaac_ros_depth_segmentation' not in section
+
+    def test_rosidl_buffer_section_keeps_opt_in_and_evidence_rules(self):
+        section = _flat(_md_section(COMMUNICATION_MD, 'GPU-resident fields')).lower()
+        for keyword in ('acceptable_buffer_backends', 'conversion package',
+                        'separate process', 'profile', 'pointer values'):
+            assert keyword in section, keyword
