@@ -1591,7 +1591,8 @@ class TestNitrosSupersededByRosidlBuffer:
     nodes "drop-in replacements", perception.md presented NITROS as the
     current zero-copy path, and its package list named isaac_ros_visual_slam
     and isaac_ros_depth_segmentation, which the 5.0 package list does not
-    carry as packages."""
+    carry as packages; communication.md said the type "guarantees no
+    zero-copy", which reads as the opposite of the intended non-guarantee."""
 
     def test_simulation_separates_node_and_source_migration(self):
         section = _flat(_md_section(SIMULATION_MD, 'NVIDIA NITROS')).lower()
@@ -1612,6 +1613,8 @@ class TestNitrosSupersededByRosidlBuffer:
 
     def test_rosidl_buffer_section_keeps_opt_in_and_evidence_rules(self):
         section = _flat(_md_section(COMMUNICATION_MD, 'GPU-resident fields')).lower()
+        assert 'guarantees no zero-copy' not in section
+        assert 'does not guarantee zero-copy' in section
         for keyword in ('acceptable_buffer_backends', 'conversion package',
                         'separate process', 'profile', 'pointer values'):
             assert keyword in section, keyword

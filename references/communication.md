@@ -389,11 +389,11 @@ field's bytes live. In Lyrical C++, `uint8[]` fields are generated as
 (for example `sensor_msgs/msg/Image`) stays the same. With the default CPU backend
 the field converts implicitly to the vector that most existing code expects.
 Backend plugins, such as the CUDA backend from `ros2/rosidl_buffer_backends`, can
-keep the bytes in device memory. The type alone guarantees no zero-copy, and the
-mechanism covers topics only; services and actions serialize as before. The Lyrical
-how-to names `rmw_fastrtps_cpp` as the first supported RMW, the release notes also
-list `rmw_zenoh_cpp`, and other RMWs deliver CPU data — verify against the
-installed version.
+keep the bytes in device memory. The type by itself does not guarantee zero-copy,
+and the mechanism covers topics only; services and actions serialize as before.
+The Lyrical how-to names `rmw_fastrtps_cpp` as the first supported RMW, the
+release notes also list `rmw_zenoh_cpp`, and other RMWs deliver CPU data — verify
+against the installed version.
 
 - **Choosing the API:** start with the standard message API or a conversion package
   for the data model. Use the CUDA backend directly only when custom CUDA code needs
@@ -408,12 +408,15 @@ installed version.
   once, with whatever backend the buffer holds. A subscription receives non-CPU data
   only when it lists that backend in `acceptable_buffer_backends`
   (`rclcpp::SubscriptionOptions`, or the rclpy keyword); every other peer is
-  serialized through CPU. A backend plugin or descriptor package missing on either
-  side, or a connection the backend cannot serve, also falls back to CPU, with a
-  loader warning in the log rather than an error. The CUDA backend serves
-  intra-process peers and inter-process peers on the same host, GPU, and user;
-  inter-host peers get CPU. Its zero-copy path targets live samples on volatile
-  topics — the CUDA backend does not support a transient-local zero-copy path.
+  serialized through CPU. A subscriber missing the backend plugin or its
+  descriptor package falls back to CPU, and the RMW backend loader logs a warning;
+  both endpoints need those components for GPU transport. A backend may also
+  decline a peer it cannot serve and use CPU serialization for it — whether that
+  fallback is logged depends on the backend, so check the received backend type.
+  The CUDA backend serves intra-process peers and inter-process peers on the same
+  host, GPU, and user; inter-host peers get CPU. Its zero-copy path targets live
+  samples on volatile topics — the CUDA backend does not support a
+  transient-local zero-copy path.
   Branch on `msg->data.get_backend_type()` and keep both paths correct.
 - **Not a fallback:** a publisher/subscriber RMW mismatch or incompatible QoS can
   prevent the connection itself. Diagnose those as discovery or QoS faults
