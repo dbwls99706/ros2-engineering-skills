@@ -7,9 +7,11 @@ All notable changes are documented here.
 Source bundle version 1.7.2. Documentation corrections for Isaac ROS 5.0
 (2026-09-21), which moved to ROS 2 Lyrical and replaced NITROS with
 `rosidl::Buffer`. No new tools; the hook-report contract stays at version 1.4.0.
-Checked against the Isaac ROS 5.0 release notes and concept pages and the Lyrical
-buffer-backend documentation; no GPU runtime test or client activation run was
-performed for this release.
+Checked against the Isaac ROS 5.0 release notes and concept pages, the Lyrical
+buffer-backend documentation, and the Lyrical rclcpp, rosidl, and CUDA backend
+sources. No GPU runtime test was performed. Client activation was measured in one
+client only (see the activation case below); Codex, Cursor, and Gemini were not
+measured.
 
 - NITROS guidance: `references/perception.md` and `references/simulation.md` no
   longer present NITROS as the current GPU path. They state that Isaac ROS 4.x and
@@ -20,9 +22,11 @@ performed for this release.
 - `references/communication.md` §6 adds a `rosidl::Buffer` subsection: subscriber
   opt-in through `acceptable_buffer_backends`, CPU fallback (and which faults are
   not fallback), CUDA backend scope and volatile-only zero-copy, conversion
-  package before direct CUDA backend use, CPU-only transport choices, and a
-  verification procedure that does not infer the transfer path from CUDA
-  availability, `.cuda()`, or cross-process pointer values.
+  package before direct CUDA backend use, the `"any"` value and CPU always being
+  acceptable, the CUDA backend handle API names and which of them copy, CPU-only
+  transport choices, and a verification procedure that does not infer the
+  transfer path from CUDA availability, `.cuda()`, or cross-process pointer values
+  and reports content-check copies separately from the transport segment.
 - `references/engineering-principles.md` Kilted → Lyrical note adds the
   `uint8[]` → `rosidl::Buffer<uint8_t>` change and Isaac ROS 5.0's Lyrical
   packages for Ubuntu 24.04 on Jetson. The `SKILL.md` router's communication row
@@ -34,10 +38,17 @@ performed for this release.
   the 5.0 package list does not include it.
 - Add the `gpu-buffer-shorthand` activation case. The `SKILL.md` description is
   intentionally unchanged: the case measures whether vocabulary absent from the
-  description still activates the skill, no activation result is claimed, and the
-  description is revised in a later release only if a real client run fails.
+  description still activates the skill, and the description is revised in a
+  later release only if a real client run fails. In seven fresh Claude Code CLI
+  2.1.302 sessions (`claude-sonnet-5-5`, project-scope install of source commit
+  `bae6698`, other installed skills exposed, write tools and MCP disabled) the
+  skill was selected in 3/3 `gpu-buffer-shorthand` runs, 0/3 `ros-mentioned-css`
+  runs, and 1/1 explicit invocation, and each positive run then read
+  `communication.md`. This is routing evidence for one client and one model, not
+  a quality claim.
 - Add a section-scoped factuality regression class and register the Isaac ROS 5.0
-  and Lyrical buffer-backend sources with review dates.
+  and Lyrical buffer-backend sources, plus the Lyrical rclcpp, rosidl, and CUDA
+  backend source files that define the named APIs, with review dates.
 
 ## 1.7.1 - 2026-10-14
 

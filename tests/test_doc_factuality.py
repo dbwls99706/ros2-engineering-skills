@@ -1616,5 +1616,6 @@ class TestNitrosSupersededByRosidlBuffer:
         assert 'guarantees no zero-copy' not in section
         assert 'does not guarantee zero-copy' in section
         for keyword in ('acceptable_buffer_backends', 'conversion package',
-                        'separate process', 'profile', 'pointer values'):
+                        'separate process', 'profile', 'pointer values',
+                        '"any"', 'cuda_buffer_api.hpp', 'transport segment'):
             assert keyword in section, keyword

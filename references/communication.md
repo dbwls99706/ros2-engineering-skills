@@ -398,16 +398,25 @@ against the installed version.
 - **Choosing the API:** start with the standard message API or a conversion package
   for the data model. Use the CUDA backend directly only when custom CUDA code needs
   device pointers or explicit control of streams, synchronization, allocation, or
-  lifetime. Its read/write handles carry synchronization, not just an address:
-  release a handle only after the stream work that uses it has been recorded,
-  never write through a pointer obtained on the subscriber side, and do not cache
-  a raw pointer once its handle or message is gone. Backend APIs are C++-only;
-  Python sees the field as bytes.
+  lifetime. Its API lives in `cuda_buffer/cuda_buffer_api.hpp` (namespace
+  `cuda_buffer_backend`): `allocate_buffer` creates a device-backed field,
+  `from_output_buffer` returns a write handle, `from_input_buffer` a read handle,
+  and `to_buffer` copies into a write handle — verify the names against the
+  installed version. None of these names implies zero-copy: `to_buffer` copies,
+  `from_input_buffer` copies host-to-device when the received field is CPU-backed,
+  and `from_output_buffer` on a CPU-backed field writes into a newly allocated
+  device buffer that must be put back into the message before publishing. The
+  handles carry synchronization, not just an address: release a handle only after
+  the stream work that uses it has been recorded, never write through a pointer
+  obtained on the subscriber side, and do not cache a raw pointer once its handle
+  or message is gone. Backend APIs are C++-only; Python sees the field as bytes.
   `tensor_msgs/msg/ExperimentalTensor` and `torch_conversions` are experimental.
 - **Opt-in and fallback:** a publisher does not advertise backends; it publishes
   once, with whatever backend the buffer holds. A subscription receives non-CPU data
-  only when it lists that backend in `acceptable_buffer_backends`
-  (`rclcpp::SubscriptionOptions`, or the rclpy keyword); every other peer is
+  only when `acceptable_buffer_backends` (`rclcpp::SubscriptionOptions`, or the
+  rclpy keyword) accepts that backend: a comma-separated list such as `"cuda"`, or
+  `"any"` for every backend installed in the process. The default `"cpu"` is CPU
+  only, and CPU stays acceptable whatever the value, so every other peer is
   serialized through CPU. A subscriber missing the backend plugin or its
   descriptor package falls back to CPU, and the RMW backend loader logs a warning;
   both endpoints need those components for GPU transport. A backend may also
@@ -433,8 +442,13 @@ against the installed version.
   production RMW, check `get_backend_type()` on the receiver and the log for
   fallback warnings, and profile every participating process with a tool that
   records memory traffic (for example Nsight Systems with CUDA tracing), looking
-  for both host-device memcpy and CPU-side copies per message. Then attach a
-  CPU-only subscriber and confirm it still receives correct data.
+  for both host-device memcpy and CPU-side copies per message. Report the
+  transport segment (publish to the consumer's read handle) separately from any
+  content check: a consumer that copies payloads to the host to verify them, as
+  the upstream integration tests do, adds copies that belong to the check —
+  record them on their own line instead of dropping them or charging them to
+  transport. Then attach a CPU-only subscriber and confirm it still receives
+  correct data.
 
 ## 7. Content-filtered topics (Jazzy+)
 
