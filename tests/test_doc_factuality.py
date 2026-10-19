@@ -1615,7 +1615,27 @@ class TestNitrosSupersededByRosidlBuffer:
         section = _flat(_md_section(COMMUNICATION_MD, 'GPU-resident fields')).lower()
         assert 'guarantees no zero-copy' not in section
         assert 'does not guarantee zero-copy' in section
+        assert 'looking for both host-device memcpy and cpu-side copies' not in section
         for keyword in ('acceptable_buffer_backends', 'conversion package',
                         'separate process', 'profile', 'pointer values',
-                        '"any"', 'cuda_buffer_api.hpp', 'transport segment'):
+                        '"any"', 'cuda_buffer_api.hpp', 'transport segment',
+                        'cpu-to-cpu', 'nvtx', 'explicit instrumentation'):
             assert keyword in section, keyword
+
+    def test_cuda_backend_handle_contract(self):
+        section = _flat(_md_section(COMMUNICATION_MD, 'GPU-resident fields'))
+        # Both handle factories take the CUDA stream the work runs on.
+        assert '`from_output_buffer(buffer, stream)`' in section
+        assert '`from_input_buffer(buffer, stream)`' in section
+        assert '`cudaStream_t`' in section
+        # The read handle exposes a read-only device pointer.
+        assert re.search(r'`ReadHandle`.{0,80}`get_ptr\(\)`.{0,80}read-only `const uint8_t\*`',
+                         section)
+        # Lifetime: the event is recorded when the handle is destroyed; there is
+        # no public release, so advice to release handles explicitly is wrong.
+        assert 'records its own event on that stream when it is destroyed' in section
+        assert 'no public release call' in section
+        assert 'release a handle only after' not in section
+        # A CPU-backed output field is promoted and must go back into the message.
+        assert re.search(r'`get_promoted_buffer\(\)`.{0,40}must be put back into the message',
+                         section)

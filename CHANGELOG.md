@@ -9,9 +9,11 @@ Source bundle version 1.7.2. Documentation corrections for Isaac ROS 5.0
 `rosidl::Buffer`. No new tools; the hook-report contract stays at version 1.4.0.
 Checked against the Isaac ROS 5.0 release notes and concept pages, the Lyrical
 buffer-backend documentation, and the Lyrical rclcpp, rosidl, and CUDA backend
-sources. No GPU runtime test was performed. Client activation was measured in one
-client only (see the activation case below); Codex, Cursor, and Gemini were not
-measured.
+sources. No GPU runtime test was performed: CUDA IPC zero-copy, CPU fallback at
+runtime, and performance remain unverified, and a runnable procedure based on the
+upstream CUDA backend tests is recorded in the release pull request. Client
+activation was measured in one client only (see the activation case below);
+Codex, Cursor, and Gemini were not measured.
 
 - NITROS guidance: `references/perception.md` and `references/simulation.md` no
   longer present NITROS as the current GPU path. They state that Isaac ROS 4.x and
@@ -23,10 +25,14 @@ measured.
   opt-in through `acceptable_buffer_backends`, CPU fallback (and which faults are
   not fallback), CUDA backend scope and volatile-only zero-copy, conversion
   package before direct CUDA backend use, the `"any"` value and CPU always being
-  acceptable, the CUDA backend handle API names and which of them copy, CPU-only
-  transport choices, and a verification procedure that does not infer the
-  transfer path from CUDA availability, `.cuda()`, or cross-process pointer values
-  and reports content-check copies separately from the transport segment.
+  acceptable, the CUDA backend signatures and handle contract (the `cudaStream_t`
+  argument, `get_ptr()`, events recorded when a handle is destroyed, promoted
+  buffers) and which calls copy, CPU-only transport choices, and a verification
+  procedure that does not infer the transfer path from CUDA availability,
+  `.cuda()`, or cross-process pointer values, uses Nsight Systems CUDA tracing for
+  CUDA memory transfers and CPU-side profiling or explicit instrumentation for
+  CPU-to-CPU copies, and reports content-check copies separately from the
+  transport segment.
 - `references/engineering-principles.md` Kilted → Lyrical note adds the
   `uint8[]` → `rosidl::Buffer<uint8_t>` change and Isaac ROS 5.0's Lyrical
   packages for Ubuntu 24.04 on Jetson. The `SKILL.md` router's communication row
@@ -45,10 +51,18 @@ measured.
   skill was selected in 3/3 `gpu-buffer-shorthand` runs, 0/3 `ros-mentioned-css`
   runs, and 1/1 explicit invocation, and each positive run then read
   `communication.md`. This is routing evidence for one client and one model, not
-  a quality claim.
+  a quality claim. A second probe on the final reference content (same client and
+  model, `--max-turns 30`, same tool restrictions) repeated 3/3, 0/3, and 1/1 and
+  produced a final text response in 7/7 runs. The three GPU answers were graded
+  against eight preregistered static-accuracy criteria: before the CUDA backend
+  signatures were added to §6, all three failed the API-correctness criterion
+  (missing `cudaStream_t` argument, handle accessors that do not exist); after
+  the addition, all three passed every critical criterion. No answer was compiled
+  or run, and the grader was not independent of the model family.
 - Add a section-scoped factuality regression class and register the Isaac ROS 5.0
-  and Lyrical buffer-backend sources, plus the Lyrical rclcpp, rosidl, and CUDA
-  backend source files that define the named APIs, with review dates.
+  and Lyrical buffer-backend sources, the Lyrical rclcpp, rosidl, and CUDA
+  backend source files that define the named APIs, and the NVIDIA Nsight Systems
+  User Guide, with review dates.
 
 ## 1.7.1 - 2026-10-14
 
