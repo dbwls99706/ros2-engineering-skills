@@ -1,6 +1,8 @@
 name: Diagnostic C++ fleet shutdown
 
-# Temporary, diagnostic-branch only: repeats the generated C++ fleet SIGINT path on Humble.
+# Temporary, diagnostic-branch only. Stage 0 proves core capture and symbolized gdb analysis
+# with a deliberate SIGSEGV. The comparison matrix starts only after that evidence has been
+# uploaded, downloaded, and checked again.
 on:
   push:
     branches: ['diag/**']
@@ -8,28 +10,174 @@ on:
 permissions:
   contents: read
 
+env:
+  CORE_PATTERN: /var/crash-cores/core.%e.%p.%t
+
 jobs:
-  humble-cpp-fleet:
+  core-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
-      - name: Build the Humble test image
+      - name: Write kernel cores to a fixed host directory
+        run: |
+          echo "EVIDENCE=$RUNNER_TEMP/evidence" >> "$GITHUB_ENV"
+          EVIDENCE="$RUNNER_TEMP/evidence"
+          mkdir -p "$EVIDENCE/stage0"
+          sudo systemctl stop apport.service 2>/dev/null || true
+          sudo mkdir -p /var/crash-cores
+          sudo chmod 1777 /var/crash-cores
+          sudo sysctl -w "kernel.core_pattern=$CORE_PATTERN"
+          cat /proc/sys/kernel/core_pattern | tee "$EVIDENCE/stage0/host-core-pattern.txt"
+          test "$(cat /proc/sys/kernel/core_pattern)" = "$CORE_PATTERN"
+      - name: Build the CI image and the diagnostic layer
         run: |
           timeout --signal=TERM --kill-after=10s 20m docker buildx build --load --progress=plain \
-            -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-diag:humble .
-      - name: Repeat the C++ fleet transition-event variant for 30 minutes
+            -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-ci:humble . \
+            > "$EVIDENCE/stage0/build-ci.log" 2>&1 || { tail -100 "$EVIDENCE/stage0/build-ci.log"; exit 1; }
+          timeout --signal=TERM --kill-after=10s 20m docker build --progress=plain \
+            -f tests/Dockerfile.diag-core --build-arg BASE=ros2-ci:humble --build-arg UPGRADE=none \
+            -t ros2-diag:humble tests \
+            > "$EVIDENCE/stage0/build-diag.log" 2>&1 || { tail -100 "$EVIDENCE/stage0/build-diag.log"; exit 1; }
+      - name: Deliberate SIGSEGV, core capture, and gdb with Fast DDS symbols
         run: |
-          mkdir -p "$RUNNER_TEMP/evidence"
-          timeout --signal=TERM --kill-after=30s 36m docker run --rm --init --network none \
-            -e ROS_DOMAIN_ID=83 -e ROS_LOCALHOST_ONLY=1 -e GITHUB_SHA="$GITHUB_SHA" \
-            -v "$RUNNER_TEMP/evidence:/evidence" ros2-diag:humble \
-            bash -c 'source /opt/ros/humble/setup.bash && exec python3 tests/diag_fleet_cpp_repro.py 30'
-      - name: Retain reproduction evidence
+          timeout --signal=TERM --kill-after=10s 15m docker run --rm --init --network none \
+            -e ROS_DOMAIN_ID=83 -e ROS_LOCALHOST_ONLY=1 --ulimit core=-1 \
+            -v /var/crash-cores:/var/crash-cores -v "$EVIDENCE:/evidence" \
+            ros2-diag:humble bash tests/diag_core_pipeline.sh
+      - name: Retain stage 0 evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: cpp-fleet-repro-humble
+          name: stage0-core-pipeline
           path: ${{ runner.temp }}/evidence/
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 14
+
+  core-pipeline-verify:
+    needs: core-pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download the stage 0 artifact and check it again
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name stage0-core-pipeline --dir "$RUNNER_TEMP/downloaded"
+          python3 tests/diag_core_check.py "$RUNNER_TEMP/downloaded/stage0"
+
+  compare:
+    needs: core-pipeline-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        # base: v1.7.1 = 26e41ea, v1.7.2 PR head = 3ac5064. Same 30-minute iteration budget for
+        # every arm. Arm O changes signal ownership and teardown order together: comparison only.
+        include:
+          - {arm: A, shard: 1, base: 26e41ea755ac1d148eedd8d61fe7f690ab4e0668, mode: fleet, shim: 'off', control: 'off', upgrade: none}
+          - {arm: A, shard: 2, base: 26e41ea755ac1d148eedd8d61fe7f690ab4e0668, mode: fleet, shim: 'off', control: 'off', upgrade: none}
+          - {arm: A, shard: 3, base: 26e41ea755ac1d148eedd8d61fe7f690ab4e0668, mode: fleet, shim: 'off', control: 'off', upgrade: none}
+          - {arm: A, shard: 4, base: 26e41ea755ac1d148eedd8d61fe7f690ab4e0668, mode: fleet, shim: 'off', control: 'off', upgrade: none}
+          - {arm: B, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: none}
+          - {arm: B, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: none}
+          - {arm: B, shard: 3, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: none}
+          - {arm: B, shard: 4, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: none}
+          - {arm: C, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'on', control: 'off', upgrade: none}
+          - {arm: C, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'on', control: 'off', upgrade: none}
+          - {arm: E, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: minimal, shim: 'off', control: 'off', upgrade: none}
+          - {arm: E, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: minimal, shim: 'off', control: 'off', upgrade: none}
+          - {arm: E, shard: 3, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: minimal, shim: 'off', control: 'off', upgrade: none}
+          - {arm: U1, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: rclcpp}
+          - {arm: U1, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: rclcpp}
+          - {arm: U2, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: all}
+          - {arm: U2, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: all}
+          - {arm: O, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'on', upgrade: none}
+          - {arm: O, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'on', upgrade: none}
+          - {arm: O, shard: 3, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'on', upgrade: none}
+    env:
+      BASE_SHA: ${{ matrix.base }}
+      DIAG_LABEL: ${{ matrix.arm }}-${{ matrix.shard }}
+      DIAG_MODE: ${{ matrix.mode }}
+      DIAG_SHIM: ${{ matrix.shim }}
+      DIAG_CONTROL: ${{ matrix.control }}
+      DIAG_UPGRADE: ${{ matrix.upgrade }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: diag
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.base }}
+          path: src
+      - name: Overlay the diagnostic tools on the base revision
+        run: |
+          echo "EVIDENCE=$RUNNER_TEMP/evidence" >> "$GITHUB_ENV"
+          EVIDENCE="$RUNNER_TEMP/evidence"
+          mkdir -p "$EVIDENCE/identity"
+          {
+            echo "diag_commit=$GITHUB_SHA"
+            echo "base_commit=$(git -C src rev-parse HEAD)"
+            for file in diag_fleet_cpp_repro.py diag_gdb_inspect.py segv_backtrace.c; do
+              if git -C src cat-file -e "HEAD:tests/$file" 2>/dev/null; then
+                echo "overlay tests/$file replaces base blob $(git -C src rev-parse "HEAD:tests/$file")"
+              else
+                echo "overlay tests/$file is new to the base"
+              fi
+              cp "diag/tests/$file" "src/tests/$file"
+            done
+            sha256sum src/tests/diag_fleet_cpp_repro.py src/tests/diag_gdb_inspect.py \
+              src/tests/segv_backtrace.c src/tests/check_generated_fleet.py \
+              src/tests/smoke_test_nodes.py src/scripts/create_package.py \
+              src/scripts/launch_supervisor.py src/tests/Dockerfile.ros2-test
+            git -C src status --porcelain
+          } | tee "$EVIDENCE/identity/source.txt"
+      - name: Write kernel cores to a fixed host directory
+        run: |
+          sudo systemctl stop apport.service 2>/dev/null || true
+          sudo mkdir -p /var/crash-cores
+          sudo chmod 1777 /var/crash-cores
+          sudo sysctl -w "kernel.core_pattern=$CORE_PATTERN"
+          cat /proc/sys/kernel/core_pattern | tee "$EVIDENCE/identity/host-core-pattern.txt"
+          test "$(cat /proc/sys/kernel/core_pattern)" = "$CORE_PATTERN"
+          { nproc; lscpu; free -m; uname -a; } > "$EVIDENCE/identity/runner.txt"
+      - name: Build the base CI image and the diagnostic layer
+        run: |
+          timeout --signal=TERM --kill-after=10s 20m docker buildx build --load --progress=plain \
+            -f src/tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-ci:humble src \
+            > "$EVIDENCE/identity/build-ci.log" 2>&1 || { tail -100 "$EVIDENCE/identity/build-ci.log"; exit 1; }
+          timeout --signal=TERM --kill-after=10s 25m docker build --progress=plain \
+            -f diag/tests/Dockerfile.diag-core --build-arg BASE=ros2-ci:humble \
+            --build-arg UPGRADE="$DIAG_UPGRADE" -t ros2-diag:humble diag/tests \
+            > "$EVIDENCE/identity/build-diag.log" 2>&1 || { tail -100 "$EVIDENCE/identity/build-diag.log"; exit 1; }
+          docker image inspect osrf/ros:humble-desktop ros2-ci:humble ros2-diag:humble \
+            --format '{{.Id}} {{json .RepoTags}} {{json .RepoDigests}}' | tee "$EVIDENCE/identity/images.txt"
+      - name: Repeat the arm for a 30-minute iteration budget
+        run: |
+          timeout --signal=TERM --kill-after=30s 45m docker run --rm --init --network none \
+            -e ROS_DOMAIN_ID=83 -e ROS_LOCALHOST_ONLY=1 --ulimit core=-1 \
+            -e GITHUB_SHA -e BASE_SHA -e DIAG_LABEL -e DIAG_MODE -e DIAG_SHIM -e DIAG_CONTROL \
+            -v /var/crash-cores:/var/crash-cores -v "$EVIDENCE:/evidence" ros2-diag:humble \
+            bash -c 'source /opt/ros/humble/setup.bash && exec python3 tests/diag_fleet_cpp_repro.py \
+              --minutes 30 --mode "$DIAG_MODE" --shim "$DIAG_SHIM" --control-main "$DIAG_CONTROL" \
+              --label "$DIAG_LABEL"'
+      - name: Record cores left on the host
+        if: always()
+        run: |
+          cat /proc/sys/kernel/core_pattern > "$EVIDENCE/identity/host-core-pattern-after.txt" || true
+          sudo ls -la /var/crash-cores > "$EVIDENCE/identity/host-cores-after.txt" 2>&1 || true
+      - name: Retain comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: compare-${{ matrix.arm }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/evidence/
+          if-no-files-found: error
           retention-days: 14

@@ -1,0 +1,46 @@
+# Diagnostic layer over the unchanged CI test image (diagnostic branch only).
+#
+# Adds gdb and Fast DDS debug symbols built from the same source package as the installed
+# library. UPGRADE=rclcpp upgrades only ros-humble-rclcpp and ros-humble-rclcpp-lifecycle;
+# UPGRADE=all upgrades every installed ros-humble-* package. Fast DDS is held in every arm.
+# Package lists before and after are kept in /opt/diag for the evidence.
+ARG BASE=ros2-ci:humble
+FROM ${BASE}
+
+ARG UPGRADE=none
+ARG FASTRTPS_BUILD=2.6.12-1jammy.20260723.233918
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN set -e; \
+    mkdir -p /opt/diag; \
+    echo "$UPGRADE" > /opt/diag/upgrade.txt; \
+    dpkg-query -W -f='${Package}=${Version}\n' | sort > /opt/diag/dpkg-before.txt; \
+    apt-get update; \
+    apt-mark hold ros-humble-fastrtps; \
+    case "$UPGRADE" in \
+      none) ;; \
+      rclcpp) apt-get install -y --no-install-recommends --only-upgrade \
+                ros-humble-rclcpp ros-humble-rclcpp-lifecycle ;; \
+      all) apt-get install -y --no-install-recommends --only-upgrade \
+             $(dpkg-query -W -f='${Package}\n' | grep '^ros-humble-' | grep -vx 'ros-humble-fastrtps') ;; \
+      *) echo "Unknown UPGRADE=$UPGRADE" >&2; exit 1 ;; \
+    esac; \
+    installed="$(dpkg-query -W -f='${Version}' ros-humble-fastrtps)"; \
+    if [ "$installed" != "$FASTRTPS_BUILD" ]; then \
+      echo "Installed Fast DDS $installed is not the expected build $FASTRTPS_BUILD" >&2; exit 1; \
+    fi; \
+    apt-get install -y --no-install-recommends gdb "ros-humble-fastrtps-dbgsym=$FASTRTPS_BUILD" \
+      || { curl -fsSL --max-time 300 -o /tmp/fastrtps-dbgsym.deb \
+             "http://packages.ros.org/ros2/ubuntu/pool/main/r/ros-humble-fastrtps/ros-humble-fastrtps-dbgsym_${FASTRTPS_BUILD}_amd64.deb" \
+           && apt-get install -y --no-install-recommends gdb /tmp/fastrtps-dbgsym.deb \
+           && rm -f /tmp/fastrtps-dbgsym.deb; }; \
+    for package in rclcpp rclcpp-lifecycle rcl rmw-fastrtps-cpp rmw-fastrtps-shared-cpp; do \
+      version="$(dpkg-query -W -f='${Version}' "ros-humble-$package")"; \
+      if apt-get install -y --no-install-recommends "ros-humble-$package-dbgsym=$version"; then \
+        echo "ros-humble-$package-dbgsym=$version installed" >> /opt/diag/dbgsym.txt; \
+      else \
+        echo "ros-humble-$package-dbgsym=$version unavailable" >> /opt/diag/dbgsym.txt; \
+      fi; \
+    done; \
+    dpkg-query -W -f='${Package}=${Version}\n' | sort > /opt/diag/dpkg-after.txt; \
+    rm -rf /var/lib/apt/lists/*
