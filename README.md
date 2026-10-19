@@ -2,7 +2,7 @@
 
 ![ros2-engineering-skills cover](docs/assets/cover.svg)
 
-Source version: **1.7.2**. See [release notes](CHANGELOG.md#172---2026-10-18) and
+Source version: **1.7.2**. See [release notes](CHANGELOG.md#172---2026-10-19) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)

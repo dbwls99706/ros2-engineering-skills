@@ -2,7 +2,7 @@
 
 All notable changes are documented here.
 
-## 1.7.2 - 2026-10-18
+## 1.7.2 - 2026-10-19
 
 Source bundle version 1.7.2. Documentation corrections for Isaac ROS 5.0
 (2026-09-21), which moved to ROS 2 Lyrical and replaced NITROS with
