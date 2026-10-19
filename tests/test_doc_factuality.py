@@ -1639,3 +1639,19 @@ class TestNitrosSupersededByRosidlBuffer:
         # A CPU-backed output field is promoted and must go back into the message.
         assert re.search(r'`get_promoted_buffer\(\)`.{0,40}must be put back into the message',
                          section)
+
+    def test_cpu_fallback_policy_is_conditional(self):
+        section = _flat(_md_section(COMMUNICATION_MD, 'GPU-resident fields')).lower()
+        # A consumer that supports fallback processes CPU-backed frames; logging
+        # a frame and returning is a drop, not a fallback.
+        assert 'supports cpu fallback must not drop cpu-backed frames' in section
+        assert 'process them on the cpu' in section
+        # GPU work on a CPU-backed field pays a host-to-device promotion, and
+        # those frames are fallback, not zero-copy.
+        assert re.search(r'promote them with `from_input_buffer`.{0,20}host-to-device copy',
+                         section)
+        assert 'count those frames as fallback, not zero-copy' in section
+        # The upstream GPU relay test node skips non-CUDA frames by design, so a
+        # GPU-only consumer may reject them, provided the limit is documented.
+        assert re.search(r'explicitly gpu-only may reject cpu-backed frames.{0,40}'
+                         r'must document that limitation', section)

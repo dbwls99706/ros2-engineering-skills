@@ -27,12 +27,15 @@ Codex, Cursor, and Gemini were not measured.
   package before direct CUDA backend use, the `"any"` value and CPU always being
   acceptable, the CUDA backend signatures and handle contract (the `cudaStream_t`
   argument, `get_ptr()`, events recorded when a handle is destroyed, promoted
-  buffers) and which calls copy, CPU-only transport choices, and a verification
-  procedure that does not infer the transfer path from CUDA availability,
-  `.cuda()`, or cross-process pointer values, uses Nsight Systems CUDA tracing for
-  CUDA memory transfers and CPU-side profiling or explicit instrumentation for
-  CPU-to-CPU copies, and reports content-check copies separately from the
-  transport segment.
+  buffers) and which calls copy, a CPU fallback policy by case (a consumer that
+  supports fallback processes CPU-backed frames, on the CPU or through a
+  `from_input_buffer` host-to-device promotion counted as fallback; an explicitly
+  GPU-only consumer may reject them but documents that limit), CPU-only transport
+  choices, and a verification procedure that does not infer the transfer path from
+  CUDA availability, `.cuda()`, or cross-process pointer values, uses Nsight
+  Systems CUDA tracing for CUDA memory transfers and CPU-side profiling or
+  explicit instrumentation for CPU-to-CPU copies, and reports content-check copies
+  separately from the transport segment.
 - `references/engineering-principles.md` Kilted → Lyrical note adds the
   `uint8[]` → `rosidl::Buffer<uint8_t>` change and Isaac ROS 5.0's Lyrical
   packages for Ubuntu 24.04 on Jetson. The `SKILL.md` router's communication row
@@ -51,14 +54,22 @@ Codex, Cursor, and Gemini were not measured.
   skill was selected in 3/3 `gpu-buffer-shorthand` runs, 0/3 `ros-mentioned-css`
   runs, and 1/1 explicit invocation, and each positive run then read
   `communication.md`. This is routing evidence for one client and one model, not
-  a quality claim. A second probe on the final reference content (same client and
-  model, `--max-turns 30`, same tool restrictions) repeated 3/3, 0/3, and 1/1 and
-  produced a final text response in 7/7 runs. The three GPU answers were graded
-  against eight preregistered static-accuracy criteria: before the CUDA backend
-  signatures were added to §6, all three failed the API-correctness criterion
-  (missing `cudaStream_t` argument, handle accessors that do not exist); after
-  the addition, all three passed every critical criterion. No answer was compiled
-  or run, and the grader was not independent of the model family.
+  a quality claim. A second probe (Claude Code CLI 2.1.303, same model,
+  `--max-turns 30`, same tool restrictions) was run on three successive revisions
+  of the reference content, the last identical to this release; each repeated 3/3,
+  0/3, and 1/1 and produced a final text response in 7/7 runs. The three GPU
+  answers per revision were graded against eight preregistered static-accuracy
+  criteria, six of them critical. Before the CUDA backend signatures were added to
+  §6, no answer passed every critical criterion: all three failed API correctness
+  (missing `cudaStream_t` argument, handle accessors that do not exist) and all
+  three dropped CPU-backed frames instead of handling the fallback. With the
+  signatures, API correctness passed 3/3, but two answers still dropped CPU-backed
+  frames, so 1/3 passed every critical criterion. With the CPU fallback policy
+  added, 2/3 passed; the remaining answer counted CPU-backed frames without
+  processing them. The API criterion covers C++ calls only; build files still had
+  defects (one nonexistent package name, and the deprecated
+  `ament_target_dependencies` in several answers). No answer was compiled or run,
+  and the grader was not independent of the model family.
 - Add a section-scoped factuality regression class and register the Isaac ROS 5.0
   and Lyrical buffer-backend sources, the Lyrical rclcpp, rosidl, and CUDA
   backend source files that define the named APIs, and the NVIDIA Nsight Systems

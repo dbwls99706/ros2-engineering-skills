@@ -432,7 +432,12 @@ against the installed version.
   host, GPU, and user; inter-host peers get CPU. Its zero-copy path targets live
   samples on volatile topics — the CUDA backend does not support a
   transient-local zero-copy path.
-  Branch on `msg->data.get_backend_type()` and keep both paths correct.
+  Branch on `msg->data.get_backend_type()` and keep both paths correct. A consumer
+  that supports CPU fallback must not drop CPU-backed frames, even with a warning:
+  process them on the CPU, or promote them with `from_input_buffer`, which costs a
+  host-to-device copy, and count those frames as fallback, not zero-copy. A consumer
+  that is explicitly GPU-only may reject CPU-backed frames instead, but must
+  document that limitation.
 - **Not a fallback:** a publisher/subscriber RMW mismatch or incompatible QoS can
   prevent the connection itself. Diagnose those as discovery or QoS faults
   (section 9), not as a backend downgrade.
