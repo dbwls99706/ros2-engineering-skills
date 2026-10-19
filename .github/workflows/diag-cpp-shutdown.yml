@@ -1,0 +1,35 @@
+name: Diagnostic C++ fleet shutdown
+
+# Temporary, diagnostic-branch only: repeats the generated C++ fleet SIGINT path on Humble.
+on:
+  push:
+    branches: ['diag/**']
+
+permissions:
+  contents: read
+
+jobs:
+  humble-cpp-fleet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build the Humble test image
+        run: |
+          timeout --signal=TERM --kill-after=10s 20m docker buildx build --load --progress=plain \
+            -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-diag:humble .
+      - name: Repeat the C++ fleet transition-event variant for 30 minutes
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          timeout --signal=TERM --kill-after=30s 36m docker run --rm --init --network none \
+            -e ROS_DOMAIN_ID=83 -e ROS_LOCALHOST_ONLY=1 -e GITHUB_SHA="$GITHUB_SHA" \
+            -v "$RUNNER_TEMP/evidence:/evidence" ros2-diag:humble \
+            bash -c 'source /opt/ros/humble/setup.bash && exec python3 tests/diag_fleet_cpp_repro.py 30'
+      - name: Retain reproduction evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: cpp-fleet-repro-humble
+          path: ${{ runner.temp }}/evidence/
+          if-no-files-found: warn
+          retention-days: 14
