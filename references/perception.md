@@ -558,14 +558,20 @@ class YOLODetector(Node):
 
 ### Isaac ROS for GPU-accelerated perception (Jetson)
 
-NVIDIA Isaac ROS provides GPU-accelerated perception packages for Jetson platforms:
+NVIDIA Isaac ROS provides GPU-accelerated perception packages for Jetson platforms.
+Names below follow the Isaac ROS 5.0 package list; package names change between
+releases, so check the list for the release you install:
 
-- `isaac_ros_visual_slam`: GPU-accelerated visual SLAM
-- `isaac_ros_object_detection`: DNN-based detection (SSD, YOLO)
+- `isaac_ros_cuvslam`: GPU-accelerated visual SLAM (Visual SLAM repository)
+- Object detection repository: DNN detectors such as `isaac_ros_rtdetr`, `isaac_ros_yolov8`, `isaac_ros_detectnet`
 - `isaac_ros_apriltag`: GPU-accelerated AprilTag detection
-- `isaac_ros_depth_segmentation`: Depth-based segmentation
 
-These use NITROS for zero-copy GPU memory transfer between nodes. Install via Isaac ROS apt repository, not standard ROS 2 repos.
+Isaac ROS 4.x and earlier pass GPU data between these nodes with NITROS. Isaac ROS
+5.0 (ROS 2 Lyrical) removed the NITROS packages and moved the accelerated path to
+Lyrical's `rosidl::Buffer` with a CUDA buffer backend; only
+`isaac_ros_nitros_bridge_ros2` remains, deprecated. Do not start new code on NITROS
+APIs — see `references/communication.md` §6 for `rosidl::Buffer`, subscriber opt-in,
+and how to verify the transfer path. Install via Isaac ROS apt repository, not standard ROS 2 repos.
 
 ## 9. Common failures and fixes
 

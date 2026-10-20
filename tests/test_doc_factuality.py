@@ -1579,3 +1579,79 @@ class TestClockDomains:
         assert "compute on the node's own ROS clock" in flat
         assert 'Time since receipt, timeouts, executor delay.' in flat
         assert '`time.monotonic()` against a stamp is meaningless' in flat
+
+
+SIMULATION_MD = os.path.join(ROOT, 'references', 'simulation.md')
+PERCEPTION_MD = os.path.join(ROOT, 'references', 'perception.md')
+
+
+class TestNitrosSupersededByRosidlBuffer:
+    """Isaac ROS 5.0 (Lyrical) removed the NITROS packages and moved GPU
+    transport to rosidl::Buffer. Pinned errors: simulation.md called NITROS
+    nodes "drop-in replacements", perception.md presented NITROS as the
+    current zero-copy path, and its package list named isaac_ros_visual_slam
+    and isaac_ros_depth_segmentation, which the 5.0 package list does not
+    carry as packages; communication.md said the type "guarantees no
+    zero-copy", which reads as the opposite of the intended non-guarantee."""
+
+    def test_simulation_separates_node_and_source_migration(self):
+        section = _flat(_md_section(SIMULATION_MD, 'NVIDIA NITROS')).lower()
+        assert 'drop-in replacement' not in section
+        assert 'node interfaces' in section
+        assert 'source-level migration' in section
+        assert '4.x' in section and '5.0' in section
+        assert 'removed' in section and 'deprecated' in section
+
+    def test_perception_isaac_section_matches_5_0_packages(self):
+        section = _flat(_md_section(PERCEPTION_MD, 'Isaac ROS for GPU-accelerated'))
+        assert 'These use NITROS for zero-copy' not in section
+        assert '`rosidl::Buffer`' in section
+        assert '`isaac_ros_cuvslam`' in section
+        assert '`isaac_ros_rtdetr`' in section and '`isaac_ros_yolov8`' in section
+        assert '`isaac_ros_visual_slam`' not in section
+        assert 'isaac_ros_depth_segmentation' not in section
+
+    def test_rosidl_buffer_section_keeps_opt_in_and_evidence_rules(self):
+        section = _flat(_md_section(COMMUNICATION_MD, 'GPU-resident fields')).lower()
+        assert 'guarantees no zero-copy' not in section
+        assert 'does not guarantee zero-copy' in section
+        assert 'looking for both host-device memcpy and cpu-side copies' not in section
+        for keyword in ('acceptable_buffer_backends', 'conversion package',
+                        'separate process', 'profile', 'pointer values',
+                        '"any"', 'cuda_buffer_api.hpp', 'transport segment',
+                        'cpu-to-cpu', 'nvtx', 'explicit instrumentation'):
+            assert keyword in section, keyword
+
+    def test_cuda_backend_handle_contract(self):
+        section = _flat(_md_section(COMMUNICATION_MD, 'GPU-resident fields'))
+        # Both handle factories take the CUDA stream the work runs on.
+        assert '`from_output_buffer(buffer, stream)`' in section
+        assert '`from_input_buffer(buffer, stream)`' in section
+        assert '`cudaStream_t`' in section
+        # The read handle exposes a read-only device pointer.
+        assert re.search(r'`ReadHandle`.{0,80}`get_ptr\(\)`.{0,80}read-only `const uint8_t\*`',
+                         section)
+        # Lifetime: the event is recorded when the handle is destroyed; there is
+        # no public release, so advice to release handles explicitly is wrong.
+        assert 'records its own event on that stream when it is destroyed' in section
+        assert 'no public release call' in section
+        assert 'release a handle only after' not in section
+        # A CPU-backed output field is promoted and must go back into the message.
+        assert re.search(r'`get_promoted_buffer\(\)`.{0,40}must be put back into the message',
+                         section)
+
+    def test_cpu_fallback_policy_is_conditional(self):
+        section = _flat(_md_section(COMMUNICATION_MD, 'GPU-resident fields')).lower()
+        # A consumer that supports fallback processes CPU-backed frames; logging
+        # a frame and returning is a drop, not a fallback.
+        assert 'supports cpu fallback must not drop cpu-backed frames' in section
+        assert 'process them on the cpu' in section
+        # GPU work on a CPU-backed field pays a host-to-device promotion, and
+        # those frames are fallback, not zero-copy.
+        assert re.search(r'promote them with `from_input_buffer`.{0,20}host-to-device copy',
+                         section)
+        assert 'count those frames as fallback, not zero-copy' in section
+        # The upstream GPU relay test node skips non-CUDA frames by design, so a
+        # GPU-only consumer may reject them, provided the limit is documented.
+        assert re.search(r'explicitly gpu-only may reject cpu-backed frames.{0,40}'
+                         r'must document that limitation', section)

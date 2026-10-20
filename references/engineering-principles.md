@@ -339,7 +339,7 @@ reproduction and source evidence; do not silently modify an installed skill.
 
 ## Distro-specific migration notes
 
-<!-- LAST_UPDATED: 2026-03-30 — Keep in sync with the distro table in Principle 1. -->
+<!-- LAST_UPDATED: 2026-10-18 — Keep in sync with the distro table in Principle 1. -->
 When upgrading between distributions, check these breaking changes first:
 
 - **Foxy → Humble:** expect a broad migration across client libraries,
@@ -363,6 +363,12 @@ When upgrading between distributions, check these breaking changes first:
   stays `rmw_fastrtps_cpp`; new non-experimental `rclcpp::executors::EventsCBGExecutor`
   (distinct from the experimental EventsExecutor); ros2_control moves to the 6.x
   series — verify per-package changes against the installed versions (Principle 11).
+  C++ `uint8[]` fields become `rosidl::Buffer<uint8_t>`; implicit conversion keeps
+  most vector code working, and GPU-backed delivery needs subscriber opt-in
+  (`references/communication.md` §6). Jetson: Isaac ROS 5.0 ships Lyrical for
+  Ubuntu 24.04 from NVIDIA's own apt build farm (a vendor exception; the Lyrical
+  platform is 26.04) and has removed the NITROS packages — check the JetPack
+  pairing in the Isaac ROS release notes.
 - **ROS 1 → ROS 2:** see `references/migration-ros1.md` for a step-by-step strategy.
 
 ## Quick reference — ros2 CLI

@@ -2,7 +2,7 @@
 
 ![ros2-engineering-skills cover](docs/assets/cover.svg)
 
-Source version: **1.7.1**. See [release notes](CHANGELOG.md#171---2026-10-14) and
+Source version: **1.7.2**. See [release notes](CHANGELOG.md#172---2026-10-19) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -293,7 +293,7 @@ The default `eval_runner.py` checks whether expected-answer fixtures cover their
 declared criteria. It is not a model benchmark. Lexical coverage is not semantic
 correctness, and a fixture cannot substitute for an unmodified model capture.
 
-`evals/trigger_cases.json` defines 33 activation cases: 17 implicit positives,
+`evals/trigger_cases.json` defines 34 activation cases: 18 implicit positives,
 12 implicit negatives, and explicit invocation for four clients.
 `evals/benchmark_suite.json` defines seven quality cases with three trials and
 paired plugin-on/off runs: 21 pairs, 42 fresh sessions per experiment.

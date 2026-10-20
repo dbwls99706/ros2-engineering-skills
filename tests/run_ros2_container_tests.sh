@@ -77,6 +77,13 @@ if [[ "$ROS_DISTRO" != rolling ]]; then
     (cd "$WS/src/test_lifecycle_pkg" && python3 -m pytest test/ -v)
     timeout --signal=TERM --kill-after=5s 30s \
         python3 "$ROOT/tests/check_generated_lifecycle.py" test_lifecycle_pkg --plain-package test_py_pkg
+    # Runs before the fleet gate so its diagnostics survive a fleet failure.
+    echo '=== Generated C++ lifecycle node: repeated SIGINT and one SIGTERM shutdown ==='
+    cpp_shutdown_iterations=30
+    if [[ "$ROS_DISTRO" == humble ]]; then cpp_shutdown_iterations=100; fi
+    timeout --signal=TERM --kill-after=10s 240s \
+        python3 "$ROOT/tests/check_generated_cpp_shutdown.py" "$WS/install" \
+        --iterations "$cpp_shutdown_iterations"
     echo '=== Installed multi-robot fleet launch, parameters, and isolation ==='
     timeout --signal=TERM --kill-after=10s 300s \
         python3 "$ROOT/tests/check_generated_fleet.py"

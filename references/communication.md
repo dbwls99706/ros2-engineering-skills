@@ -377,9 +377,92 @@ than copied follows the intra-process rules: publish as `unique_ptr`, and
 copies may still occur depending on callback type, subscriber count, and QoS
 (see `references/nodes-executors.md`).
 
-**Industry reference:** NVIDIA NITROS (used in Isaac ROS) builds on type adapters to
-negotiate GPU tensor <-> ROS message conversion, keeping data on the GPU between
-NITROS-accelerated nodes and only converting to CPU ROS messages at the boundary.
+**Industry reference:** NVIDIA NITROS (Isaac ROS 4.x and earlier) built on type
+adaptation and type negotiation to keep data on the GPU between accelerated nodes.
+Isaac ROS 5.0 removed it in favor of `rosidl::Buffer`, described next.
+
+### GPU-resident fields with `rosidl::Buffer` (Lyrical+)
+
+A type adapter changes the type a callback sees; `rosidl::Buffer` changes where a
+field's bytes live. In Lyrical C++, `uint8[]` fields are generated as
+`rosidl::Buffer<uint8_t>` instead of `std::vector<uint8_t>`, while the `.msg` file
+(for example `sensor_msgs/msg/Image`) stays the same. With the default CPU backend
+the field converts implicitly to the vector that most existing code expects.
+Backend plugins, such as the CUDA backend from `ros2/rosidl_buffer_backends`, can
+keep the bytes in device memory. The type by itself does not guarantee zero-copy,
+and the mechanism covers topics only; services and actions serialize as before.
+The Lyrical how-to names `rmw_fastrtps_cpp` as the first supported RMW, the
+release notes also list `rmw_zenoh_cpp`, and other RMWs deliver CPU data — verify
+against the installed version.
+
+- **Choosing the API:** start with the standard message API or a conversion package
+  for the data model. Use the CUDA backend directly only when custom CUDA code needs
+  device pointers or explicit control of streams, synchronization, allocation, or
+  lifetime. Its API lives in `cuda_buffer/cuda_buffer_api.hpp` (namespace
+  `cuda_buffer_backend`; verify against the installed version):
+  `allocate_buffer(count)` returns a device-backed `rosidl::Buffer<uint8_t>`;
+  `from_output_buffer(buffer, stream)` and `from_input_buffer(buffer, stream)`
+  both take the `cudaStream_t` the work runs on and return a `WriteHandle` or
+  `ReadHandle`, whose `get_ptr()` gives `uint8_t*` or a read-only
+  `const uint8_t*`; `to_buffer(src, bytes, write_handle, stream, kind)` copies
+  into a write handle. A read handle waits for the publisher's write event, and
+  each handle records its own event on that stream when it is destroyed. There
+  is no public release call, so keep the handle in scope until the work that
+  uses its pointer is queued on the stream. None of these calls implies
+  zero-copy: `to_buffer` copies, `from_input_buffer` copies host-to-device when
+  the received field is CPU-backed, and `from_output_buffer` on a CPU-backed
+  field writes into a newly allocated device buffer, returned by the handle's
+  `get_promoted_buffer()`, that must be put back into the message before
+  publishing. Never write through a pointer obtained on the subscriber side, and
+  do not cache a raw pointer once its handle or message is gone. Backend APIs are
+  C++-only; Python sees the field as bytes.
+  `tensor_msgs/msg/ExperimentalTensor` and `torch_conversions` are experimental.
+- **Opt-in and fallback:** a publisher does not advertise backends; it publishes
+  once, with whatever backend the buffer holds. A subscription receives non-CPU data
+  only when `acceptable_buffer_backends` (`rclcpp::SubscriptionOptions`, or the
+  rclpy keyword) accepts that backend: a comma-separated list such as `"cuda"`, or
+  `"any"` for every backend installed in the process. The default `"cpu"` is CPU
+  only, and CPU stays acceptable whatever the value, so every other peer is
+  serialized through CPU. A subscriber missing the backend plugin or its
+  descriptor package falls back to CPU, and the RMW backend loader logs a warning;
+  both endpoints need those components for GPU transport. A backend may also
+  decline a peer it cannot serve and use CPU serialization for it — whether that
+  fallback is logged depends on the backend, so check the received backend type.
+  The CUDA backend serves intra-process peers and inter-process peers on the same
+  host, GPU, and user; inter-host peers get CPU. Its zero-copy path targets live
+  samples on volatile topics — the CUDA backend does not support a
+  transient-local zero-copy path.
+  Branch on `msg->data.get_backend_type()` and keep both paths correct. A consumer
+  that supports CPU fallback must not drop CPU-backed frames, even with a warning:
+  process them on the CPU, or promote them with `from_input_buffer`, which costs a
+  host-to-device copy, and count those frames as fallback, not zero-copy. A consumer
+  that is explicitly GPU-only may reject CPU-backed frames instead, but must
+  document that limitation.
+- **Not a fallback:** a publisher/subscriber RMW mismatch or incompatible QoS can
+  prevent the connection itself. Diagnose those as discovery or QoS faults
+  (section 9), not as a backend downgrade.
+- **CPU-only data:** prefer the plain message API. Within one process use
+  intra-process communication, adding a type adapter when a custom C++ type is
+  needed. Across processes, whether bytes are copied or serialized depends on the
+  RMW, shared-memory transport, loaned-message support, and the message type.
+- **Verifying the path:** treat this as a diagnostic procedure; no single
+  observation proves zero-copy. CUDA being available, or calling `.cuda()` on
+  received data, says nothing about how it travelled — the call itself may copy.
+  Device pointer values are process-local, so comparing them across processes
+  proves nothing. Run publisher and subscriber as separate processes on the
+  production RMW, check `get_backend_type()` on the receiver and the log for
+  fallback warnings, and profile every participating process. Nsight Systems CUDA
+  tracing shows CUDA memory transfers such as host-to-device copies; ordinary
+  CPU-to-CPU copies are not part of that trace, so investigate them separately
+  with CPU-side profiling, and add explicit instrumentation at the copy sites
+  when per-message copy counts or byte volumes are required. NVTX ranges can mark
+  the transport and content-check segments but do not count CPU copies. Report the
+  transport segment (publish to the consumer's read handle) separately from any
+  content check: a consumer that copies payloads to the host to verify them, as
+  the upstream integration tests do, adds copies that belong to the check —
+  record them on their own line instead of dropping them or charging them to
+  transport. Then attach a CPU-only subscriber and confirm it still receives
+  correct data.
 
 ## 7. Content-filtered topics (Jazzy+)
 
