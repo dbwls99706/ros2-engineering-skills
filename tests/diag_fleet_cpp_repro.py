@@ -665,11 +665,24 @@ def parse_args(argv):
     return args
 
 
+def asan_environment(evidence):
+    return {'LD_PRELOAD': str(ASAN_RUNTIME),
+            'ASAN_OPTIONS': ('detect_leaks=0:abort_on_error=1:verify_asan_link_order=0:'
+                             'log_path=' + str(evidence / 'asan' / 'asan'))}
+
+
 def main(argv=None):
-    args = parse_args(sys.argv[1:] if argv is None else argv)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    args = parse_args(argv)
     budget_s = args.minutes * 60
     evidence = Path(os.environ.get('EVIDENCE_DIR', '/evidence'))
     evidence.mkdir(parents=True, exist_ok=True)
+    if args.asan == 'on' and os.environ.get('LD_PRELOAD') != str(ASAN_RUNTIME):
+        # The rclpy observer in this process loads the instrumented Fast DDS too, and the ASan
+        # runtime must be loaded first: restart under the preload instead of setting it late.
+        (evidence / 'asan').mkdir(exist_ok=True)
+        os.execve(sys.executable, [sys.executable, str(Path(__file__).resolve()), *argv],
+                  {**os.environ, **asan_environment(evidence)})
     identity = Identity(evidence)
     upgrade = Path('/opt/diag/upgrade.txt')
     context = {
@@ -705,11 +718,9 @@ def main(argv=None):
                 package = MINIMAL_PACKAGE
             identity.record_environment(executables)
             if args.asan == 'on':
-                # The Fast DDS build is instrumented; the executables are not, so preload the runtime.
-                (evidence / 'asan').mkdir(exist_ok=True)
-                os.environ['LD_PRELOAD'] = str(ASAN_RUNTIME)
-                os.environ['ASAN_OPTIONS'] = ('detect_leaks=0:abort_on_error=1:verify_asan_link_order=0:'
-                                              'log_path=' + str(evidence / 'asan' / 'asan'))
+                # Inherited by launch and every node: the Fast DDS build is instrumented, the
+                # executables are not.
+                os.environ.update(asan_environment(evidence))
             if args.shim == 'on':
                 # Inherited by the launch supervisor and every node; a diagnostic, not a fix.
                 os.environ['LD_PRELOAD'] = str(build_shim(work))
