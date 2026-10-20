@@ -12,8 +12,16 @@ Modes:
 SIGINT and SIGTERM and destroys the executor and node before rclcpp::shutdown(). It changes
 two variables at once, signal ownership and teardown order, and is never a proposed fix.
 
---asan on preloads libasan into launch and every node (for the AddressSanitizer builds of Fast
-DDS). The ASan report files are the primary evidence; a core is kept only when one is produced.
+--asan on (minimal mode, AddressSanitizer builds of Fast DDS) instruments the nodes only: they
+get libasan preloaded and the installed, instrumented library, while this harness and launch run
+on the stock copy kept in /opt/diag/stock-fastdds. The first iteration checks that split from
+/proc/<pid>/maps and stops the run if it does not hold. The ASan report files are the primary
+evidence; a core is kept only when one is produced.
+
+--asan-probe runs talker and listener once under the same node environment for PROBE_RUN_S,
+stops them with SIGINT, and writes one verdict line to asan-probe/verdict.txt; the workflow runs
+the 30-minute arm only on clean or clean-known-race. It also records, without judging, what the
+ASan runtime reports in a Python rclpy process.
 
 A node still running SLOW_EXIT_S after SIGINT is sent SIGABRT so that a hang leaves a core. That
 is a diagnostic trigger, not a verdict: whether it was a deadlock is decided from the stacks.
@@ -68,18 +76,47 @@ CORE_SIGNALS = {signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS, signal.SIGILL, si
 INSPECT = ROOT / 'tests' / 'diag_gdb_inspect.py'
 SLOW_EXIT_S = 4.0
 ASAN_RUNTIME = Path('/usr/lib/x86_64-linux-gnu/libasan.so.6')
+STOCK_FASTDDS_DIR = Path('/opt/diag/stock-fastdds')
+# Named by soname, so the dynamic linker picks it up from LD_LIBRARY_PATH.
+STOCK_FASTDDS = STOCK_FASTDDS_DIR / 'libfastrtps.so.2.6'
+INSTALLED_FASTDDS = Path('/opt/ros') / os.environ.get('ROS_DISTRO', 'humble') / 'lib' / 'libfastrtps.so.2.6.12'
 # Tools run for analysis must not inherit the preloaded diagnostics of the nodes.
 PRELOAD_VARIABLES = ('LD_PRELOAD', 'ASAN_OPTIONS')
+ASAN_ERROR = re.compile(r'^==\d+==ERROR: AddressSanitizer: ([\w-]+).*$', re.M)
+# Checks unrelated to object lifetime that ASan can switch off one by one.
+ASAN_FLAG_CHECKS = ('odr-violation', 'alloc-dealloc-mismatch', 'new-delete-type-mismatch')
+KNOWN_RACE_FRAMES = ('matched_writer_remove', 'unpairWriterProxy')
+PROBE_RUN_S = 10.0
+PROBE_STOP_S = 10.0
+PROBE_PYTHON = """import rclpy
+from rclpy.node import Node
+rclpy.init()
+node = Node('asan_probe')
+rclpy.spin_once(node, timeout_sec=1.0)
+node.destroy_node()
+rclpy.shutdown()
+"""
+PROBE_MAPS = """import json
+print('OBJECTS=' + json.dumps(sorted({fields[5] for fields in (line.split(None, 5)
+                                      for line in open('/proc/self/maps')) if len(fields) == 6})))
+"""
 
 MINIMAL_LAUNCH = """# Diagnostic minimal mode: two plain demo nodes, no lifecycle, no generated code.
+import json
+import os
+
 from launch import LaunchDescription
 from launch_ros.actions import Node
+
+# --asan on: only the nodes get the ASan runtime and the instrumented Fast DDS.
+NODE_ENV = json.loads(os.environ.get('DIAG_NODE_ENV', '{}'))
+EXTRA = {'additional_env': NODE_ENV} if NODE_ENV else {}
 
 
 def generate_launch_description():
     return LaunchDescription([
-        Node(package='demo_nodes_cpp', executable='talker', name='talker', output='screen'),
-        Node(package='demo_nodes_cpp', executable='listener', name='listener', output='screen'),
+        Node(package='demo_nodes_cpp', executable='talker', name='talker', output='screen', **EXTRA),
+        Node(package='demo_nodes_cpp', executable='listener', name='listener', output='screen', **EXTRA),
     ])
 """
 
@@ -168,6 +205,73 @@ def write_json(path, payload):
 
 def tool_env():
     return {key: value for key, value in os.environ.items() if key not in PRELOAD_VARIABLES}
+
+
+def process_objects(pid):
+    """Executable and shared objects mapped by /proc/<pid>; raises OSError once it is gone."""
+    exe = os.readlink(f'/proc/{pid}/exe')
+    lines = Path(f'/proc/{pid}/maps').read_text().splitlines()
+    paths = {fields[5] for fields in (line.split(None, 5) for line in lines)
+             if len(fields) == 6 and fields[5].startswith('/') and '.so' in fields[5]}
+    return {'exe': exe, 'objects': sorted(paths)}
+
+
+def node_map_problems(objects, expected_sha):
+    problems = []
+    if not any(Path(path).name.startswith(ASAN_RUNTIME.name) for path in objects):
+        problems.append(f'{ASAN_RUNTIME.name} is not mapped')
+    if str(INSTALLED_FASTDDS) not in objects:
+        problems.append(f'{INSTALLED_FASTDDS} is not mapped')
+    elif sha256(INSTALLED_FASTDDS) != expected_sha:
+        problems.append(f'{INSTALLED_FASTDDS} does not match the build ({expected_sha})')
+    if any(path.startswith(str(STOCK_FASTDDS_DIR) + '/') for path in objects):
+        problems.append('the stock Fast DDS copy is mapped')
+    return problems
+
+
+def harness_map_problems(objects):
+    problems = []
+    if str(STOCK_FASTDDS) not in objects:
+        problems.append(f'{STOCK_FASTDDS} is not mapped')
+    if str(INSTALLED_FASTDDS) in objects:
+        problems.append(f'{INSTALLED_FASTDDS} is mapped')
+    if any(Path(path).name.startswith(ASAN_RUNTIME.name) for path in objects):
+        problems.append(f'{ASAN_RUNTIME.name} is mapped')
+    return problems
+
+
+def without_stock(library_path):
+    return ':'.join(entry for entry in library_path.split(':')
+                    if entry and Path(entry) != STOCK_FASTDDS_DIR)
+
+
+def asan_options(log_prefix):
+    return ('detect_leaks=0:abort_on_error=1:verify_asan_link_order=0:'
+            'log_path=' + str(log_prefix))
+
+
+def harness_library_path(library_path):
+    """The harness and launch find the stock copy first."""
+    return ':'.join([str(STOCK_FASTDDS_DIR), *filter(None, library_path.split(':'))])
+
+
+def node_environment(log_prefix):
+    """What an instrumented node gets on top of the inherited environment."""
+    return {'LD_LIBRARY_PATH': without_stock(os.environ.get('LD_LIBRARY_PATH', '')),
+            'LD_PRELOAD': str(ASAN_RUNTIME), 'ASAN_OPTIONS': asan_options(log_prefix)}
+
+
+def asan_report_index(directory, prefix):
+    """First ASan error of every report file named <prefix>.<pid>, with the known-race test."""
+    reports = {}
+    for path in sorted(directory.glob(prefix + '.*')):
+        text = path.read_text(encoding='utf-8', errors='replace')
+        match = ASAN_ERROR.search(text)
+        kind = match.group(1) if match else None
+        reports[path.name] = {
+            'error': match.group(0) if match else None, 'kind': kind,
+            'known_race': kind == 'SEGV' and any(frame in text for frame in KNOWN_RACE_FRAMES)}
+    return reports
 
 
 def demangle(text):
@@ -274,6 +378,7 @@ class Identity:
         self.directory = evidence / 'identity'
         self.directory.mkdir(parents=True, exist_ok=True)
         self.mapped = None
+        self.harness = None
 
     def record_environment(self, executables):
         packages = subprocess.run(['dpkg-query', '-W', '-f=${Package}=${Version}\n'],
@@ -300,15 +405,12 @@ class Identity:
                 continue
             pid = row.get('pid')
             try:
-                exe = os.readlink(f'/proc/{pid}/exe')
-                lines = Path(f'/proc/{pid}/maps').read_text().splitlines()
+                mapped[str(pid)] = process_objects(pid)
             except OSError as exc:
                 mapped[str(pid)] = {'error': str(exc)}
-                continue
-            paths = {fields[5] for fields in (line.split(None, 5) for line in lines)
-                     if len(fields) == 6 and fields[5].startswith('/') and '.so' in fields[5]}
-            mapped[str(pid)] = {'exe': exe, 'objects': sorted(paths)}
         self.mapped = mapped
+        # The rclpy observer is up at this point, so this shows which Fast DDS the harness uses.
+        self.harness = process_objects('self')
 
     def write_maps(self):
         if self.mapped is None:
@@ -323,6 +425,20 @@ class Identity:
                         hashes[path] = f'unavailable: {exc}'
         write_json(self.directory / 'loaded-objects.json', {'processes': self.mapped,
                                                             'sha256': hashes})
+        write_json(self.directory / 'harness-objects.json', self.harness)
+
+    def asan_split_problems(self, expected_sha):
+        """Under --asan on: nodes on the instrumented build with libasan, the harness on stock."""
+        problems = [f'harness: {problem}' for problem in harness_map_problems(self.harness['objects'])]
+        if not self.mapped:
+            problems.append('no node process was mapped')
+        for pid, entry in (self.mapped or {}).items():
+            if 'error' in entry:
+                problems.append(f'node {pid}: {entry["error"]}')
+                continue
+            problems += [f'node {pid}: {problem}'
+                         for problem in node_map_problems(entry['objects'], expected_sha)]
+        return problems
 
 
 class ObservedDiscover:
@@ -571,12 +687,16 @@ def prepare_minimal(work, identity_dir):
     (identity_dir / 'minimal.launch.py').write_text(MINIMAL_LAUNCH, encoding='utf-8')
     # run_launch sources this file; the ROS environment is already sourced.
     (work / 'install' / 'setup.bash').write_text(':\n', encoding='utf-8')
+    return minimal_executables(), lambda: verify_minimal(work)
+
+
+def minimal_executables():
     prefix = Path('/opt/ros') / os.environ.get('ROS_DISTRO', 'humble') / 'lib' / 'demo_nodes_cpp'
     executables = [prefix / 'talker', prefix / 'listener']
     missing = [str(path) for path in executables if not path.is_file()]
     if missing:
         raise RuntimeError('demo_nodes_cpp executables are missing: ' + ', '.join(missing))
-    return executables, lambda: verify_minimal(work)
+    return executables
 
 
 def verify_minimal(work):
@@ -639,6 +759,131 @@ def verify_minimal(work):
                 context.try_shutdown()
 
 
+def asan_probe(evidence):
+    """Startup gate of the ASan arms. The verdict file, not the exit status, carries the result."""
+    directory = evidence / 'asan-probe'
+    directory.mkdir(parents=True, exist_ok=True)
+    expected_sha = read_text_or_none(Path('/opt/diag/fastdds-lib.sha256'))
+    record = {'python': probe_python(directory), 'harness': probe_harness(),
+              'nodes': probe_nodes(directory, expected_sha)}
+    record['verdict'] = probe_verdict(record['harness'], record['nodes'])
+    write_json(directory / 'probe.json', record)
+    (directory / 'verdict.txt').write_text(record['verdict'] + '\n', encoding='utf-8')
+    print(json.dumps(record, indent=2), flush=True)
+    return 0
+
+
+def probe_python(directory):
+    """Recorded only: what the ASan runtime reports in a plain rclpy process."""
+    env = {**os.environ, 'LD_PRELOAD': str(ASAN_RUNTIME),
+           'ASAN_OPTIONS': asan_options(directory / 'python')}
+    try:
+        result = subprocess.run([sys.executable, '-c', PROBE_PYTHON], capture_output=True,
+                                text=True, timeout=120, env=env)
+        outcome = {'returncode': result.returncode,
+                   'output_tail': (result.stdout + result.stderr)[-4000:]}
+    except subprocess.TimeoutExpired:
+        outcome = {'returncode': None, 'error': 'timed out after 120 s'}
+    outcome['reports'] = asan_report_index(directory, 'python')
+    return outcome
+
+
+def probe_harness():
+    """An rclpy process in the harness environment must map the stock copy, not the build."""
+    env = {**os.environ,
+           'LD_LIBRARY_PATH': harness_library_path(os.environ.get('LD_LIBRARY_PATH', ''))}
+    try:
+        result = subprocess.run([sys.executable, '-c', PROBE_PYTHON + PROBE_MAPS],
+                                capture_output=True, text=True, timeout=120, env=env)
+    except subprocess.TimeoutExpired:
+        return {'returncode': None, 'problems': ['timed out after 120 s']}
+    listed = re.search(r'^OBJECTS=(.*)$', result.stdout, re.M)
+    objects = json.loads(listed.group(1)) if listed else []
+    problems = harness_map_problems(objects) if listed else ['no object list was printed']
+    if result.returncode != 0:
+        problems.append(f'exit {result.returncode}')
+    return {'returncode': result.returncode, 'problems': problems,
+            'fastdds': [path for path in objects if 'libfastrtps' in path],
+            'output_tail': (result.stdout + result.stderr)[-2000:]}
+
+
+def probe_nodes(directory, expected_sha):
+    """Run talker and listener under the node environment, check their maps, then SIGINT them."""
+    env = {**os.environ, **node_environment(directory / 'node')}
+    processes, logs, early, maps, map_problems, stuck = {}, {}, {}, {}, [], []
+    before = set()
+    try:
+        for executable in minimal_executables():
+            logs[executable.name] = directory / f'{executable.name}.log'
+            with open(logs[executable.name], 'wb') as log:
+                processes[executable.name] = subprocess.Popen(
+                    [str(executable)], stdin=subprocess.DEVNULL, stdout=log,
+                    stderr=subprocess.STDOUT, env=env, start_new_session=True)
+        started = time.monotonic()
+        for process in processes.values():
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=max(0.0, PROBE_RUN_S - (time.monotonic() - started)))
+        early = {name: process.returncode for name, process in processes.items()
+                 if process.poll() is not None}
+        for name, process in processes.items():
+            if name in early:
+                continue
+            try:
+                maps[name] = process_objects(process.pid)
+            except OSError as exc:
+                maps[name] = {'error': str(exc)}
+                continue
+            map_problems += [f'{name}: {problem}'
+                             for problem in node_map_problems(maps[name]['objects'], expected_sha)]
+        before = set(asan_report_index(directory, 'node'))
+        for name, process in processes.items():
+            if name not in early:
+                process.send_signal(signal.SIGINT)
+        stopping = time.monotonic()
+        for name, process in processes.items():
+            try:
+                process.wait(timeout=max(0.0, PROBE_STOP_S - (time.monotonic() - stopping)))
+            except subprocess.TimeoutExpired:
+                stuck.append(name)
+    finally:
+        for process in processes.values():
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    reports = asan_report_index(directory, 'node')
+    for name, report in reports.items():
+        report['after_sigint'] = name not in before
+    output = {name: path.read_text(encoding='utf-8', errors='replace') for name, path in logs.items()}
+    return {'early_exit': early, 'maps': maps, 'map_problems': map_problems,
+            'stuck_after_sigint': stuck,
+            'returncodes': {name: process.returncode for name, process in processes.items()},
+            'messages': {'published': output.get('talker', '').count('Publishing:'),
+                         'heard': output.get('listener', '').count('I heard:')},
+            'reports': reports}
+
+
+def probe_verdict(harness, nodes):
+    """First matching row of the pre-registered table; a report file without an ERROR line is
+    a warning and only recorded."""
+    errors = {name: report for name, report in nodes['reports'].items() if report['kind']}
+    if harness['problems'] or nodes['map_problems']:
+        return 'setup-invalid'
+    if nodes['stuck_after_sigint'] or (not errors and (
+            nodes['early_exit'] or any(code != 0 for code in nodes['returncodes'].values())
+            or not nodes['messages']['heard'])):
+        return 'startup-failure'
+    for report in errors.values():
+        if report['kind'] in ASAN_FLAG_CHECKS:
+            return 'flag:' + report['kind']
+    known = [report for report in errors.values() if report['known_race'] and report['after_sigint']]
+    if errors and not (len(errors) == 1 and known):
+        # More than one known-race report is not the single report the clean row allows.
+        other = next((report for report in errors.values() if report not in known),
+                     next(iter(errors.values())))
+        return 'memory-error:' + other['kind']
+    return 'clean-known-race' if known else 'clean'
+
+
 def versions():
     try:
         result = subprocess.run(
@@ -658,17 +903,15 @@ def parse_args(argv):
     parser.add_argument('--shim', choices=('on', 'off'), default='off')
     parser.add_argument('--control-main', choices=('on', 'off'), default='off')
     parser.add_argument('--asan', choices=('on', 'off'), default='off')
+    parser.add_argument('--asan-probe', action='store_true',
+                        help='run the ASan startup probe once and exit')
     parser.add_argument('--label', default='unlabelled')
     args = parser.parse_args(argv)
     if args.mode == 'minimal' and args.control_main == 'on':
         parser.error('--control-main applies to the generated fleet only')
+    if args.mode == 'fleet' and args.asan == 'on':
+        parser.error('--asan applies to the minimal launch only')
     return args
-
-
-def asan_environment(evidence):
-    return {'LD_PRELOAD': str(ASAN_RUNTIME),
-            'ASAN_OPTIONS': ('detect_leaks=0:abort_on_error=1:verify_asan_link_order=0:'
-                             'log_path=' + str(evidence / 'asan' / 'asan'))}
 
 
 def main(argv=None):
@@ -677,12 +920,19 @@ def main(argv=None):
     budget_s = args.minutes * 60
     evidence = Path(os.environ.get('EVIDENCE_DIR', '/evidence'))
     evidence.mkdir(parents=True, exist_ok=True)
-    if args.asan == 'on' and os.environ.get('LD_PRELOAD') != str(ASAN_RUNTIME):
-        # The rclpy observer in this process loads the instrumented Fast DDS too, and the ASan
-        # runtime must be loaded first: restart under the preload instead of setting it late.
+    if args.asan_probe:
+        return asan_probe(evidence)
+    library_path = os.environ.get('LD_LIBRARY_PATH', '')
+    if args.asan == 'on' and library_path.split(':')[0] != str(STOCK_FASTDDS_DIR):
+        # The rclpy observer here is not under test: restart on the stock copy, which the
+        # dynamic linker only takes from LD_LIBRARY_PATH as set at process start.
+        if not STOCK_FASTDDS.is_file():
+            (evidence / 'setup-error.log').write_text(
+                f'{STOCK_FASTDDS} is missing; --asan on needs the stock copy\n', encoding='utf-8')
+            return 2
         (evidence / 'asan').mkdir(exist_ok=True)
         os.execve(sys.executable, [sys.executable, str(Path(__file__).resolve()), *argv],
-                  {**os.environ, **asan_environment(evidence)})
+                  {**os.environ, 'LD_LIBRARY_PATH': harness_library_path(library_path)})
     identity = Identity(evidence)
     upgrade = Path('/opt/diag/upgrade.txt')
     context = {
@@ -692,6 +942,7 @@ def main(argv=None):
         'fastdds_variant': read_text_or_none(Path('/opt/diag/fastdds-variant.txt')),
         'fastdds_lib_sha256': read_text_or_none(Path('/opt/diag/fastdds-lib.sha256')),
         'asan': args.asan, 'slow_exit_s': SLOW_EXIT_S,
+        'asan_scope': 'nodes; harness and launch on the stock copy' if args.asan == 'on' else None,
         'diag_commit': os.environ.get('GITHUB_SHA'), 'base_commit': os.environ.get('BASE_SHA'),
         'distro': os.environ.get('ROS_DISTRO'),
         'rmw': os.environ.get('RMW_IMPLEMENTATION', 'default'), 'packages': versions(),
@@ -705,7 +956,7 @@ def main(argv=None):
         raise Interrupted(signal.Signals(signum).name)
 
     signal.signal(signal.SIGTERM, on_term)
-    tally = cores = slow_exits = asan_reports = None
+    tally = cores = slow_exits = asan_reports = split_problems = None
     try:
         with tempfile.TemporaryDirectory(prefix='generated-fleet-') as temporary:
             work = Path(temporary)
@@ -718,9 +969,8 @@ def main(argv=None):
                 package = MINIMAL_PACKAGE
             identity.record_environment(executables)
             if args.asan == 'on':
-                # Inherited by launch and every node: the Fast DDS build is instrumented, the
-                # executables are not.
-                os.environ.update(asan_environment(evidence))
+                # Read by the minimal launch file and given to the nodes only.
+                os.environ['DIAG_NODE_ENV'] = json.dumps(node_environment(evidence / 'asan' / 'asan'))
             if args.shim == 'on':
                 # Inherited by the launch supervisor and every node; a diagnostic, not a fix.
                 os.environ['LD_PRELOAD'] = str(build_shim(work))
@@ -757,6 +1007,11 @@ def main(argv=None):
                                        error.strip().splitlines()[-1], duration)
                 if tally.attempted == 1:
                     identity.write_maps()
+                if args.asan == 'on' and split_problems is None and identity.mapped is not None:
+                    split_problems = identity.asan_split_problems(context['fastdds_lib_sha256'])
+                    write_json(identity.directory / 'asan-split.json', {'problems': split_problems})
+                    if split_problems:
+                        raise RuntimeError('ASan split check failed: ' + '; '.join(split_problems))
                 captured = slow_exits.take(tally.attempted)
                 cores.collect(tally.attempted, exits, captured)
                 asan_reports.collect(tally.attempted)

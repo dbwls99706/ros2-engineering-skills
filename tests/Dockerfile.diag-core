@@ -4,8 +4,9 @@
 # library. UPGRADE=rclcpp upgrades only ros-humble-rclcpp and ros-humble-rclcpp-lifecycle;
 # UPGRADE=all upgrades every installed ros-humble-* package. Fast DDS is held in every arm.
 # FASTDDS_VARIANT other than stock installs the rebuilt Fast DDS and its debug symbols from
-# fastdds-debs/ (tests/diag_fastdds_build.sh). Package lists before and after are kept in
-# /opt/diag for the evidence.
+# fastdds-debs/ (tests/diag_fastdds_build.sh). An -asan variant first keeps the stock library in
+# /opt/diag/stock-fastdds, under its soname, for the harness processes that are not under test.
+# Package lists before and after are kept in /opt/diag for the evidence.
 ARG BASE=ros2-ci:humble
 FROM ${BASE}
 
@@ -44,6 +45,12 @@ RUN set -e; \
              && rm -f /tmp/fastrtps-dbgsym.deb; }; \
     else \
       expected="${FASTRTPS_BUILD}+diag.${FASTDDS_VARIANT//-/.}"; \
+      case "$FASTDDS_VARIANT" in \
+        *-asan) install -D -m 0644 /opt/ros/humble/lib/libfastrtps.so.2.6.12 \
+                  /opt/diag/stock-fastdds/libfastrtps.so.2.6; \
+                sha256sum /opt/diag/stock-fastdds/libfastrtps.so.2.6 | cut -d' ' -f1 \
+                  > /opt/diag/stock-fastdds.sha256 ;; \
+      esac; \
       apt-mark unhold ros-humble-fastrtps; \
       dpkg -i /opt/diag/fastdds-debs/ros-humble-fastrtps.deb /opt/diag/fastdds-debs/ros-humble-fastrtps-dbgsym.deb; \
       apt-mark hold ros-humble-fastrtps; \
