@@ -1,0 +1,867 @@
+diff -ruN a/src/cpp/rtps/builtin/discovery/endpoint/EDP.cpp b/src/cpp/rtps/builtin/discovery/endpoint/EDP.cpp
+--- a/src/cpp/rtps/builtin/discovery/endpoint/EDP.cpp	2026-10-20 02:35:03.856538028 +0000
++++ b/src/cpp/rtps/builtin/discovery/endpoint/EDP.cpp	2026-10-20 02:35:03.957124026 +0000
+@@ -45,6 +45,7 @@
+ 
+ #include <rtps/builtin/data/ProxyHashTables.hpp>
+ #include <rtps/participant/RTPSParticipantImpl.h>
++#include <rtps/reader/ReaderListenerGate.hpp>
+ 
+ #include <utils/collections/node_size_helpers.hpp>
+ 
+@@ -571,17 +572,17 @@
+ #endif // if HAVE_SECURITY
+ 
+                     //MATCHED AND ADDED CORRECTLY:
+-                    if (r.getListener() != nullptr)
+-                    {
+-                        MatchingInfo info;
+-                        info.status = REMOVED_MATCHING;
+-                        info.remoteEndpointGuid = writer_guid;
+-                        r.getListener()->onReaderMatched(&r, info);
++                    listener_gate::with_listener(&r, [&](ReaderListener* listener)
++                            {
++                                MatchingInfo info;
++                                info.status = REMOVED_MATCHING;
++                                info.remoteEndpointGuid = writer_guid;
++                                listener->onReaderMatched(&r, info);
+ 
+-                        const SubscriptionMatchedStatus& sub_info =
+-                        update_subscription_matched_status(reader_guid, writer_guid, -1);
+-                        r.getListener()->onReaderMatched(&r, sub_info);
+-                    }
++                                const SubscriptionMatchedStatus& sub_info =
++                                update_subscription_matched_status(reader_guid, writer_guid, -1);
++                                listener->onReaderMatched(&r, sub_info);
++                            });
+                 }
+ 
+                 // traverse all
+@@ -1079,25 +1080,28 @@
+                             "WP:" << wdatait->guid() << " match R:" << R->getGuid() << ". RLoc:" <<
+                             wdatait->remote_locators());
+                     //MATCHED AND ADDED CORRECTLY:
+-                    if (R->getListener() != nullptr)
+-                    {
+-                        MatchingInfo info;
+-                        info.status = MATCHED_MATCHING;
+-                        info.remoteEndpointGuid = writer_guid;
+-                        R->getListener()->onReaderMatched(R, info);
++                    listener_gate::with_listener(R, [&](ReaderListener* listener)
++                            {
++                                MatchingInfo info;
++                                info.status = MATCHED_MATCHING;
++                                info.remoteEndpointGuid = writer_guid;
++                                listener->onReaderMatched(R, info);
+ 
+-                        const SubscriptionMatchedStatus& sub_info =
+-                                update_subscription_matched_status(reader_guid, writer_guid, 1);
+-                        R->getListener()->onReaderMatched(R, sub_info);
+-                    }
++                                const SubscriptionMatchedStatus& sub_info =
++                                        update_subscription_matched_status(reader_guid, writer_guid, 1);
++                                listener->onReaderMatched(R, sub_info);
++                            });
+                 }
+ #endif // if HAVE_SECURITY
+             }
+             else
+             {
+-                if (no_match_reason.test(MatchingFailureMask::incompatible_qos) && R->getListener() != nullptr)
++                if (no_match_reason.test(MatchingFailureMask::incompatible_qos))
+                 {
+-                    R->getListener()->on_requested_incompatible_qos(R, incompatible_qos);
++                    listener_gate::with_listener(R, [&](ReaderListener* listener)
++                            {
++                                listener->on_requested_incompatible_qos(R, incompatible_qos);
++                            });
+                 }
+ 
+                 //logInfo(RTPS_EDP,RTPS_CYAN<<"Valid Matching to writerProxy: "<<wdatait->m_guid<<RTPS_DEF<<endl);
+@@ -1110,17 +1114,17 @@
+ #endif // if HAVE_SECURITY
+ 
+                     //MATCHED AND ADDED CORRECTLY:
+-                    if (R->getListener() != nullptr)
+-                    {
+-                        MatchingInfo info;
+-                        info.status = REMOVED_MATCHING;
+-                        info.remoteEndpointGuid = writer_guid;
+-                        R->getListener()->onReaderMatched(R, info);
++                    listener_gate::with_listener(R, [&](ReaderListener* listener)
++                            {
++                                MatchingInfo info;
++                                info.status = REMOVED_MATCHING;
++                                info.remoteEndpointGuid = writer_guid;
++                                listener->onReaderMatched(R, info);
+ 
+-                        const SubscriptionMatchedStatus& sub_info =
+-                                update_subscription_matched_status(reader_guid, writer_guid, -1);
+-                        R->getListener()->onReaderMatched(R, sub_info);
+-                    }
++                                const SubscriptionMatchedStatus& sub_info =
++                                        update_subscription_matched_status(reader_guid, writer_guid, -1);
++                                listener->onReaderMatched(R, sub_info);
++                            });
+                 }
+             }
+         }
+@@ -1463,26 +1467,29 @@
+                             "WP:" << wdata->guid() << " match R:" << r.getGuid() << ". WLoc:" <<
+                                 wdata->remote_locators());
+                             //MATCHED AND ADDED CORRECTLY:
+-                            if (r.getListener() != nullptr)
+-                            {
+-                                MatchingInfo info;
+-                                info.status = MATCHED_MATCHING;
+-                                info.remoteEndpointGuid = writer_guid;
+-                                r.getListener()->onReaderMatched(&r, info);
++                            listener_gate::with_listener(&r, [&](ReaderListener* listener)
++                                    {
++                                        MatchingInfo info;
++                                        info.status = MATCHED_MATCHING;
++                                        info.remoteEndpointGuid = writer_guid;
++                                        listener->onReaderMatched(&r, info);
+ 
+ 
+-                                const SubscriptionMatchedStatus& sub_info =
+-                                update_subscription_matched_status(readerGUID, writer_guid, 1);
+-                                r.getListener()->onReaderMatched(&r, sub_info);
+-                            }
++                                        const SubscriptionMatchedStatus& sub_info =
++                                        update_subscription_matched_status(readerGUID, writer_guid, 1);
++                                        listener->onReaderMatched(&r, sub_info);
++                                    });
+                         }
+ #endif // if HAVE_SECURITY
+                     }
+                     else
+                     {
+-                        if (no_match_reason.test(MatchingFailureMask::incompatible_qos) && r.getListener() != nullptr)
++                        if (no_match_reason.test(MatchingFailureMask::incompatible_qos))
+                         {
+-                            r.getListener()->on_requested_incompatible_qos(&r, incompatible_qos);
++                            listener_gate::with_listener(&r, [&](ReaderListener* listener)
++                                    {
++                                        listener->on_requested_incompatible_qos(&r, incompatible_qos);
++                                    });
+                         }
+ 
+                         if (r.matched_writer_is_matched(writer_guid)
+@@ -1493,17 +1500,17 @@
+                             writer_guid);
+ #endif // if HAVE_SECURITY
+                             //MATCHED AND ADDED CORRECTLY:
+-                            if (r.getListener() != nullptr)
+-                            {
+-                                MatchingInfo info;
+-                                info.status = REMOVED_MATCHING;
+-                                info.remoteEndpointGuid = writer_guid;
+-                                r.getListener()->onReaderMatched(&r, info);
+-
+-                                const SubscriptionMatchedStatus& sub_info =
+-                                update_subscription_matched_status(readerGUID, writer_guid, -1);
+-                                r.getListener()->onReaderMatched(&r, sub_info);
+-                            }
++                            listener_gate::with_listener(&r, [&](ReaderListener* listener)
++                                    {
++                                        MatchingInfo info;
++                                        info.status = REMOVED_MATCHING;
++                                        info.remoteEndpointGuid = writer_guid;
++                                        listener->onReaderMatched(&r, info);
++
++                                        const SubscriptionMatchedStatus& sub_info =
++                                        update_subscription_matched_status(readerGUID, writer_guid, -1);
++                                        listener->onReaderMatched(&r, sub_info);
++                                    });
+                         }
+                     }
+                 }
+@@ -1550,10 +1557,12 @@
+                         }
+                         else
+                         {
+-                            if (no_match_reason.test(MatchingFailureMask::incompatible_qos) &&
+-                            r.getListener() != nullptr)
++                            if (no_match_reason.test(MatchingFailureMask::incompatible_qos))
+                             {
+-                                r.getListener()->on_requested_incompatible_qos(&r, incompatible_qos);
++                                listener_gate::with_listener(&r, [&](ReaderListener* listener)
++                                        {
++                                            listener->on_requested_incompatible_qos(&r, incompatible_qos);
++                                        });
+                             }
+ 
+                             if (r.matched_writer_is_matched(writer_guid)
+@@ -1562,17 +1571,17 @@
+                                 mp_RTPSParticipant->security_manager().remove_writer(readerGUID,
+                                 remote_participant_guid, writer_guid);
+                                 //MATCHED AND ADDED CORRECTLY:
+-                                if (r.getListener() != nullptr)
+-                                {
+-                                    MatchingInfo info;
+-                                    info.status = REMOVED_MATCHING;
+-                                    info.remoteEndpointGuid = writer_guid;
+-                                    r.getListener()->onReaderMatched(&r, info);
+-
+-                                    const SubscriptionMatchedStatus& sub_info =
+-                                    update_subscription_matched_status(readerGUID, writer_guid, -1);
+-                                    r.getListener()->onReaderMatched(&r, sub_info);
+-                                }
++                                listener_gate::with_listener(&r, [&](ReaderListener* listener)
++                                        {
++                                            MatchingInfo info;
++                                            info.status = REMOVED_MATCHING;
++                                            info.remoteEndpointGuid = writer_guid;
++                                            listener->onReaderMatched(&r, info);
++
++                                            const SubscriptionMatchedStatus& sub_info =
++                                            update_subscription_matched_status(readerGUID, writer_guid, -1);
++                                            listener->onReaderMatched(&r, sub_info);
++                                        });
+                             }
+                         }
+                     }
+@@ -1611,18 +1620,18 @@
+                         matched = true;
+ 
+                         //MATCHED AND ADDED CORRECTLY:
+-                        if (r.getListener() != nullptr)
+-                        {
+-                            MatchingInfo info;
+-                            info.status = MATCHED_MATCHING;
+-                            info.remoteEndpointGuid = writer_guid;
+-                            r.getListener()->onReaderMatched(&r, info);
++                        listener_gate::with_listener(&r, [&](ReaderListener* listener)
++                                {
++                                    MatchingInfo info;
++                                    info.status = MATCHED_MATCHING;
++                                    info.remoteEndpointGuid = writer_guid;
++                                    listener->onReaderMatched(&r, info);
+ 
+-                            const SubscriptionMatchedStatus& sub_info =
+-                            update_subscription_matched_status(readerGUID, writer_guid, 1);
+-                            r.getListener()->onReaderMatched(&r, sub_info);
++                                    const SubscriptionMatchedStatus& sub_info =
++                                    update_subscription_matched_status(readerGUID, writer_guid, 1);
++                                    listener->onReaderMatched(&r, sub_info);
+ 
+-                        }
++                                });
+                     }
+                     // dont' look anymore
+                     return false;
+diff -ruN a/src/cpp/rtps/builtin/liveliness/WLP.cpp b/src/cpp/rtps/builtin/liveliness/WLP.cpp
+--- a/src/cpp/rtps/builtin/liveliness/WLP.cpp	2026-10-20 02:35:03.858256559 +0000
++++ b/src/cpp/rtps/builtin/liveliness/WLP.cpp	2026-10-20 02:35:03.959265575 +0000
+@@ -21,6 +21,7 @@
+ #include <fastdds/rtps/builtin/liveliness/WLP.h>
+ #include <fastdds/rtps/builtin/liveliness/WLPListener.h>
+ #include <rtps/participant/RTPSParticipantImpl.h>
++#include <rtps/reader/ReaderListenerGate.hpp>
+ #include <fastdds/rtps/writer/StatefulWriter.h>
+ #include <fastdds/rtps/writer/LivelinessManager.h>
+ #include <fastdds/rtps/writer/WriterListener.h>
+@@ -1094,13 +1095,13 @@
+     reader->liveliness_changed_status_.not_alive_count_change += not_alive_change;
+     reader->liveliness_changed_status_.last_publication_handle = writer;
+ 
+-    if (reader->getListener() != nullptr)
+-    {
+-        reader->getListener()->on_liveliness_changed(reader, reader->liveliness_changed_status_);
++    listener_gate::with_listener(reader, [&](ReaderListener* listener)
++            {
++                listener->on_liveliness_changed(reader, reader->liveliness_changed_status_);
+ 
+-        reader->liveliness_changed_status_.alive_count_change = 0;
+-        reader->liveliness_changed_status_.not_alive_count_change = 0;
+-    }
++                reader->liveliness_changed_status_.alive_count_change = 0;
++                reader->liveliness_changed_status_.not_alive_count_change = 0;
++            });
+ }
+ 
+ } /* namespace rtps */
+diff -ruN a/src/cpp/rtps/reader/RTPSReader.cpp b/src/cpp/rtps/reader/RTPSReader.cpp
+--- a/src/cpp/rtps/reader/RTPSReader.cpp	2026-10-20 02:35:03.902323005 +0000
++++ b/src/cpp/rtps/reader/RTPSReader.cpp	2026-10-20 02:35:04.017579719 +0000
+@@ -20,6 +20,11 @@
+ #include <typeinfo>
+ #include <algorithm>
+ #include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <iterator>
++#include <unordered_map>
++#include <vector>
+ 
+ #include <rtps/history/BasicPayloadPool.hpp>
+ #include <rtps/history/CacheChangePool.h>
+@@ -29,6 +34,7 @@
+ #include <rtps/participant/RTPSParticipantImpl.h>
+ 
+ #include <rtps/reader/ReaderHistoryState.hpp>
++#include <rtps/reader/ReaderListenerGate.hpp>
+ 
+ #include <fastdds/dds/log/Log.hpp>
+ 
+@@ -46,6 +52,121 @@
+ namespace fastrtps {
+ namespace rtps {
+ 
++namespace listener_gate {
++namespace {
++
++// Never destroyed: readers can be deleted during static destruction at process exit.
++std::mutex& table_mutex()
++{
++    static std::mutex* instance = new std::mutex();
++    return *instance;
++}
++
++std::unordered_map<const RTPSReader*, std::shared_ptr<State>>& table()
++{
++    static auto* instance = new std::unordered_map<const RTPSReader*, std::shared_ptr<State>>();
++    return *instance;
++}
++
++// Gates whose listener this thread is calling right now, innermost last.
++std::vector<const State*>& calls_on_this_thread()
++{
++    thread_local std::vector<const State*> calls;
++    return calls;
++}
++
++} // namespace
++
++void attach(
++        const RTPSReader* reader,
++        ReaderListener* listener)
++{
++    auto state = std::make_shared<State>();
++    state->listener = listener;
++    std::lock_guard<std::mutex> guard(table_mutex());
++    table()[reader] = std::move(state);
++}
++
++void detach(
++        const RTPSReader* reader)
++{
++    std::lock_guard<std::mutex> guard(table_mutex());
++    table().erase(reader);
++}
++
++std::shared_ptr<State> find(
++        const RTPSReader* reader)
++{
++    std::lock_guard<std::mutex> guard(table_mutex());
++    auto it = table().find(reader);
++    return it == table().end() ? nullptr : it->second;
++}
++
++ReaderListener* begin_call(
++        State& state)
++{
++    ReaderListener* listener = nullptr;
++    {
++        std::lock_guard<std::mutex> guard(state.mutex);
++        if (state.replacing || nullptr == state.listener)
++        {
++            return nullptr;
++        }
++        ++state.calls_in_progress;
++        listener = state.listener;
++    }
++    calls_on_this_thread().push_back(&state);
++    return listener;
++}
++
++void end_call(
++        State& state)
++{
++    auto& calls = calls_on_this_thread();
++    auto it = std::find(calls.rbegin(), calls.rend(), &state);
++    if (it != calls.rend())
++    {
++        calls.erase(std::next(it).base());
++    }
++    std::lock_guard<std::mutex> guard(state.mutex);
++    if (0 == --state.calls_in_progress)
++    {
++        state.idle.notify_all();
++    }
++}
++
++void replace(
++        State& state,
++        ReaderListener* target,
++        ReaderListener*& legacy_field)
++{
++    const auto& calls = calls_on_this_thread();
++    if (std::find(calls.begin(), calls.end(), &state) != calls.end())
++    {
++        std::fprintf(stderr, "[listener_gate] setListener() called from inside the same reader's listener\n");
++        std::abort();
++    }
++    std::lock_guard<std::mutex> setter(state.setter);
++    std::unique_lock<std::mutex> lock(state.mutex);
++    state.replacing = true;
++    state.idle.wait(lock, [&state]()
++            {
++                return 0 == state.calls_in_progress;
++            });
++    state.listener = target;
++    legacy_field = target;
++    state.replacing = false;
++}
++
++ReaderListener* current(
++        State& state)
++{
++    std::lock_guard<std::mutex> guard(state.mutex);
++    return state.listener;
++}
++
++} // namespace listener_gate
++
+ RTPSReader::RTPSReader(
+         RTPSParticipantImpl* pimpl,
+         const GUID_t& guid,
+@@ -110,6 +231,9 @@
+         const std::shared_ptr<IChangePool>& change_pool,
+         const ReaderAttributes& att)
+ {
++    // Before the data-sharing listener below can start delivering notifications.
++    listener_gate::attach(this, mp_listener);
++
+     payload_pool_ = payload_pool;
+     change_pool_ = change_pool;
+     fixed_payload_size_ = 0;
+@@ -158,6 +282,8 @@
+     delete history_state_;
+     mp_history->mp_reader = nullptr;
+     mp_history->mp_mutex = nullptr;
++
++    listener_gate::detach(this);
+ }
+ 
+ bool RTPSReader::reserveCache(
+@@ -233,14 +359,22 @@
+ 
+ ReaderListener* RTPSReader::getListener() const
+ {
+-    return mp_listener;
++    std::shared_ptr<listener_gate::State> state = listener_gate::find(this);
++    return state ? listener_gate::current(*state) : nullptr;
+ }
+ 
+ bool RTPSReader::setListener(
+         ReaderListener* target)
+ {
+-    std::lock_guard<RecursiveTimedMutex> guard(mp_mutex);
+-    mp_listener = target;
++    std::shared_ptr<listener_gate::State> state = listener_gate::find(this);
++    if (!state)
++    {
++        std::lock_guard<RecursiveTimedMutex> guard(mp_mutex);
++        mp_listener = target;
++        return true;
++    }
++    // Returns only when no thread is still calling the previous listener.
++    listener_gate::replace(*state, target, mp_listener);
+     return true;
+ }
+ 
+diff -ruN a/src/cpp/rtps/reader/ReaderListenerGate.hpp b/src/cpp/rtps/reader/ReaderListenerGate.hpp
+--- a/src/cpp/rtps/reader/ReaderListenerGate.hpp	1970-01-01 00:00:00.000000000 +0000
++++ b/src/cpp/rtps/reader/ReaderListenerGate.hpp	2026-10-20 02:35:04.017564044 +0000
+@@ -0,0 +1,112 @@
++/**
++ * @file ReaderListenerGate.hpp
++ *
++ * Diagnostic change (not upstream): keeps a reader listener valid for the whole duration of
++ * every call made through it.
++ *
++ * RTPSReader::setListener() blocks new calls and waits until calls already in progress have
++ * returned. Once it returns, the previous listener, and anything that listener reaches, is no
++ * longer used by any thread. DataReaderImpl relies on this: disable() clears the listener before
++ * stop() deletes the timers and the reader that listener callbacks touch.
++ *
++ * The state lives in a table keyed by reader, so no public class layout changes.
++ */
++
++#ifndef FASTRTPS_RTPS_READER_READERLISTENERGATE_HPP_
++#define FASTRTPS_RTPS_READER_READERLISTENERGATE_HPP_
++
++#include <condition_variable>
++#include <cstdint>
++#include <memory>
++#include <mutex>
++
++namespace eprosima {
++namespace fastrtps {
++namespace rtps {
++
++class RTPSReader;
++class ReaderListener;
++
++namespace listener_gate {
++
++struct State
++{
++    //! Serializes listener replacement.
++    std::mutex setter;
++    //! Protects the members below. Never held while a listener is called.
++    std::mutex mutex;
++    std::condition_variable idle;
++    ReaderListener* listener = nullptr;
++    uint32_t calls_in_progress = 0;
++    bool replacing = false;
++};
++
++void attach(
++        const RTPSReader* reader,
++        ReaderListener* listener);
++
++void detach(
++        const RTPSReader* reader);
++
++std::shared_ptr<State> find(
++        const RTPSReader* reader);
++
++//! Returns the listener and counts a call in progress, or nullptr when no call may start.
++ReaderListener* begin_call(
++        State& state);
++
++void end_call(
++        State& state);
++
++/**
++ * Blocks new calls, waits for calls in progress, then installs target, also in legacy_field.
++ * Aborts when called from inside a call to the same reader's listener: waiting would deadlock,
++ * and not waiting would let that call outlive the replacement.
++ */
++void replace(
++        State& state,
++        ReaderListener* target,
++        ReaderListener*& legacy_field);
++
++ReaderListener* current(
++        State& state);
++
++/**
++ * Calls f(listener) if the reader has a listener, keeping that listener in use until f returns,
++ * including when f throws.
++ */
++template<typename Functor>
++void with_listener(
++        const RTPSReader* reader,
++        Functor&& f)
++{
++    std::shared_ptr<State> state = find(reader);
++    if (!state)
++    {
++        return;
++    }
++    ReaderListener* listener = begin_call(*state);
++    if (nullptr == listener)
++    {
++        return;
++    }
++    struct EndCall
++    {
++        State& state;
++
++        ~EndCall()
++        {
++            end_call(state);
++        }
++
++    }
++    end_call_on_exit{*state};
++    f(listener);
++}
++
++} // namespace listener_gate
++} // namespace rtps
++} // namespace fastrtps
++} // namespace eprosima
++
++#endif // FASTRTPS_RTPS_READER_READERLISTENERGATE_HPP_
+diff -ruN a/src/cpp/rtps/reader/StatefulReader.cpp b/src/cpp/rtps/reader/StatefulReader.cpp
+--- a/src/cpp/rtps/reader/StatefulReader.cpp	2026-10-20 02:35:03.902383408 +0000
++++ b/src/cpp/rtps/reader/StatefulReader.cpp	2026-10-20 02:35:04.017358360 +0000
+@@ -39,6 +39,7 @@
+ #include <rtps/DataSharing/ReaderPool.hpp>
+ #include <rtps/history/HistoryAttributesExtension.hpp>
+ #include <rtps/participant/RTPSParticipantImpl.h>
++#include <rtps/reader/ReaderListenerGate.hpp>
+ #include <rtps/reader/WriterProxy.h>
+ #include <rtps/RTPSDomainImpl.hpp>
+ 
+@@ -220,13 +221,13 @@
+                     }
+                 }
+ 
+-                if (nullptr != mp_listener)
+-                {
+-                    // call the listener without the lock taken
+-                    guard.unlock();
+-                    mp_listener->on_writer_discovery(this, WriterDiscoveryInfo::CHANGED_QOS_WRITER, wdata.guid(),
+-                            &wdata);
+-                }
++                listener_gate::with_listener(this, [&](ReaderListener* listener)
++                        {
++                            // call the listener without the lock taken
++                            guard.unlock();
++                            listener->on_writer_discovery(this, WriterDiscoveryInfo::CHANGED_QOS_WRITER,
++                            wdata.guid(), &wdata);
++                        });
+                 return false;
+             }
+         }
+@@ -328,10 +329,10 @@
+         }
+     }
+ 
+-    if (nullptr != mp_listener)
+-    {
+-        mp_listener->on_writer_discovery(this, WriterDiscoveryInfo::DISCOVERED_WRITER, wdata.guid(), &wdata);
+-    }
++    listener_gate::with_listener(this, [&](ReaderListener* listener)
++            {
++                listener->on_writer_discovery(this, WriterDiscoveryInfo::DISCOVERED_WRITER, wdata.guid(), &wdata);
++            });
+ 
+     return true;
+ }
+@@ -375,12 +376,12 @@
+             }
+             wproxy->stop();
+             matched_writers_pool_.push_back(wproxy);
+-            if (nullptr != mp_listener)
+-            {
+-                // call the listener without the lock taken
+-                lock.unlock();
+-                mp_listener->on_writer_discovery(this, WriterDiscoveryInfo::REMOVED_WRITER, writer_guid, nullptr);
+-            }
++            listener_gate::with_listener(this, [&](ReaderListener* listener)
++                    {
++                        // call the listener without the lock taken
++                        lock.unlock();
++                        listener->on_writer_discovery(this, WriterDiscoveryInfo::REMOVED_WRITER, writer_guid, nullptr);
++                    });
+         }
+         else
+         {
+@@ -774,10 +775,10 @@
+ 
+             if (0 < current_sample_lost)
+             {
+-                if (getListener() != nullptr)
+-                {
+-                    getListener()->on_sample_lost((RTPSReader*)this, current_sample_lost);
+-                }
++                listener_gate::with_listener(this, [&](ReaderListener* listener)
++                        {
++                            listener->on_sample_lost((RTPSReader*)this, current_sample_lost);
++                        });
+             }
+ 
+             // Maybe now we have to notify user from new CacheChanges.
+@@ -991,11 +992,10 @@
+                         // initialized using this SequenceNumber_t. Note that on a SERVER the own DATA(p) may be in any
+                         // position within the WriterHistory preventing effective data exchange.
+                         update_last_notified(a_change->writerGUID, SequenceNumber_t(0, 1));
+-                        auto listener = getListener();
+-                        if (listener != nullptr)
+-                        {
+-                            listener->onNewCacheChangeAdded(this, a_change);
+-                        }
++                        listener_gate::with_listener(this, [&](ReaderListener* listener)
++                                {
++                                    listener->onNewCacheChangeAdded(this, a_change);
++                                });
+ 
+                         return true;
+                     }
+@@ -1085,22 +1085,24 @@
+     prox->consider_all_notified();
+ 
+     // Notify listener if new data is available
+-    auto listener = getListener();
+-    if (new_data_available && (nullptr != listener))
++    if (new_data_available)
+     {
+-        it = mp_history->changesBegin();
+-        next_seq = first_seq;
+-        while (next_seq <= max_seq &&
+-                mp_history->changesEnd() != (it = mp_history->get_change_nts(next_seq, proxGUID, &aux_ch, it)) &&
+-                (*it)->sequenceNumber <= max_seq)
+-        {
+-            aux_ch = *it;
+-            next_seq = aux_ch->sequenceNumber + 1;
+-            listener->onNewCacheChangeAdded(this, aux_ch);
++        listener_gate::with_listener(this, [&](ReaderListener* listener)
++                {
++                    it = mp_history->changesBegin();
++                    next_seq = first_seq;
++                    while (next_seq <= max_seq &&
++                    mp_history->changesEnd() != (it = mp_history->get_change_nts(next_seq, proxGUID, &aux_ch, it)) &&
++                    (*it)->sequenceNumber <= max_seq)
++                    {
++                        aux_ch = *it;
++                        next_seq = aux_ch->sequenceNumber + 1;
++                        listener->onNewCacheChangeAdded(this, aux_ch);
+ 
+-            // Reset the iterator to the beginning, since it may be invalidated inside the callback
+-            it = mp_history->changesBegin();
+-        }
++                        // Reset the iterator to the beginning, since it may be invalidated inside the callback
++                        it = mp_history->changesBegin();
++                    }
++                });
+     }
+ 
+     // Notify in case someone is waiting for unread messages
+diff -ruN a/src/cpp/rtps/reader/StatelessReader.cpp b/src/cpp/rtps/reader/StatelessReader.cpp
+--- a/src/cpp/rtps/reader/StatelessReader.cpp	2026-10-20 02:35:03.902431890 +0000
++++ b/src/cpp/rtps/reader/StatelessReader.cpp	2026-10-20 02:35:04.017410868 +0000
+@@ -34,6 +34,7 @@
+ #include <rtps/DataSharing/DataSharingListener.hpp>
+ #include <rtps/DataSharing/ReaderPool.hpp>
+ #include <rtps/participant/RTPSParticipantImpl.h>
++#include <rtps/reader/ReaderListenerGate.hpp>
+ #include <rtps/RTPSDomainImpl.hpp>
+ 
+ #define IDSTRING "(ID:" << std::this_thread::get_id() << ") " <<
+@@ -98,13 +99,13 @@
+             if (writer.guid == wdata.guid())
+             {
+                 logWarning(RTPS_READER, "Attempting to add existing writer");
+-                if (nullptr != mp_listener)
+-                {
+-                    // call the listener without the lock taken
+-                    guard.unlock();
+-                    mp_listener->on_writer_discovery(this, WriterDiscoveryInfo::CHANGED_QOS_WRITER, wdata.guid(),
+-                            &wdata);
+-                }
++                listener_gate::with_listener(this, [&](ReaderListener* listener)
++                        {
++                            // call the listener without the lock taken
++                            guard.unlock();
++                            listener->on_writer_discovery(this, WriterDiscoveryInfo::CHANGED_QOS_WRITER,
++                            wdata.guid(), &wdata);
++                        });
+                 return false;
+             }
+         }
+@@ -177,10 +178,10 @@
+         }
+     }
+ 
+-    if (nullptr != mp_listener)
+-    {
+-        mp_listener->on_writer_discovery(this, WriterDiscoveryInfo::DISCOVERED_WRITER, wdata.guid(), &wdata);
+-    }
++    listener_gate::with_listener(this, [&](ReaderListener* listener)
++            {
++                listener->on_writer_discovery(this, WriterDiscoveryInfo::DISCOVERED_WRITER, wdata.guid(), &wdata);
++            });
+ 
+     return true;
+ }
+@@ -212,12 +213,13 @@
+ 
+                 remove_persistence_guid(it->guid, it->persistence_guid, removed_by_lease);
+                 matched_writers_.erase(it);
+-                if (nullptr != mp_listener)
+-                {
+-                    // call the listener without lock
+-                    guard.unlock();
+-                    mp_listener->on_writer_discovery(this, WriterDiscoveryInfo::REMOVED_WRITER, writer_guid, nullptr);
+-                }
++                listener_gate::with_listener(this, [&](ReaderListener* listener)
++                        {
++                            // call the listener without lock
++                            guard.unlock();
++                            listener->on_writer_discovery(this, WriterDiscoveryInfo::REMOVED_WRITER, writer_guid,
++                            nullptr);
++                        });
+                 ret_val = true;
+                 break;
+             }
+@@ -308,24 +310,23 @@
+ 
+             on_data_notify(guid, change->sourceTimestamp);
+ 
+-            auto listener = getListener();
+-            if (listener != nullptr)
+-            {
+-                if (SequenceNumber_t{0, 0} != previous_seq)
+-                {
+-                    assert(previous_seq < seq);
+-                    uint64_t tmp = (seq - previous_seq).to64long() - 1;
+-                    int32_t lost_samples = tmp > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ?
+-                            std::numeric_limits<int32_t>::max() : static_cast<int32_t>(tmp);
+-                    if (0 < lost_samples) // There are lost samples.
++            listener_gate::with_listener(this, [&](ReaderListener* listener)
+                     {
+-                        listener->on_sample_lost(this, lost_samples);
+-                    }
+-                }
++                        if (SequenceNumber_t{0, 0} != previous_seq)
++                        {
++                            assert(previous_seq < seq);
++                            uint64_t tmp = (seq - previous_seq).to64long() - 1;
++                            int32_t lost_samples = tmp > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ?
++                                    std::numeric_limits<int32_t>::max() : static_cast<int32_t>(tmp);
++                            if (0 < lost_samples) // There are lost samples.
++                            {
++                                listener->on_sample_lost(this, lost_samples);
++                            }
++                        }
+ 
+-                // WARNING! This call could destroy the change
+-                listener->onNewCacheChangeAdded(this, change);
+-            }
++                        // WARNING! This call could destroy the change
++                        listener->onNewCacheChangeAdded(this, change);
++                    });
+ 
+             new_notification_cv_.notify_all();
+ 
+@@ -625,20 +626,19 @@
+                         previous_seq = update_last_notified(writer_guid, updated_seq);
+ 
+                         // Notify lost samples
+-                        auto listener = getListener();
+-                        if (listener != nullptr)
+-                        {
+-                            if (SequenceNumber_t{ 0, 0 } != previous_seq)
+-                            {
+-                                assert(previous_seq < updated_seq);
+-                                uint64_t tmp = (updated_seq - previous_seq).to64long();
+-                                int32_t lost_samples =
+-                                        tmp > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ?
+-                                        std::numeric_limits<int32_t>::max() : static_cast<int32_t>(tmp);
+-                                assert (0 < lost_samples);
+-                                listener->on_sample_lost(this, lost_samples);
+-                            }
+-                        }
++                        listener_gate::with_listener(this, [&](ReaderListener* listener)
++                                {
++                                    if (SequenceNumber_t{ 0, 0 } != previous_seq)
++                                    {
++                                        assert(previous_seq < updated_seq);
++                                        uint64_t tmp = (updated_seq - previous_seq).to64long();
++                                        int32_t lost_samples =
++                                                tmp > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ?
++                                                std::numeric_limits<int32_t>::max() : static_cast<int32_t>(tmp);
++                                        assert (0 < lost_samples);
++                                        listener->on_sample_lost(this, lost_samples);
++                                    }
++                                });
+ 
+                         // Pending change should be dropped. Check if it can be reused
+                         if (sampleSize <= work_change->serializedPayload.max_size)

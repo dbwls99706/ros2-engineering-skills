@@ -1,8 +1,8 @@
 name: Diagnostic C++ fleet shutdown
 
-# Temporary, diagnostic-branch only. Stage 0 proves core capture and symbolized gdb analysis
-# with a deliberate SIGSEGV. The comparison matrix starts only after that evidence has been
-# uploaded, downloaded, and checked again.
+# Temporary, diagnostic-branch only (r5). Stage 0 proves core capture again; Fast DDS is rebuilt
+# from the installed source package in four variants; the comparison matrix starts only after
+# both. Every image is built on the base image digest used in r4.
 on:
   push:
     branches: ['diag/**']
@@ -12,6 +12,10 @@ permissions:
 
 env:
   CORE_PATTERN: /var/crash-cores/core.%e.%p.%t
+  BASE_IMAGE: osrf/ros:humble-desktop@sha256:fb07245b32187d74350be25323d8ad2f8ca5c25c325759911a1eff2267a49c1e
+  BASE_DIGEST: sha256:fb07245b32187d74350be25323d8ad2f8ca5c25c325759911a1eff2267a49c1e
+  STOCK_LIB_SHA256: 148cd881ab04a1ffeb27c15ebd5f7a08d4e3fe02d203582e812d3464a9c17b09
+  V172_SHA: 3ac5064df47decd7776ed03c7350b2ac1435cb5f
 
 jobs:
   core-pipeline:
@@ -30,14 +34,19 @@ jobs:
           sudo sysctl -w "kernel.core_pattern=$CORE_PATTERN"
           cat /proc/sys/kernel/core_pattern | tee "$EVIDENCE/stage0/host-core-pattern.txt"
           test "$(cat /proc/sys/kernel/core_pattern)" = "$CORE_PATTERN"
-      - name: Build the CI image and the diagnostic layer
+      - name: Build the CI image on the pinned base, then the diagnostic layer
         run: |
+          docker pull "$BASE_IMAGE"
+          docker tag "$BASE_IMAGE" osrf/ros:humble-desktop
+          mkdir -p tests/fastdds-debs
           timeout --signal=TERM --kill-after=10s 20m docker buildx build --load --progress=plain \
             -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-ci:humble . \
             > "$EVIDENCE/stage0/build-ci.log" 2>&1 || { tail -100 "$EVIDENCE/stage0/build-ci.log"; exit 1; }
+          docker image inspect osrf/ros:humble-desktop --format '{{json .RepoDigests}}' \
+            | tee "$EVIDENCE/stage0/base-image.txt" | grep -q "$BASE_DIGEST"
           timeout --signal=TERM --kill-after=10s 20m docker build --progress=plain \
             -f tests/Dockerfile.diag-core --build-arg BASE=ros2-ci:humble --build-arg UPGRADE=none \
-            -t ros2-diag:humble tests \
+            --build-arg FASTDDS_VARIANT=stock -t ros2-diag:humble tests \
             > "$EVIDENCE/stage0/build-diag.log" 2>&1 || { tail -100 "$EVIDENCE/stage0/build-diag.log"; exit 1; }
       - name: Deliberate SIGSEGV, core capture, and gdb with Fast DDS symbols
         run: |
@@ -71,51 +80,76 @@ jobs:
             --name stage0-core-pipeline --dir "$RUNNER_TEMP/downloaded"
           python3 tests/diag_core_check.py "$RUNNER_TEMP/downloaded/stage0"
 
+  fastdds-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [rebuilt, patched, rebuilt-asan, patched-asan]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Rebuild Fast DDS 2.6.12 from the installed source package
+        run: |
+          mkdir -p "$RUNNER_TEMP/fastdds"
+          timeout --signal=TERM --kill-after=30s 140m docker run --rm \
+            -v "$GITHUB_WORKSPACE/tests:/diag:ro" -v "$RUNNER_TEMP/fastdds:/out" "$BASE_IMAGE" \
+            bash /diag/diag_fastdds_build.sh "${{ matrix.variant }}" /out
+      - name: Retain the build and its checks
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fastdds-${{ matrix.variant }}
+          path: ${{ runner.temp }}/fastdds/
+          if-no-files-found: error
+          retention-days: 14
+
   compare:
-    needs: core-pipeline-verify
+    needs: [core-pipeline-verify, fastdds-build]
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
-        # base: v1.7.1 = 26e41ea, v1.7.2 PR head = 3ac5064. Same 30-minute iteration budget for
-        # every arm. Arm O changes signal ownership and teardown order together: comparison only.
+        # E: demo talker + listener. B: generated C++ fleet at v1.7.2 (3ac5064). Same harness and
+        # 30-minute iteration budget as r4. ASan arms are auxiliary and excluded from rate tests.
         include:
-          - {arm: A, shard: 1, base: 26e41ea755ac1d148eedd8d61fe7f690ab4e0668, mode: fleet, shim: 'off', control: 'off', upgrade: none}
-          - {arm: A, shard: 2, base: 26e41ea755ac1d148eedd8d61fe7f690ab4e0668, mode: fleet, shim: 'off', control: 'off', upgrade: none}
-          - {arm: A, shard: 3, base: 26e41ea755ac1d148eedd8d61fe7f690ab4e0668, mode: fleet, shim: 'off', control: 'off', upgrade: none}
-          - {arm: A, shard: 4, base: 26e41ea755ac1d148eedd8d61fe7f690ab4e0668, mode: fleet, shim: 'off', control: 'off', upgrade: none}
-          - {arm: B, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: none}
-          - {arm: B, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: none}
-          - {arm: B, shard: 3, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: none}
-          - {arm: B, shard: 4, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: none}
-          - {arm: C, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'on', control: 'off', upgrade: none}
-          - {arm: C, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'on', control: 'off', upgrade: none}
-          - {arm: E, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: minimal, shim: 'off', control: 'off', upgrade: none}
-          - {arm: E, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: minimal, shim: 'off', control: 'off', upgrade: none}
-          - {arm: E, shard: 3, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: minimal, shim: 'off', control: 'off', upgrade: none}
-          - {arm: U1, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: rclcpp}
-          - {arm: U1, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: rclcpp}
-          - {arm: U2, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: all}
-          - {arm: U2, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'off', upgrade: all}
-          - {arm: O, shard: 1, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'on', upgrade: none}
-          - {arm: O, shard: 2, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'on', upgrade: none}
-          - {arm: O, shard: 3, base: 3ac5064df47decd7776ed03c7350b2ac1435cb5f, mode: fleet, shim: 'off', control: 'on', upgrade: none}
+          - {arm: ES, shard: 1, mode: minimal, variant: stock, asan: 'off'}
+          - {arm: ES, shard: 2, mode: minimal, variant: stock, asan: 'off'}
+          - {arm: ER, shard: 1, mode: minimal, variant: rebuilt, asan: 'off'}
+          - {arm: ER, shard: 2, mode: minimal, variant: rebuilt, asan: 'off'}
+          - {arm: ER, shard: 3, mode: minimal, variant: rebuilt, asan: 'off'}
+          - {arm: ER, shard: 4, mode: minimal, variant: rebuilt, asan: 'off'}
+          - {arm: EP, shard: 1, mode: minimal, variant: patched, asan: 'off'}
+          - {arm: EP, shard: 2, mode: minimal, variant: patched, asan: 'off'}
+          - {arm: EP, shard: 3, mode: minimal, variant: patched, asan: 'off'}
+          - {arm: EP, shard: 4, mode: minimal, variant: patched, asan: 'off'}
+          - {arm: EAR, shard: 1, mode: minimal, variant: rebuilt-asan, asan: 'on'}
+          - {arm: EAR, shard: 2, mode: minimal, variant: rebuilt-asan, asan: 'on'}
+          - {arm: EAP, shard: 1, mode: minimal, variant: patched-asan, asan: 'on'}
+          - {arm: EAP, shard: 2, mode: minimal, variant: patched-asan, asan: 'on'}
+          - {arm: BR, shard: 1, mode: fleet, variant: rebuilt, asan: 'off'}
+          - {arm: BR, shard: 2, mode: fleet, variant: rebuilt, asan: 'off'}
+          - {arm: BR, shard: 3, mode: fleet, variant: rebuilt, asan: 'off'}
+          - {arm: BP, shard: 1, mode: fleet, variant: patched, asan: 'off'}
+          - {arm: BP, shard: 2, mode: fleet, variant: patched, asan: 'off'}
+          - {arm: BP, shard: 3, mode: fleet, variant: patched, asan: 'off'}
     env:
-      BASE_SHA: ${{ matrix.base }}
       DIAG_LABEL: ${{ matrix.arm }}-${{ matrix.shard }}
       DIAG_MODE: ${{ matrix.mode }}
-      DIAG_SHIM: ${{ matrix.shim }}
-      DIAG_CONTROL: ${{ matrix.control }}
-      DIAG_UPGRADE: ${{ matrix.upgrade }}
+      DIAG_VARIANT: ${{ matrix.variant }}
+      DIAG_ASAN: ${{ matrix.asan }}
     steps:
       - uses: actions/checkout@v6
         with:
           path: diag
       - uses: actions/checkout@v6
         with:
-          ref: ${{ matrix.base }}
+          ref: ${{ env.V172_SHA }}
           path: src
       - name: Overlay the diagnostic tools on the base revision
         run: |
@@ -134,9 +168,10 @@ jobs:
               cp "diag/tests/$file" "src/tests/$file"
             done
             sha256sum src/tests/diag_fleet_cpp_repro.py src/tests/diag_gdb_inspect.py \
-              src/tests/segv_backtrace.c src/tests/check_generated_fleet.py \
-              src/tests/smoke_test_nodes.py src/scripts/create_package.py \
-              src/scripts/launch_supervisor.py src/tests/Dockerfile.ros2-test
+              src/tests/check_generated_fleet.py src/tests/smoke_test_nodes.py \
+              src/scripts/create_package.py src/scripts/launch_supervisor.py \
+              src/tests/Dockerfile.ros2-test diag/tests/Dockerfile.diag-core \
+              diag/tests/diag_fastdds_listener_race.patch diag/tests/diag_fastdds_build.sh
             git -C src status --porcelain
           } | tee "$EVIDENCE/identity/source.txt"
       - name: Write kernel cores to a fixed host directory
@@ -148,25 +183,49 @@ jobs:
           cat /proc/sys/kernel/core_pattern | tee "$EVIDENCE/identity/host-core-pattern.txt"
           test "$(cat /proc/sys/kernel/core_pattern)" = "$CORE_PATTERN"
           { nproc; lscpu; free -m; uname -a; } > "$EVIDENCE/identity/runner.txt"
-      - name: Build the base CI image and the diagnostic layer
+      - name: Fetch this arm's Fast DDS build
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          mkdir -p diag/tests/fastdds-debs
+          if [ "$DIAG_VARIANT" = stock ]; then
+            echo "$STOCK_LIB_SHA256" > "$RUNNER_TEMP/expected-lib.sha256"
+          else
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "fastdds-$DIAG_VARIANT" --dir "$RUNNER_TEMP/fastdds"
+            cp "$RUNNER_TEMP/fastdds/ros-humble-fastrtps.deb" "$RUNNER_TEMP/fastdds/ros-humble-fastrtps-dbgsym.deb" \
+              diag/tests/fastdds-debs/
+            cp "$RUNNER_TEMP/fastdds/checks.txt" "$EVIDENCE/identity/fastdds-build-checks.txt"
+            grep -qx 'status=pass' "$RUNNER_TEMP/fastdds/checks.txt"
+            sed -n 's/^library_sha256=//p' "$RUNNER_TEMP/fastdds/checks.txt" > "$RUNNER_TEMP/expected-lib.sha256"
+          fi
+          cat "$RUNNER_TEMP/expected-lib.sha256" | tee "$EVIDENCE/identity/expected-fastdds-lib.sha256"
+      - name: Build the CI image on the pinned base, then the diagnostic layer
+        run: |
+          docker pull "$BASE_IMAGE"
+          docker tag "$BASE_IMAGE" osrf/ros:humble-desktop
           timeout --signal=TERM --kill-after=10s 20m docker buildx build --load --progress=plain \
             -f src/tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-ci:humble src \
             > "$EVIDENCE/identity/build-ci.log" 2>&1 || { tail -100 "$EVIDENCE/identity/build-ci.log"; exit 1; }
+          docker image inspect osrf/ros:humble-desktop --format '{{json .RepoDigests}}' \
+            | tee "$EVIDENCE/identity/base-image.txt" | grep -q "$BASE_DIGEST"
           timeout --signal=TERM --kill-after=10s 25m docker build --progress=plain \
-            -f diag/tests/Dockerfile.diag-core --build-arg BASE=ros2-ci:humble \
-            --build-arg UPGRADE="$DIAG_UPGRADE" -t ros2-diag:humble diag/tests \
+            -f diag/tests/Dockerfile.diag-core --build-arg BASE=ros2-ci:humble --build-arg UPGRADE=none \
+            --build-arg FASTDDS_VARIANT="$DIAG_VARIANT" -t ros2-diag:humble diag/tests \
             > "$EVIDENCE/identity/build-diag.log" 2>&1 || { tail -100 "$EVIDENCE/identity/build-diag.log"; exit 1; }
-          docker image inspect osrf/ros:humble-desktop ros2-ci:humble ros2-diag:humble \
-            --format '{{.Id}} {{json .RepoTags}} {{json .RepoDigests}}' | tee "$EVIDENCE/identity/images.txt"
+          docker image inspect ros2-ci:humble ros2-diag:humble \
+            --format '{{.Id}} {{json .RepoTags}}' | tee "$EVIDENCE/identity/images.txt"
+          installed="$(docker run --rm ros2-diag:humble cat /opt/diag/fastdds-lib.sha256)"
+          echo "installed=$installed" | tee -a "$EVIDENCE/identity/expected-fastdds-lib.sha256"
+          test "$installed" = "$(cat "$RUNNER_TEMP/expected-lib.sha256")"
       - name: Repeat the arm for a 30-minute iteration budget
         run: |
           timeout --signal=TERM --kill-after=30s 45m docker run --rm --init --network none \
             -e ROS_DOMAIN_ID=83 -e ROS_LOCALHOST_ONLY=1 --ulimit core=-1 \
-            -e GITHUB_SHA -e BASE_SHA -e DIAG_LABEL -e DIAG_MODE -e DIAG_SHIM -e DIAG_CONTROL \
+            -e GITHUB_SHA -e BASE_SHA="$V172_SHA" -e DIAG_LABEL -e DIAG_MODE -e DIAG_ASAN \
             -v /var/crash-cores:/var/crash-cores -v "$EVIDENCE:/evidence" ros2-diag:humble \
             bash -c 'source /opt/ros/humble/setup.bash && exec python3 tests/diag_fleet_cpp_repro.py \
-              --minutes 30 --mode "$DIAG_MODE" --shim "$DIAG_SHIM" --control-main "$DIAG_CONTROL" \
+              --minutes 30 --mode "$DIAG_MODE" --shim off --control-main off --asan "$DIAG_ASAN" \
               --label "$DIAG_LABEL"'
       - name: Record cores left on the host
         if: always()
