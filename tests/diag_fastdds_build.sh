@@ -83,8 +83,11 @@ dpkg -i "$out/ros-humble-fastrtps.deb" "$out/ros-humble-fastrtps-dbgsym.deb"
 lib=/opt/ros/humble/lib/libfastrtps.so.2.6.12
 check installed_version "$(dpkg-query -W -f='${Version}' ros-humble-fastrtps)"
 check library_sha256 "$(sha256sum "$lib" | cut -d' ' -f1)"
-check needs_libasan "$(readelf -d "$lib" | grep -q 'libasan.so' && echo yes || echo no)"
-check asan_instrumented "$(nm -D --undefined-only "$lib" | grep -q '__asan_report' && echo yes || echo no)"
+# Capture before grepping: under pipefail, grep -q closing a large pipe early reads as "no".
+dynamic=$(readelf -d "$lib")
+undefined=$(nm -D --undefined-only "$lib")
+check needs_libasan "$(grep -q 'libasan.so' <<< "$dynamic" && echo yes || echo no)"
+check asan_instrumented "$(grep -q '__asan_report' <<< "$undefined" && echo yes || echo no)"
 gate=$(gdb -batch -nx -ex 'info functions listener_gate::replace' "$lib" 2>&1)
 # gdb echoes the pattern in its header line; only a listed function has the parameter list.
 check gate_symbols "$(grep -q 'listener_gate::replace(' <<< "$gate" && echo yes || echo no)"

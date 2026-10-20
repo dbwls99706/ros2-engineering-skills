@@ -43,7 +43,8 @@ jobs:
             -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-ci:humble . \
             > "$EVIDENCE/stage0/build-ci.log" 2>&1 || { tail -100 "$EVIDENCE/stage0/build-ci.log"; exit 1; }
           docker image inspect osrf/ros:humble-desktop --format '{{json .RepoDigests}}' \
-            | tee "$EVIDENCE/stage0/base-image.txt" | grep -q "$BASE_DIGEST"
+            > "$EVIDENCE/stage0/base-image.txt"
+          grep -q "$BASE_DIGEST" "$EVIDENCE/stage0/base-image.txt"
           timeout --signal=TERM --kill-after=10s 20m docker build --progress=plain \
             -f tests/Dockerfile.diag-core --build-arg BASE=ros2-ci:humble --build-arg UPGRADE=none \
             --build-arg FASTDDS_VARIANT=stock -t ros2-diag:humble tests \
@@ -208,7 +209,8 @@ jobs:
             -f src/tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-ci:humble src \
             > "$EVIDENCE/identity/build-ci.log" 2>&1 || { tail -100 "$EVIDENCE/identity/build-ci.log"; exit 1; }
           docker image inspect osrf/ros:humble-desktop --format '{{json .RepoDigests}}' \
-            | tee "$EVIDENCE/identity/base-image.txt" | grep -q "$BASE_DIGEST"
+            > "$EVIDENCE/identity/base-image.txt"
+          grep -q "$BASE_DIGEST" "$EVIDENCE/identity/base-image.txt"
           timeout --signal=TERM --kill-after=10s 25m docker build --progress=plain \
             -f diag/tests/Dockerfile.diag-core --build-arg BASE=ros2-ci:humble --build-arg UPGRADE=none \
             --build-arg FASTDDS_VARIANT="$DIAG_VARIANT" -t ros2-diag:humble diag/tests \
