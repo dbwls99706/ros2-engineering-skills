@@ -86,7 +86,8 @@ check library_sha256 "$(sha256sum "$lib" | cut -d' ' -f1)"
 check needs_libasan "$(readelf -d "$lib" | grep -q 'libasan.so' && echo yes || echo no)"
 check asan_instrumented "$(nm -D --undefined-only "$lib" | grep -q '__asan_report' && echo yes || echo no)"
 gate=$(gdb -batch -nx -ex 'info functions listener_gate::replace' "$lib" 2>&1)
-check gate_symbols "$(grep -q 'listener_gate::replace' <<< "$gate" && echo yes || echo no)"
+# gdb echoes the pattern in its header line; only a listed function has the parameter list.
+check gate_symbols "$(grep -q 'listener_gate::replace(' <<< "$gate" && echo yes || echo no)"
 line=$(gdb -batch -nx -ex 'info line eprosima::fastrtps::rtps::StatefulReader::matched_writer_remove' "$lib" 2>&1)
 echo "$line" > "$out/gdb-info-line.txt"
 check debug_line "$(grep -qE '^Line [0-9]+ of "[^"]*StatefulReader\.cpp"' <<< "$line" && echo yes || echo no)"
