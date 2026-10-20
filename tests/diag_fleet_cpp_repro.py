@@ -96,9 +96,12 @@ rclpy.spin_once(node, timeout_sec=1.0)
 node.destroy_node()
 rclpy.shutdown()
 """
+# Same filter as process_objects().
 PROBE_MAPS = """import json
-print('OBJECTS=' + json.dumps(sorted({fields[5] for fields in (line.split(None, 5)
-                                      for line in open('/proc/self/maps')) if len(fields) == 6})))
+lines = open('/proc/self/maps').read().splitlines()
+print('OBJECTS=' + json.dumps(sorted({fields[5] for fields in (line.split(None, 5) for line in lines)
+                                      if len(fields) == 6 and fields[5].startswith('/')
+                                      and '.so' in fields[5]})))
 """
 
 MINIMAL_LAUNCH = """# Diagnostic minimal mode: two plain demo nodes, no lifecycle, no generated code.
