@@ -1,11 +1,10 @@
 name: Diagnostic C++ fleet shutdown
 
-# Temporary, diagnostic-branch only (r5 ASan rerun). The main r5 run (1d1b6ab, run 39362909806)
-# rebuilt Fast DDS in four variants and ran all 20 arms; its 16 non-ASan arms stand as they are.
-# This revision reruns only the four ASan arms on the same build artifacts (BUILD_RUN_ID, checked
-# by checks.txt and the library sha256), with ASan on the nodes only and a startup probe that
-# decides whether the 30-minute arm runs. Stage 0 proves core capture again; every image is built
-# on the base image digest used in r4.
+# Temporary, diagnostic-branch only (B2). Compares the unchanged rebuild of Fast DDS 2.6.12 with
+# the same source plus the upstream listener fixes backported to 2.6.x (#2857, #2898, #6371).
+# Control and backport are rebuilt together in this run; r5 artifacts are not reused. ASan arms run
+# ASan on the nodes only, behind the startup probe from the r5 rerun (6dab6a4). Stage 0 proves core
+# capture again; every image is built on the base image digest used in r4.
 on:
   push:
     branches: ['diag/**']
@@ -19,7 +18,6 @@ env:
   BASE_DIGEST: sha256:fb07245b32187d74350be25323d8ad2f8ca5c25c325759911a1eff2267a49c1e
   STOCK_LIB_SHA256: 148cd881ab04a1ffeb27c15ebd5f7a08d4e3fe02d203582e812d3464a9c17b09
   V172_SHA: 3ac5064df47decd7776ed03c7350b2ac1435cb5f
-  BUILD_RUN_ID: '39362909806'
 
 jobs:
   core-pipeline:
@@ -85,8 +83,32 @@ jobs:
             --name stage0-core-pipeline --dir "$RUNNER_TEMP/downloaded"
           python3 tests/diag_core_check.py "$RUNNER_TEMP/downloaded/stage0"
 
+  fastdds-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [rebuilt, backport, rebuilt-asan, backport-asan]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Rebuild Fast DDS 2.6.12 from the installed source package
+        run: |
+          mkdir -p "$RUNNER_TEMP/fastdds"
+          timeout --signal=TERM --kill-after=30s 140m docker run --rm \
+            -v "$GITHUB_WORKSPACE/tests:/diag:ro" -v "$RUNNER_TEMP/fastdds:/out" "$BASE_IMAGE" \
+            bash /diag/diag_fastdds_build.sh "${{ matrix.variant }}" /out
+      - name: Retain the build and its checks
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fastdds-${{ matrix.variant }}
+          path: ${{ runner.temp }}/fastdds/
+          if-no-files-found: error
+          retention-days: 14
+
   compare:
-    needs: core-pipeline-verify
+    needs: [core-pipeline-verify, fastdds-build]
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
@@ -94,15 +116,23 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 12
       matrix:
-        # E: demo talker + listener, same harness and 30-minute iteration budget as r4. ASan arms
-        # are auxiliary and excluded from rate tests.
+        # E: demo talker + listener, same harness and 30-minute iteration budget as r4 and r5. ASan
+        # arms are auxiliary and excluded from rate tests.
         include:
+          - {arm: ER, shard: 1, mode: minimal, variant: rebuilt, asan: 'off'}
+          - {arm: ER, shard: 2, mode: minimal, variant: rebuilt, asan: 'off'}
+          - {arm: ER, shard: 3, mode: minimal, variant: rebuilt, asan: 'off'}
+          - {arm: ER, shard: 4, mode: minimal, variant: rebuilt, asan: 'off'}
+          - {arm: EB, shard: 1, mode: minimal, variant: backport, asan: 'off'}
+          - {arm: EB, shard: 2, mode: minimal, variant: backport, asan: 'off'}
+          - {arm: EB, shard: 3, mode: minimal, variant: backport, asan: 'off'}
+          - {arm: EB, shard: 4, mode: minimal, variant: backport, asan: 'off'}
           - {arm: EAR, shard: 1, mode: minimal, variant: rebuilt-asan, asan: 'on'}
           - {arm: EAR, shard: 2, mode: minimal, variant: rebuilt-asan, asan: 'on'}
-          - {arm: EAP, shard: 1, mode: minimal, variant: patched-asan, asan: 'on'}
-          - {arm: EAP, shard: 2, mode: minimal, variant: patched-asan, asan: 'on'}
+          - {arm: EAB, shard: 1, mode: minimal, variant: backport-asan, asan: 'on'}
+          - {arm: EAB, shard: 2, mode: minimal, variant: backport-asan, asan: 'on'}
     env:
       DIAG_LABEL: ${{ matrix.arm }}-${{ matrix.shard }}
       DIAG_MODE: ${{ matrix.mode }}
@@ -136,7 +166,8 @@ jobs:
               src/tests/check_generated_fleet.py src/tests/smoke_test_nodes.py \
               src/scripts/create_package.py src/scripts/launch_supervisor.py \
               src/tests/Dockerfile.ros2-test diag/tests/Dockerfile.diag-core \
-              diag/tests/diag_fastdds_listener_race.patch diag/tests/diag_fastdds_build.sh
+              diag/tests/diag_fastdds_listener_race.patch diag/tests/diag_fastdds_backport.patch \
+              diag/tests/diag_fastdds_build.sh
             git -C src status --porcelain
           } | tee "$EVIDENCE/identity/source.txt"
       - name: Write kernel cores to a fixed host directory
@@ -156,7 +187,7 @@ jobs:
           if [ "$DIAG_VARIANT" = stock ]; then
             echo "$STOCK_LIB_SHA256" > "$RUNNER_TEMP/expected-lib.sha256"
           else
-            gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
               --name "fastdds-$DIAG_VARIANT" --dir "$RUNNER_TEMP/fastdds"
             cp "$RUNNER_TEMP/fastdds/ros-humble-fastrtps.deb" "$RUNNER_TEMP/fastdds/ros-humble-fastrtps-dbgsym.deb" \
               diag/tests/fastdds-debs/
@@ -191,6 +222,7 @@ jobs:
           fi
       - name: Probe talker and listener once under ASan
         id: probe
+        if: matrix.asan == 'on'
         run: |
           code=0
           timeout --signal=TERM --kill-after=30s 10m docker run --rm --init --network none \
@@ -203,7 +235,9 @@ jobs:
           echo "probe exit $code, verdict ${verdict:-none}"
           echo "verdict=${verdict:-setup-invalid}" >> "$GITHUB_OUTPUT"
       - name: Repeat the arm for a 30-minute iteration budget
-        if: steps.probe.outputs.verdict == 'clean' || steps.probe.outputs.verdict == 'clean-known-race'
+        if: >-
+          matrix.asan == 'off' || steps.probe.outputs.verdict == 'clean'
+          || steps.probe.outputs.verdict == 'clean-known-race'
         run: |
           timeout --signal=TERM --kill-after=30s 45m docker run --rm --init --network none \
             -e ROS_DOMAIN_ID=83 -e ROS_LOCALHOST_ONLY=1 --ulimit core=-1 \
@@ -217,7 +251,7 @@ jobs:
         run: |
           cat /proc/sys/kernel/core_pattern > "$EVIDENCE/identity/host-core-pattern-after.txt" || true
           sudo ls -la /var/crash-cores > "$EVIDENCE/identity/host-cores-after.txt" 2>&1 || true
-          # The containers write as root; run 39362909806 could not read its ASan reports (EACCES).
+          # The containers write as root; r5 run 39362909806 could not read its ASan reports (EACCES).
           sudo chown -R "$(id -u):$(id -g)" "$EVIDENCE"
           for report in "$EVIDENCE"/asan-probe/python.* "$EVIDENCE"/asan-probe/node.* "$EVIDENCE"/asan/asan.*; do
             [ -f "$report" ] || continue
@@ -234,7 +268,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Fail when the probe stopped the arm
-        if: always()
+        if: always() && matrix.asan == 'on'
         env:
           VERDICT: ${{ steps.probe.outputs.verdict }}
         run: |

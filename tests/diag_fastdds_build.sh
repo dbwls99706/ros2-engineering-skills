@@ -4,8 +4,10 @@
 #
 #   rebuilt        same source, packaging, and flags as the buildfarm; no change (control)
 #   patched        + tests/diag_fastdds_listener_race.patch (reader listener gate)
+#   backport       + tests/diag_fastdds_backport.patch (upstream #2857, #2898, #6371 on 2.6.12)
 #   rebuilt-asan   rebuilt + AddressSanitizer
 #   patched-asan   patched + AddressSanitizer
+#   backport-asan  backport + AddressSanitizer
 #
 # Writes the .deb and the debug-symbol package to OUT, plus checks.txt with every self-check.
 set -euo pipefail
@@ -16,7 +18,7 @@ pool=http://packages.ros.org/ros2/ubuntu/pool/main/r/ros-humble-fastrtps
 source_version=2.6.12-1jammy
 binary_version=2.6.12-1jammy.20260723.233918
 case "$variant" in
-  rebuilt|patched|rebuilt-asan|patched-asan) ;;
+  rebuilt|patched|backport|rebuilt-asan|patched-asan|backport-asan) ;;
   *) echo "Unknown variant: $variant" >&2; exit 2 ;;
 esac
 suffix="+diag.${variant//-/.}"
@@ -54,9 +56,16 @@ head -1 debian/changelog | tee -a "$checks"
 if [[ "$variant" == patched* ]]; then
     patch -p1 < "$here/diag_fastdds_listener_race.patch"
 fi
+if [[ "$variant" == backport* ]]; then
+    patch -p1 < "$here/diag_fastdds_backport.patch"
+fi
 gated=$(grep -c "listener_gate::with_listener" src/cpp/rtps/reader/StatefulReader.cpp || true)
+backported=$(grep -c "matching_info_mutex_" src/cpp/fastdds/subscriber/DataReaderImpl.hpp || true)
 check patch_applied "$([[ $gated -gt 0 ]] && echo yes || echo no)"
-if [[ "$variant" == patched* && $gated -eq 0 ]] || [[ "$variant" == rebuilt* && $gated -ne 0 ]]; then
+check backport_applied "$([[ $backported -gt 0 ]] && echo yes || echo no)"
+if [[ "$variant" == patched* && ( $gated -eq 0 || $backported -ne 0 ) ]] \
+        || [[ "$variant" == backport* && ( $backported -eq 0 || $gated -ne 0 ) ]] \
+        || [[ "$variant" == rebuilt* && ( $gated -ne 0 || $backported -ne 0 ) ]]; then
     echo "Patch state does not match variant $variant" >&2
     exit 1
 fi
@@ -91,6 +100,9 @@ check asan_instrumented "$(grep -q '__asan_report' <<< "$undefined" && echo yes 
 gate=$(gdb -batch -nx -ex 'info functions listener_gate::replace' "$lib" 2>&1)
 # gdb echoes the pattern in its header line; only a listed function has the parameter list.
 check gate_symbols "$(grep -q 'listener_gate::replace(' <<< "$gate" && echo yes || echo no)"
+# The type name must be quoted for gdb to resolve it; #2898 adds DataReaderImpl::listener_mutex_.
+reader_type=$(gdb -batch -nx -ex "ptype 'eprosima::fastdds::dds::DataReaderImpl'" "$lib" 2>&1)
+check backport_members "$(grep -q 'listener_mutex_;' <<< "$reader_type" && echo yes || echo no)"
 line=$(gdb -batch -nx -ex 'info line eprosima::fastrtps::rtps::StatefulReader::matched_writer_remove' "$lib" 2>&1)
 echo "$line" > "$out/gdb-info-line.txt"
 check debug_line "$(grep -qE '^Line [0-9]+ of "[^"]*StatefulReader\.cpp"' <<< "$line" && echo yes || echo no)"
@@ -100,11 +112,14 @@ expect_asan=no
 [[ "$variant" == *asan ]] && expect_asan=yes
 expect_gate=no
 [[ "$variant" == patched* ]] && expect_gate=yes
+expect_backport=no
+[[ "$variant" == backport* ]] && expect_backport=yes
 status=pass
 grep -qx "flags_have_asan=$expect_asan" "$checks" || status=fail
 grep -qx "needs_libasan=$expect_asan" "$checks" || status=fail
 grep -qx "asan_instrumented=$expect_asan" "$checks" || status=fail
 grep -qx "gate_symbols=$expect_gate" "$checks" || status=fail
+grep -qx "backport_members=$expect_backport" "$checks" || status=fail
 grep -qx "debug_line=yes" "$checks" || status=fail
 grep -qx "installed_version=${binary_version}${suffix}" "$checks" || status=fail
 check status "$status"
