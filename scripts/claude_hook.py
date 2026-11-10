@@ -121,9 +121,10 @@ def actuation_mode():
 def needs_confirmation(report):
     """Structured decision for "ask" mode, read from the report, not its text.
 
-    A high-confidence actuation finding asks. So does a command that names
-    ros2 but could not be evaluated: an unread command is not a safe one.
-    Low-confidence findings stay advisory in every mode.
+    A high-confidence actuation finding asks. So does any part of the command
+    that could not be evaluated, even beside a low-confidence finding: an
+    unread command is not a safe one. A low-confidence finding with nothing
+    unread stays advisory in every mode.
     """
     actuation = report.get('actuation')
     if actuation is None:
@@ -133,7 +134,7 @@ def needs_confirmation(report):
             or actuation.get('confidence') not in (None, 'high', 'low')
             or not isinstance(actuation.get('reasons'), list)):
         raise ValueError('validator report has an invalid actuation result')
-    return (actuation['status'] == 'not_evaluated'
+    return (actuation['status'] == 'not_evaluated' or bool(actuation['reasons'])
             or (actuation['status'] == 'detected' and actuation['confidence'] == 'high'))
 
 
