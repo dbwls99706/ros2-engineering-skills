@@ -445,7 +445,10 @@ def test_ask_mode_requests_confirmation_and_never_grants(command):
     output = json.loads(result.stdout)['hookSpecificOutput']
     assert output['permissionDecision'] == 'ask'
     assert 'not a safety function' in output['permissionDecisionReason']
-    assert set(output) == {'hookEventName', 'permissionDecision', 'permissionDecisionReason'}
+    assert set(output) == {'hookEventName', 'permissionDecision',
+                           'permissionDecisionReason', 'additionalContext'}
+    assert output['additionalContext'].endswith(
+        output['permissionDecisionReason'].split('\n', 1)[1])
     assert 'allow' not in result.stdout
 
 
