@@ -209,7 +209,7 @@ command that can move hardware is surfaced by the plugin hook: `advise`
 | `bypassPermissions` / `dontAsk` | Not stated in the reviewed sections | Not yet recorded |
 | Another hook returns `deny` | `deny` > `defer` > `ask` > `allow` | Not yet recorded |
 | Destructive command in the same call | This hook exits 2, which blocks | Adapter test only |
-| Command the analysis cannot read | This hook asks instead of passing | Adapter test only |
+| Command, or part of one, the analysis cannot read | This hook asks instead of passing, also beside a low-confidence finding | Adapter test only |
 | Hook fails or times out | The tool call proceeds; `onFailure: "block"` (Claude Code 2.1.295+) is not set by this plugin | Not yet recorded |
 
 Record the client version with each observation before describing `ask` as

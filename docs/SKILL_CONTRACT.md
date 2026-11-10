@@ -93,20 +93,36 @@ from that field, not from message text. Tutorial interfaces (`turtlesim`,
 This is advice, not a safety function. It matches names, so a renamed topic, an
 alias, or a script that publishes is not seen, and a command without the literal
 text `ros2` is not analyzed at all. It reads POSIX shell syntax only: separators,
-quoting, command substitution, wrappers such as `sudo` and `timeout`, and strings
-handed to `bash -c` (including `-lc` and `--login -c`), `ssh`, `docker exec`,
-`su -c`, a literal `eval`, and `tmux`/`watch`. A here-document is a script when
-it feeds a shell; otherwise only its `$(...)` runs, and only when the delimiter
-is unquoted. Syntax outside that set — unbalanced quoting, a variable as the
-command name, commands piped into a shell, non-literal `ros2` arguments,
-PowerShell and `cmd` — is listed in `checks_skipped` as `actuation: <reason>`
-and never counted as clean.
+quoting, command substitution, leading assignments (whose values may be dynamic),
+wrappers such as `sudo` and `timeout`, and strings handed to `bash -c` (including
+`-lc` and `--login -c`), `ssh`, `su -c`, `eval`, `watch`, and the `tmux`
+subcommands that type or run a command. A here-document is a script when it feeds
+a shell; otherwise only its `$(...)` runs, and only when the delimiter is unquoted.
+
+For `docker`/`podman` `exec` and `run` (and compose), `kubectl exec ... --`,
+`xargs`, and `find -exec`, the program that actually runs is located from that
+tool's own option table, so `docker exec nav echo ros2 topic pub ...` is data and
+`docker run --read-only img ros2 topic pub ...` is a command. An option outside
+the table is not guessed at: whether it takes a value is unknown, so the command
+position is too.
+
+The literal part of a `ros2` command is classified first — `/$NS/cmd_vel` and
+`ROS_DOMAIN_ID=$ID ros2 topic pub /cmd_vel ...` are still findings. What cannot be
+judged is listed in `checks_skipped` as `actuation: <reason>` and never counted as
+clean: unbalanced quoting, a command name that is a variable or substitution
+(which covers `bash -c "$CMD"` and `ssh host "$CMD"`), an `eval` with a dynamic
+part (reported alongside any finding from its literal part), commands piped into
+a shell, a `ros2` target that is not literal and matches no known pattern, an
+unrecognized option of the tools above, `kubectl exec` without `--`, the
+arguments of `parallel`, `script`, `flock`, `chroot`, and `screen`, PowerShell,
+and `cmd`. An unrelated dynamic command in the same call, such as
+`eval "$(ssh-agent -s)"` before a `ros2` command, is reported as unread as well.
 
 `ROS2_SKILL_ACTUATION` selects the delivery: `advise` (default) adds context
 for the model and leaves the permission flow alone; `ask` requests the user's
-confirmation for high-confidence findings and for commands the analysis could
-not read, while low-confidence findings stay advisory; `off` disables the
-analysis. `ask` never grants a permission, a destructive-command block still
+confirmation for high-confidence findings and whenever part of the command could
+not be read, even beside a low-confidence finding, while a low-confidence finding
+with nothing unread stays advisory; `off` disables the analysis. `ask` never grants a permission, a destructive-command block still
 wins, and if the hook itself fails or times out the client proceeds without
 asking. See [client compatibility](CLIENT_COMPATIBILITY.md#actuation-commands)
 for what has and has not been observed in a real client.

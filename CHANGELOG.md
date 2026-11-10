@@ -47,15 +47,28 @@ Hooks:
 - The analysis reads commands with a quote-aware scanner instead of the regex
   prefix used for destructive commands, so `grep "ros2 topic pub /cmd_vel"`, a
   commit message, and a single-quoted `$(...)` are data, while `"$(...)"`,
-  `bash -lc '...'`, `ssh host '...'`, `docker exec ...`, a here-document fed to
-  a shell, and `$(...)` inside an unquoted here-document are commands. Syntax it
-  does not interpret is listed in `checks_skipped` as `actuation: <reason>`
-  rather than treated as clean. It is name-based, POSIX-shell only, ignores any
-  command without the literal text `ros2`, and is not a safety function.
+  `bash -lc '...'`, `ssh host '...'`, a here-document fed to a shell, and
+  `$(...)` inside an unquoted here-document are commands. Syntax it does not
+  interpret is listed in `checks_skipped` as `actuation: <reason>` rather than
+  treated as clean. It is name-based, POSIX-shell only, ignores any command
+  without the literal text `ros2`, and is not a safety function.
+- For `docker`/`podman` `exec` and `run` (and compose), `kubectl exec ... --`,
+  `xargs`, and `find -exec`, the executed program is located from the tool's own
+  option table: `docker exec nav echo ros2 ...` is data,
+  `docker run --read-only img ros2 topic pub ...` is a command, and an option
+  outside the table is reported as unread instead of guessed at.
+- A leading assignment with a dynamic value (`ROS_DOMAIN_ID=$ID ros2 ...`) does
+  not hide the program. A command name that is itself a variable or
+  substitution is unread, which covers `bash -c "$CMD"`, `ssh host "$CMD"`, and
+  `tmux send-keys "$CMD"`. An `eval` with a dynamic part reports the finding
+  from its literal text and is marked unread as well. The literal part of a
+  `ros2` target is classified first; a target that is not literal and matches
+  no pattern is unread.
 - `ROS2_SKILL_ACTUATION` selects the delivery: `advise` (default) adds context
   for the model; `ask` makes the Claude adapter return
-  `permissionDecision: "ask"` for high-confidence findings and for commands the
-  analysis could not read; `off` disables the analysis. The adapter decides from
+  `permissionDecision: "ask"` for high-confidence findings and whenever part of
+  the command could not be read, also beside a low-confidence finding; `off`
+  disables the analysis. The adapter decides from
   the report's structured `actuation` field and never returns `allow`. A
   destructive-command block still takes precedence. `ask` is experimental: see
   the table in `docs/CLIENT_COMPATIBILITY.md` for what the hooks reference
@@ -98,7 +111,7 @@ References and sources:
   Cursor, and Gemini skill pages, the Humble QoS page) were not reread and remain
   due on 2026-12-06.
 
-Tests: 2,091 Python tests pass locally on Python 3.13 (1,833 before), with
+Tests: 2,185 Python tests pass locally on Python 3.13 (1,833 before), with
 `skill_validate_hook.py` at 97%, `skill_stop_hook.py` at 93%, `claude_hook.py`
 at 98%, and `validate_skill.py` at 96% line coverage. Existing event-mode tests
 that expected advice for a file without ROS context now supply that context and
