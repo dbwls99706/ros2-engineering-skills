@@ -71,9 +71,45 @@ shell command nor grants permission with `permissionDecision: allow`.
 | PreToolUse, clean | JSON object, exit 0; ordinary host permission checks remain |
 | PreToolUse, warning | `hookSpecificOutput.additionalContext`, exit 0 |
 | PreToolUse, dangerous literal command | Exit 2, explanation on stderr, no stdout JSON |
+| PreToolUse, command that can move hardware | Warning in `additionalContext`, exit 0; never a block |
+| The same, with `ROS2_SKILL_ACTUATION=ask` | `permissionDecision: "ask"` with the reason, plus the same context; never `allow` |
+| PreToolUse, `ros2` command the analysis cannot read | `Skipped:` line in the context; in `ask` mode, a confirmation request |
 | Stop, findings | User-facing `systemMessage`, exit 0; never a stop block |
 | Repeated Stop | Advisory skip; does not rescan indefinitely |
 | Invalid payload, timeout, malformed child output | Explicit skipped advisory, not a pass |
+
+### Commands that can move hardware
+
+The PreToolUse validator reports `ros2` commands that publish a velocity or
+trajectory, send a navigation or manipulation goal, switch a controller or a
+hardware component state, call a stop-path or drive-enable service, change a
+limit or timeout parameter, or start a teleoperation node. Each finding is a
+warning with `category: actuation` and `confidence: high` or `low`; the report
+also carries `actuation: {status, confidence, reasons}`, and the adapter decides
+from that field, not from message text. Tutorial interfaces (`turtlesim`,
+`example_interfaces`, `action_tutorials_interfaces`), `ros2 launch`, and
+`ros2 bag play` are outside the check.
+
+This is advice, not a safety function. It matches names, so a renamed topic, an
+alias, or a script that publishes is not seen, and a command without the literal
+text `ros2` is not analyzed at all. It reads POSIX shell syntax only: separators,
+quoting, command substitution, wrappers such as `sudo` and `timeout`, and strings
+handed to `bash -c` (including `-lc` and `--login -c`), `ssh`, `docker exec`,
+`su -c`, a literal `eval`, and `tmux`/`watch`. A here-document is a script when
+it feeds a shell; otherwise only its `$(...)` runs, and only when the delimiter
+is unquoted. Syntax outside that set — unbalanced quoting, a variable as the
+command name, commands piped into a shell, non-literal `ros2` arguments,
+PowerShell and `cmd` — is listed in `checks_skipped` as `actuation: <reason>`
+and never counted as clean.
+
+`ROS2_SKILL_ACTUATION` selects the delivery: `advise` (default) adds context
+for the model and leaves the permission flow alone; `ask` requests the user's
+confirmation for high-confidence findings and for commands the analysis could
+not read, while low-confidence findings stay advisory; `off` disables the
+analysis. `ask` never grants a permission, a destructive-command block still
+wins, and if the hook itself fails or times out the client proceeds without
+asking. See [client compatibility](CLIENT_COMPATIBILITY.md#actuation-commands)
+for what has and has not been observed in a real client.
 
 Stop does not use `additionalContext`: on newer clients that field can continue
 the conversation. Legacy manual CLIs retain their reports and exit codes. These

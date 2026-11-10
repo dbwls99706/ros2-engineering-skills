@@ -192,6 +192,31 @@ model runs for all clients are a separate evidence requirement; see
 [EVIDENCE_CAPTURE.md](EVIDENCE_CAPTURE.md). No cross-client model benchmark is
 claimed merely because these package and protocol tests pass.
 
+## Actuation commands
+
+Set `ROS2_SKILL_ACTUATION` in the client environment to choose how a `ros2`
+command that can move hardware is surfaced by the plugin hook: `advise`
+(default), `ask`, or `off`. The detection rules and their limits are in the
+[skill contract](SKILL_CONTRACT.md#commands-that-can-move-hardware).
+
+`ask` is an experimental option. What the Claude Code hooks reference states
+(reviewed 2026-11-10) and what has been observed are different things:
+
+| Situation | Documented behavior | Observed in a real client |
+|---|---|---|
+| Interactive session | `"ask"` prompts the user to confirm; the reason is shown in the prompt | Not yet recorded |
+| `-p` run with nobody to answer | The call is denied and the model reads the reason | Not yet recorded |
+| `bypassPermissions` / `dontAsk` | Not stated in the reviewed sections | Not yet recorded |
+| Another hook returns `deny` | `deny` > `defer` > `ask` > `allow` | Not yet recorded |
+| Destructive command in the same call | This hook exits 2, which blocks | Adapter test only |
+| Command the analysis cannot read | This hook asks instead of passing | Adapter test only |
+| Hook fails or times out | The tool call proceeds; `onFailure: "block"` (Claude Code 2.1.295+) is not set by this plugin | Not yet recorded |
+
+Record the client version with each observation before describing `ask` as
+verified. Until the first row is observed, treat `ask` as untested in a client:
+the adapter's output is covered by tests, the prompt itself is not. Neither mode
+replaces an operator, a hardware stop, or the client's own permission settings.
+
 ## Automated discovery probes
 
 `client-discovery.yml` installs pinned Codex 0.153.4 and Gemini CLI 0.58.0 in
