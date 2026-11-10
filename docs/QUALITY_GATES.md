@@ -23,7 +23,9 @@ regression tests to make a badge green. Keep total script coverage at least 90%
 and enforce individual floors on the hook validators and new tooling. Dependency
 auditing must fail visibly on findings. Keep the five existing ROS distribution
 jobs; Rolling exclusions must remain explicit until their underlying runtime is
-actually repaired and exercised.
+actually repaired and exercised. A distribution past its upstream end of life
+stays as a legacy regression target, not a supported one; see
+[ROS CI](ROS_CI.md#supported-and-legacy-distributions).
 
 Run `python3 scripts/validate_skill.py --check-sources` in its default strict
 mode (the pull-request job's `--overdue warn` is not a release check), inspect the

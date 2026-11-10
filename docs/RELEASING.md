@@ -38,6 +38,12 @@ start at 0.1.0. Third-party versions must never be changed as part of a bundle b
    release notes, including known limitations. Publishing is a separate action.
 4. Start later work from updated `main`, not from an already-squashed release branch.
 
+Before a release, compare the distribution table's `NEXT_REVIEW` in
+`references/engineering-principles.md` with the nearest end-of-life date it lists.
+When a distribution is about to leave support, bring the review forward and give
+the sources for that row the same `review_after` in `docs/sources.json`, so the
+Source review and the Release gate fail if the review is missed.
+
 Keep historical verification records tied to their original commit IDs. Squash
 merging creates a new mainline commit; do not relabel prior runs as having tested
 that new SHA. Nothing in the validators automatically tags, merges, or publishes.

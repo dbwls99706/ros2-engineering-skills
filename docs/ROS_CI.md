@@ -24,6 +24,19 @@ is not sufficient: the build command must return zero, the image must be present
 and the runtime suite must finish. Logs are piped with `pipefail`, so `tee` cannot
 turn a failed Docker command into success. Cleanup preserves the original result.
 
+## Supported and legacy distributions
+
+The matrix names five distributions, but they do not carry the same claim. A
+distribution inside its upstream support window is a supported target. One past
+its end of life stays in the matrix as a legacy regression target while its image
+still builds: robots keep running it, and a regression there is still a
+regression, but a green job is not a statement that upstream supports it. Kilted
+moves from the first group to the second when it reaches end of life in the
+November–December 2026 window recorded in
+[`references/engineering-principles.md`](../references/engineering-principles.md).
+If a legacy image stops building for reasons outside this repository, record that
+and decide whether to retire the job; do not edit the tests to keep it green.
+
 ## Gates retained
 
 The runtime suite executes the repository Python tests, generates all four
