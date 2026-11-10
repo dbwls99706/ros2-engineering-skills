@@ -95,7 +95,13 @@ hardware validation are separate gates. Static factual tests prevent known text
 regressions; they do not establish that all external APIs remain correct. Source
 review dates cover only the files recorded in `sources.json`, not the entire ROS
 reference collection. `--check-sources` detects overdue metadata; a maintainer
-must actually reread the source before advancing a date.
+must actually reread the source before advancing a date. Every overdue entry is
+reported, not only the first. `--overdue warn` reports them without failing and
+is used only by the pull-request job, because a contributor cannot clear a
+review date; the weekly Source review and the Release gate keep the default and
+fail. A malformed or future review date, a window that ends before it starts, a
+missing covered file, a non-HTTPS URL, and a duplicate id are errors in both
+modes. Reviews due within 14 days are listed as warnings.
 
 Primary references: [Agent Skills](https://agentskills.io/specification),
 [authoring practices](https://agentskills.io/skill-creation/best-practices),

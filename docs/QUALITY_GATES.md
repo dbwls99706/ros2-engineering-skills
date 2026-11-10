@@ -14,7 +14,7 @@ score or interpret an untested cell as a pass.
 | Captures | Complete pairs, hashes, session isolation metadata | Authenticity or semantic correctness |
 | ROS builds | Existing distro container builds and generated-package tests | Field behavior or every reference snippet |
 | QoS case study | Controlled DDS delivery before/after mismatch repair | General skill effectiveness or hardware behavior |
-| Source freshness | Reviewed source registry and date gate | Automatic verification of linked web contents |
+| Source freshness | Reviewed source registry; overdue dates fail the weekly Source review and the Release gate, and are reported on pull requests | Automatic verification of linked web contents |
 
 ## Before creating a release
 
@@ -25,8 +25,9 @@ auditing must fail visibly on findings. Keep the five existing ROS distribution
 jobs; Rolling exclusions must remain explicit until their underlying runtime is
 actually repaired and exercised.
 
-Run `python3 scripts/validate_skill.py --check-sources`, inspect the actual client
-versions in CI, and check a fresh installed copy outside the repository. Record
+Run `python3 scripts/validate_skill.py --check-sources` in its default strict
+mode (the pull-request job's `--overdue warn` is not a release check), inspect the
+actual client versions in CI, and check a fresh installed copy outside the repository. Record
 its discovery and explicit invocation in each supported client before advertising
 end-to-end support. When authentic captures are available, validate the full
 preregistered paired suite and review semantic outcomes, including failures.

@@ -212,6 +212,78 @@ def test_duplicate_source_ids(bundle):
     assert contract.validate(bundle, sources=True, today=TODAY)['status'] == 'fail'
 
 
+def _three_sources(bundle, due):
+    def update(registry):
+        base = registry['sources'][0]
+        registry['sources'] = [
+            {**base, 'id': name, 'review_after': after}
+            for name, after in zip(('first', 'second', 'third'), due)]
+    change(bundle, 'docs/sources.json', update)
+
+
+def test_every_overdue_source_is_reported(bundle):
+    _three_sources(bundle, ('2026-12-06', '2026-12-09', '2027-03-01'))
+    result = contract.validate(bundle, sources=True, today=date(2026, 12, 10))
+    assert result['status'] == 'fail'
+    assert result['errors'] == [
+        'Source review is future-dated or overdue: first',
+        'Source review is future-dated or overdue: second']
+    assert result['metrics']['sources_overdue'] == 2
+    assert result['metrics']['sources_reviewed'] == 3
+
+
+def test_overdue_sources_can_be_reported_without_failing(bundle):
+    _three_sources(bundle, ('2026-12-06', '2026-12-09', '2027-03-01'))
+    result = contract.validate(bundle, sources=True, today=date(2026, 12, 10),
+                               overdue='warn')
+    assert result['status'] == 'pass' and result['errors'] == []
+    assert [w for w in result['warnings'] if 'overdue' in w] == [
+        'Source review is future-dated or overdue: first',
+        'Source review is future-dated or overdue: second']
+    assert result['metrics']['sources_overdue'] == 2
+
+
+def test_reviews_due_soon_are_announced(bundle):
+    _three_sources(bundle, ('2026-12-06', '2026-12-09', '2027-03-01'))
+    result = contract.validate(bundle, sources=True, today=date(2026, 11, 25))
+    assert result['status'] == 'pass'
+    assert result['warnings'] == [
+        'Source review is due within 14 days: first',
+        'Source review is due within 14 days: second']
+    assert result['metrics']['sources_due_soon'] == 2
+    assert result['metrics']['sources_overdue'] == 0
+
+
+@pytest.mark.parametrize('field,value', [
+    ('review_after', '2026-09-06'), ('review_after', '2026-09-07'),
+    ('reviewed_on', '2026-09-08'), ('reviewed_on', 'bad'), ('review_after', None),
+    ('id', ''), ('url', 'http://example.com'), ('covers', []),
+    ('covers', ['references/missing.md'])])
+def test_structural_source_defects_fail_in_warn_mode(bundle, field, value):
+    change(bundle, 'docs/sources.json', lambda d: d['sources'][0].update({field: value}))
+    result = contract.validate(bundle, sources=True, today=TODAY, overdue='warn')
+    assert result['status'] == 'fail' and result['errors']
+
+
+def test_unknown_overdue_mode_is_rejected(bundle):
+    result = contract.validate(bundle, sources=True, today=TODAY, overdue='ignore')
+    assert result['status'] == 'fail'
+
+
+def test_cli_overdue_modes(bundle, capsys, monkeypatch):
+    class Later(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 12, 7)
+    monkeypatch.setattr(contract, 'date', Later)
+    assert contract.main(['--root', str(bundle), '--check-sources']) == 1
+    assert json.loads(capsys.readouterr().out)['errors'] == [
+        'Source review is future-dated or overdue: spec']
+    assert contract.main(['--root', str(bundle), '--check-sources', '--overdue', 'warn']) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report['status'] == 'pass' and report['metrics']['sources_overdue'] == 1
+
+
 def test_cli_report(bundle, capsys):
     assert contract.main(['--root', str(bundle), '--installed']) == 0
     assert json.loads(capsys.readouterr().out)['scope'] == 'static packaging only'
