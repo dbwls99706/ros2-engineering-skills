@@ -582,20 +582,30 @@ def _check_dangerous_commands(command):
 #   * simple commands split on ; && || | & newlines and grouping;
 #   * single quotes are data; double quotes and unquoted text execute `$(...)`
 #     and backticks, which are scanned in turn;
-#   * leading assignments and wrappers (sudo, env, timeout, nice, ...);
-#   * strings handed to a shell or a remote/contained shell: `bash -c`,
-#     `bash -lc`, `bash --login -c`, `ssh host '...'`, `docker exec ...`,
-#     `su -c`, a literal `eval`, tmux/screen/watch command strings;
+#   * leading assignments, whose values may be dynamic, and wrappers (sudo,
+#     env, timeout, nice, ...);
+#   * strings handed to a shell or a remote shell: `bash -c`, `bash -lc`,
+#     `bash --login -c`, `ssh host '...'`, `su -c`, `eval`, `watch`, and the
+#     tmux subcommands that type or run a command;
+#   * the program run by `docker|podman exec|run` (and compose), `kubectl
+#     exec ... --`, `xargs`, and `find -exec`, located from each program's own
+#     option table so that `docker exec c echo ros2 ...` stays data;
 #   * here-documents: the body is a script when it feeds a shell, and
 #     otherwise only its `$(...)` is executed, and only when the delimiter is
 #     unquoted.
 #
 # What it cannot interpret is reported in `checks_skipped`, never as a pass:
 # unbalanced quoting, an unterminated here-document, nesting beyond
-# _ACTUATION_MAX_DEPTH, a variable as the command name, a shell reading
-# commands from a pipe, non-literal ros2 arguments. A command without the
-# literal text `ros2` is not analyzed at all, so `$CMD /cmd_vel`, an alias, or
-# a script that publishes is not detected. PowerShell and cmd are not parsed.
+# _ACTUATION_MAX_DEPTH, a command name that is a variable or substitution
+# (which covers `bash -c "$CMD"` and `ssh host "$CMD"`), a dynamic `eval`,
+# a shell reading commands from a pipe, a `ros2` target that is not literal
+# and matches no known pattern, an option of docker, kubectl, xargs, watch or
+# tmux outside the table, and the arguments of parallel, script, flock,
+# chroot and screen. An unrelated dynamic command in the same call is
+# reported too: an unread command is not assumed to be harmless. A command
+# without the literal text `ros2` is not analyzed at all, so `$CMD /cmd_vel`,
+# an alias, or a script that publishes is not detected. PowerShell and cmd
+# are not parsed.
 ACTUATION_ENV = 'ROS2_SKILL_ACTUATION'
 ACTUATION_MODES = ('advise', 'ask', 'off')
 _ACTUATION_MAX_CHARS = 64 * 1024
@@ -624,9 +634,59 @@ _WRAPPERS = {
 }
 _SSH_VALUE_OPTIONS = frozenset(
     '-' + letter for letter in 'BbcDEeFIiJLlmOopQRSWw')
-# Programs that run another program, or a command string, given as arguments.
-_LAUNCHERS = frozenset(('docker', 'podman', 'nerdctl', 'kubectl', 'xargs', 'parallel',
-                        'watch', 'find', 'tmux', 'screen', 'script', 'flock', 'chroot'))
+# Programs that run another program given as arguments. The executed argv is
+# located from each program's own option table: (options that take a value,
+# flags, letters that may be bundled as `-it`). An option outside the table
+# is never guessed at - see _skip_options.
+_CONTAINER_TOOLS = frozenset(('docker', 'podman', 'nerdctl', 'docker-compose'))
+_DOCKER_GLOBAL = (('--context', '-c', '-H', '--host', '--config', '-l', '--log-level'),
+                  ('-D', '--debug', '--tls', '--tlsverify'), '')
+_COMPOSE_GLOBAL = (('-f', '--file', '-p', '--project-name', '--profile', '--env-file',
+                    '--project-directory', '--ansi', '--progress', '--parallel'),
+                   ('--compatibility', '--dry-run'), '')
+_CONTAINER_VERBS = {
+    'exec': (('-e', '--env', '--env-file', '-u', '--user', '-w', '--workdir',
+              '--detach-keys'),
+             ('-i', '-t', '-d', '--interactive', '--tty', '--detach', '--privileged'), 'itd'),
+    'run': (('-e', '--env', '--env-file', '-v', '--volume', '--mount', '-p', '--publish',
+             '-w', '--workdir', '-u', '--user', '--name', '--network', '--net', '-h',
+             '--hostname', '-l', '--label', '--gpus', '--ipc', '--pid', '--cap-add',
+             '--cap-drop', '--device', '--add-host', '--restart', '--runtime',
+             '--shm-size', '-m', '--memory', '--cpus', '--ulimit', '--security-opt',
+             '--platform', '--pull', '--entrypoint'),
+            ('--rm', '-i', '-t', '-d', '--interactive', '--tty', '--detach',
+             '--privileged', '--init', '--read-only', '-P', '--publish-all'), 'itdP'),
+    'compose exec': (('-e', '--env', '-u', '--user', '-w', '--workdir', '--index'),
+                     ('-T', '--no-TTY', '-d', '--detach', '--privileged'), 'Td'),
+    'compose run': (('-e', '--env', '-u', '--user', '-w', '--workdir', '-v', '--volume',
+                     '-p', '--publish', '--name', '--entrypoint', '-l', '--label',
+                     '--cap-add', '--cap-drop', '--pull'),
+                    ('--rm', '-T', '--no-TTY', '-d', '--detach', '--no-deps',
+                     '--service-ports', '--use-aliases', '--build', '--quiet-pull',
+                     '-i', '--interactive', '-t', '--tty'), 'Tdit'),
+}
+_XARGS_OPTIONS = (('-I', '-n', '-P', '-L', '-d', '-E', '-s', '-a', '--max-args',
+                   '--max-procs', '--max-lines', '--delimiter', '--arg-file',
+                   '--max-chars'),
+                  ('-0', '--null', '-r', '--no-run-if-empty', '-t', '--verbose', '-p',
+                   '--interactive', '-x', '--exit', '-o', '--open-tty', '--replace'),
+                  '0rtpxo')
+_WATCH_OPTIONS = (('-n', '--interval'),
+                  ('-d', '--differences', '-t', '--no-title', '-b', '--beep', '-e',
+                   '--errexit', '-g', '--chgexit', '-c', '--color', '-x', '--exec',
+                   '-p', '--precise', '-w', '--no-wrap'), 'dtbegcxpw')
+_TMUX_GLOBAL = (('-L', '-S', '-f', '-c', '-T'), ('-2', '-u', '-v', '-C', '-D', '-l', '-N'),
+                '2uvCDlN')
+# tmux subcommands whose arguments are typed into, or run by, a shell.
+_TMUX_COMMAND_VERBS = frozenset((
+    'send-keys', 'send', 'new-session', 'new', 'new-window', 'neww', 'split-window',
+    'splitw', 'respawn-pane', 'respawnp', 'respawn-window', 'respawnw', 'run-shell',
+    'run', 'display-popup', 'popup'))
+_TMUX_VALUE_OPTIONS = frozenset(('-t', '-s', '-n', '-c', '-e', '-F', '-x', '-y'))
+_FIND_EXEC = frozenset(('-exec', '-execdir', '-ok', '-okdir'))
+_LAUNCHERS = _CONTAINER_TOOLS | frozenset(('kubectl', 'xargs', 'watch', 'find', 'tmux'))
+# Programs that also run their arguments but are not interpreted here.
+_UNREAD_LAUNCHERS = frozenset(('parallel', 'script', 'flock', 'chroot', 'screen'))
 _TUTORIAL_PACKAGES = frozenset(('example_interfaces', 'action_tutorials_interfaces',
                                 'turtlesim', 'test_msgs'))
 _TURTLE_SEGMENT = re.compile(r'turtle\d*\Z')
@@ -972,22 +1032,151 @@ def _scan_heredoc_substitutions(body, depth, out):
 
 
 def _strip_wrapper(name, rest):
+    """Words after a wrapper's own options: `sudo -u $USER`, `timeout $T`."""
     value_options, positionals = _WRAPPERS[name]
     i = 0
     while i < len(rest):
-        text, dynamic = rest[i]
-        if dynamic:
-            break
+        text = rest[i][0]
         if text == '--':
             i += 1
             break
         if name == 'env' and _ASSIGNMENT.match(text):
             i += 1
         elif text.startswith('-') and len(text) > 1:
+            # A value is consumed whether or not it is literal.
             i += 2 if text in value_options else 1
         else:
             break
     return rest[i + positionals:]
+
+
+def _skip_options(words, value_options, flags, bundle=''):
+    """Index of the first word that is not an option, or None.
+
+    None means an option outside the table was met. Whether it takes a value
+    cannot be known, so the position of the executed program is unknown too;
+    the caller reports that instead of assuming either answer.
+    """
+    i = 0
+    while i < len(words):
+        text, dynamic = words[i]
+        if dynamic or not text.startswith('-') or len(text) == 1:
+            return i
+        if text == '--':
+            return i + 1
+        if text in value_options:
+            i += 2
+        elif (text in flags or (text.startswith('--') and '=' in text)
+              or (not text.startswith('--') and text[:2] in value_options)  # -eA=1
+              or (bundle and re.fullmatch('-[' + bundle + ']+', text))):
+            i += 1
+        else:
+            return None
+    return i
+
+
+def _mentions_ros2(words):
+    return any(not dynamic and ('ros2' in text or os.path.basename(text) in _SHELLS)
+               for text, dynamic in words)
+
+
+def _launched_argv(name, rest):
+    """The argv a launcher runs: a list (possibly empty), or None when unknown."""
+    if name in _CONTAINER_TOOLS:
+        verb, args = '', rest
+        if name != 'docker-compose':
+            i = _skip_options(rest, *_DOCKER_GLOBAL)
+            if i is None:
+                return None
+            if i >= len(rest) or rest[i][1]:
+                return []
+            verb, args = rest[i][0], rest[i + 1:]
+        if name == 'docker-compose' or verb == 'compose':
+            i = _skip_options(args, *_COMPOSE_GLOBAL)
+            if i is None:
+                return None
+            if i >= len(args) or args[i][1]:
+                return []
+            verb, args = 'compose ' + args[i][0], args[i + 1:]
+        if verb not in _CONTAINER_VERBS:
+            return []  # logs, ps, build, ...: nothing is executed
+        i = _skip_options(args, *_CONTAINER_VERBS[verb])
+        if i is None:
+            return None
+        argv = args[i + 1:]  # after the container, image or service name
+        options = [text for text, _dynamic in args[:i]]
+        for index, text in enumerate(options):
+            # The image arguments become the arguments of the entry point.
+            if text == '--entrypoint' and index + 1 < i:
+                return [args[index + 1]] + argv
+            if text.startswith('--entrypoint='):
+                return [(text.split('=', 1)[1], args[index][1])] + argv
+        return argv
+    if name == 'kubectl':
+        texts = [text for text, dynamic in rest if not dynamic]
+        if 'exec' not in texts:
+            return []
+        for index, (text, dynamic) in enumerate(rest):
+            if text == '--' and not dynamic:
+                return rest[index + 1:]
+        return None  # `kubectl exec pod cmd` without `--`: the split is ambiguous
+    if name == 'xargs':
+        i = _skip_options(rest, *_XARGS_OPTIONS)
+        return None if i is None else rest[i:]
+    return []
+
+
+def _inspect_launcher(name, rest, heredocs, depth, out):
+    """A program that runs other programs; True when here-documents were consumed."""
+    if name == 'find':
+        for index, (text, dynamic) in enumerate(rest):
+            if not dynamic and text in _FIND_EXEC:
+                argv = []
+                for word in rest[index + 1:]:
+                    if not word[1] and word[0] in (';', '+'):
+                        break
+                    argv.append(word)
+                _inspect_command(argv, [], depth, out)
+        return False
+    if name == 'watch':
+        i = _skip_options(rest, *_WATCH_OPTIONS)
+        if i is None:
+            if _mentions_ros2(rest):
+                out.skip('an unrecognized watch option hides the command position')
+        elif i < len(rest):
+            # watch hands its arguments, joined, to `sh -c`.
+            _scan_commands(' '.join(text for text, _dynamic in rest[i:]), depth + 1, out)
+        return False
+    if name == 'tmux':
+        i = _skip_options(rest, *_TMUX_GLOBAL)
+        if i is None:
+            if _mentions_ros2(rest):
+                out.skip('an unrecognized tmux option hides the command position')
+            return False
+        if i >= len(rest) or rest[i][1] or rest[i][0] not in _TMUX_COMMAND_VERBS:
+            return False
+        args, index = rest[i + 1:], 0
+        while index < len(args):
+            text, dynamic = args[index]
+            if not dynamic and text in _TMUX_VALUE_OPTIONS:
+                index += 2  # `-t "$PANE"`: a target, not a command
+                continue
+            if dynamic:
+                out.skip('a command string built at run time is not inspected')
+            elif text == 'ros2':
+                _scan_commands(' '.join(word for word, _dynamic in args[index:]),
+                               depth + 1, out)
+                break
+            elif 'ros2' in text:
+                _scan_commands(text, depth + 1, out)
+            index += 1
+        return False
+    argv = _launched_argv(name, rest)
+    if argv is None:
+        if _mentions_ros2(rest):
+            out.skip('an unrecognized ' + name + ' option hides the command position')
+        return False
+    return _inspect_command(argv, heredocs, depth, out)
 
 
 def _positionals(args, value_options):
@@ -1029,20 +1218,17 @@ def _classify_ros2(args, out):
         return
     verb, sub, rest = args[0][0], args[1][0], args[2:]
 
-    def target(words, count):
-        """First *count* positionals as text, or None when one is not literal."""
-        chosen = words[:count]
-        if len(chosen) < count:
-            return ['' for _ in range(count)]
-        return [text for text, _dynamic in chosen] if not any(
-            dynamic for _text, dynamic in chosen) else None
+    def named(words, count):
+        """(texts, any dynamic) of the first *count* positionals; missing ones are ''."""
+        chosen = list(words[:count])
+        return ([text for text, _dynamic in chosen] + [''] * (count - len(chosen)),
+                any(dynamic for _text, dynamic in chosen))
 
+    # In every branch the literal part is classified first: `/$NS/cmd_vel` ends
+    # in a motion topic whatever the namespace expands to. Only when nothing
+    # matches and a name is not literal is the command reported as unread.
     if (verb, sub) == ('topic', 'pub'):
-        words = _positionals(rest, _TOPIC_PUB_VALUE_OPTIONS)
-        # A partly literal name still classifies: `/$NS/cmd_vel` ends in a
-        # motion topic whatever the namespace expands to.
-        topic = words[0][0] if words else ''
-        type_name = words[1][0] if len(words) > 1 else ''
+        (topic, type_name), dynamic = named(_positionals(rest, _TOPIC_PUB_VALUE_OPTIONS), 2)
         if _is_tutorial(topic, type_name):
             return
         parts = _segments(topic)
@@ -1051,35 +1237,33 @@ def _classify_ros2(args, out):
         if (controller_command or (parts and _MOTION_TOPIC.match(parts[-1]))
                 or _interface(type_name)[1] in _MOTION_MESSAGES):
             out.add('high', '`ros2 topic pub` to ' + (topic or 'a ' + type_name + ' topic'))
-        elif len(words) >= 2 and words[0][1] and words[1][1]:
+        elif dynamic:
+            # A harmless-looking type does not settle it: controller command
+            # topics carry plain std_msgs arrays.
             out.skip('ros2 topic pub target is not literal')
     elif (verb, sub) == ('action', 'send_goal'):
-        names = target(_positionals(rest, _SEND_GOAL_VALUE_OPTIONS), 2)
-        if names is None:
-            out.skip('ros2 action send_goal target is not literal')
-            return
-        name, type_name = names
+        (name, type_name), dynamic = named(_positionals(rest, _SEND_GOAL_VALUE_OPTIONS), 2)
         if _is_tutorial(name, type_name):
             return
         parts = _segments(name)
         if (_interface(type_name)[1] in _MOTION_ACTIONS
                 or (parts and _MOTION_ACTION_NAME.match(parts[-1]))):
             out.add('high', '`ros2 action send_goal` to ' + (name or type_name))
+        elif dynamic:
+            out.skip('ros2 action send_goal target is not literal')
         else:
             out.add('low', '`ros2 action send_goal` to ' + (name or 'an action')
                     + ' may command motion, and if it does it')
     elif (verb, sub) == ('service', 'call'):
-        names = target(_positionals(rest, _SERVICE_CALL_VALUE_OPTIONS), 2)
-        if names is None:
-            out.skip('ros2 service call target is not literal')
-            return
-        name, type_name = names
+        (name, type_name), dynamic = named(_positionals(rest, _SERVICE_CALL_VALUE_OPTIONS), 2)
         if _is_tutorial(name, type_name):
             return
         parts = _segments(name)
         if (_STOP_PATH_SERVICE.search(name.lower())
                 or (parts and _CONTROLLER_SERVICE.match(parts[-1]))):
             out.add('high', '`ros2 service call` to ' + name)
+        elif dynamic:
+            out.skip('ros2 service call target is not literal')
     elif verb == 'control':
         if sub in ('switch_controllers', 'set_controller_state',
                    'set_hardware_component_state'):
@@ -1091,18 +1275,20 @@ def _classify_ros2(args, out):
                     for text, following in zip(texts, texts[1:])):
                 out.add('high', '`ros2 control load_controller --set-state active`')
     elif (verb, sub) == ('lifecycle', 'set'):
-        names = target(_positionals(rest, frozenset(('--spin-time',))), 2)
-        if names is None:
+        (node, transition), dynamic = named(
+            _positionals(rest, frozenset(('--spin-time',))), 2)
+        if dynamic:
             out.skip('ros2 lifecycle set target is not literal')
-        elif names[1] == 'activate':
-            out.add('low', '`ros2 lifecycle set ' + names[0] + ' activate` may enable '
+        elif transition == 'activate':
+            out.add('low', '`ros2 lifecycle set ' + node + ' activate` may enable '
                     'a driver or controller, and if it does it')
     elif (verb, sub) == ('param', 'set'):
-        names = target(_positionals(rest, frozenset(('--spin-time',))), 2)
-        if names is None:
+        (node, parameter), dynamic = named(
+            _positionals(rest, frozenset(('--spin-time',))), 2)
+        if _GATE_PARAMETER.search(parameter):
+            out.add('high', '`ros2 param set` of ' + parameter + ' on ' + node)
+        elif dynamic:
             out.skip('ros2 param set target is not literal')
-        elif _GATE_PARAMETER.search(names[1]):
-            out.add('high', '`ros2 param set` of ' + names[1] + ' on ' + names[0])
     elif verb == 'run':
         words = [sub] + [text for text, dynamic in rest[:1] if not dynamic]
         if any('teleop' in word.lower() for word in words):
@@ -1149,24 +1335,28 @@ def _inspect_command(words, heredocs, depth, out):
     args = list(words)
     while args:
         text, dynamic = args[0]
-        if dynamic:
-            break
-        name = os.path.basename(text)
-        if _ASSIGNMENT.match(text) or text in _RESERVED:
+        if _ASSIGNMENT.match(text):
+            # `ROS_DOMAIN_ID=$DOMAIN ros2 ...`: the value may be dynamic, the
+            # program that runs is still the next word.
             args.pop(0)
-        elif name in _WRAPPERS:
-            args = _strip_wrapper(name, args[1:])
+        elif dynamic:
+            break
+        elif text in _RESERVED:
+            args.pop(0)
+        elif os.path.basename(text) in _WRAPPERS:
+            args = _strip_wrapper(os.path.basename(text), args[1:])
         else:
             break
     if not args:
         return False
     head, dynamic = args[0]
     rest = args[1:]
-    if dynamic:
-        if any(text == 'ros2' and not dyn for text, dyn in rest):
-            out.skip('the command name is a variable or substitution')
-        return False
     name = os.path.basename(head)
+    if dynamic and ('$' in name or not name):
+        # What runs is decided at run time. `$HOME/bin/ros2` is still ros2;
+        # `$CMD`, `$(which tool)` and `"$PREFIX"` are not known.
+        out.skip('the command name is a variable or substitution')
+        return False
     if name == 'ros2':
         _classify_ros2(rest, out)
     elif name in _SHELLS:
@@ -1188,18 +1378,15 @@ def _inspect_command(words, heredocs, depth, out):
             if text in ('-c', '--command'):
                 _scan_commands(rest[index + 1][0], depth + 1, out)
     elif name == 'eval':
+        # The literal part is judged. A dynamic part can expand to separators
+        # and further commands, so the result is also marked as incomplete.
+        _scan_commands(' '.join(text for text, _dynamic in rest), depth + 1, out)
         if any(dyn for _text, dyn in rest):
             out.skip('eval builds its command at run time')
-        else:
-            _scan_commands(' '.join(text for text, _dynamic in rest), depth + 1, out)
     elif name in _LAUNCHERS:
-        for index, (text, dyn) in enumerate(rest):
-            if dyn:
-                continue
-            if os.path.basename(text) == 'ros2' or os.path.basename(text) in _SHELLS:
-                return _inspect_command(rest[index:], heredocs, depth, out)
-            if 'ros2' in text and any(space in text for space in ' \t'):
-                _scan_commands(text, depth + 1, out)
+        return _inspect_launcher(name, rest, heredocs, depth, out)
+    elif name in _UNREAD_LAUNCHERS and _mentions_ros2(rest):
+        out.skip('arguments of ' + name + ' are not inspected')
     return False
 
 

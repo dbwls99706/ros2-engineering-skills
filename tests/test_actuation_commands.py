@@ -24,6 +24,8 @@ import skill_validate_hook as hook  # noqa: E402
 TWIST = 'geometry_msgs/msg/Twist'
 PUB = 'ros2 topic pub /cmd_vel ' + TWIST + " '{}'"
 NAV = "ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose '{}'"
+# The command string is produced when the command runs: nothing literal to read.
+BUILT = 'bash -c "$(printf \'ros2 topic pub /cmd_vel ' + TWIST + ' {}\')"'
 
 
 @pytest.fixture(autouse=True)
@@ -256,7 +258,42 @@ def test_here_documents_follow_the_receiver_and_the_delimiter():
 
 
 @pytest.mark.parametrize('command,reason', [
-    ('eval "ros2 topic pub /cmd_vel $MSG"', 'eval builds its command at run time'),
+    ('eval "echo $CMD"; ros2 topic list', 'eval builds its command at run time'),
+    ('eval "$CMD"; ros2 topic list', 'eval builds its command at run time'),
+    (BUILT, 'the command name is a variable or substitution'),
+    ('bash -c "$CMD"; ros2 topic list', 'the command name is a variable or substitution'),
+    ('ssh robot "$CMD"; ros2 topic list', 'the command name is a variable or substitution'),
+    ('su robot -c "$CMD"; ros2 topic list', 'the command name is a variable or substitution'),
+    ('watch -n 1 "$CMD"; ros2 topic list', 'the command name is a variable or substitution'),
+    ('$TOOL x; ros2 topic list', 'the command name is a variable or substitution'),
+    ('"$(which tool)" x; ros2 topic list', 'the command name is a variable or substitution'),
+    ('tmux send-keys "$CMD" Enter; ros2 topic list',
+     'a command string built at run time is not inspected'),
+    ("ros2 topic pub /drive $TYPE '{}'", 'ros2 topic pub target is not literal'),
+    ('ros2 topic pub $TOPIC std_msgs/msg/String {}', 'ros2 topic pub target is not literal'),
+    ('ros2 action send_goal /do $TYPE {}', 'ros2 action send_goal target is not literal'),
+    ('ros2 service call /do $TYPE', 'ros2 service call target is not literal'),
+    ('ros2 lifecycle set /driver $TRANSITION', 'ros2 lifecycle set target is not literal'),
+    ('docker run --some-new-flag ros:jazzy ros2 topic pub /cmd_vel ' + TWIST,
+     'an unrecognized docker option hides the command position'),
+    ('docker --unknown exec nav ros2 topic list',
+     'an unrecognized docker option hides the command position'),
+    ('docker compose --unknown exec nav ros2 topic list',
+     'an unrecognized docker option hides the command position'),
+    ('docker compose exec -it nav ros2 topic pub /cmd_vel ' + TWIST,
+     'an unrecognized docker option hides the command position'),
+    ('xargs --unknown ros2 topic pub /cmd_vel ' + TWIST,
+     'an unrecognized xargs option hides the command position'),
+    ('watch --unknown "ros2 topic pub /cmd_vel x"',
+     'an unrecognized watch option hides the command position'),
+    ('tmux --unknown send-keys "ros2 topic pub /cmd_vel x"',
+     'an unrecognized tmux option hides the command position'),
+    ('kubectl exec pod ros2 topic pub /cmd_vel ' + TWIST,
+     'an unrecognized kubectl option hides the command position'),
+    ('parallel ros2 topic pub ::: /cmd_vel', 'arguments of parallel are not inspected'),
+    ('screen -dmS drive ros2 topic pub /cmd_vel ' + TWIST,
+     'arguments of screen are not inspected'),
+    ('flock /tmp/l bash -c "ros2 topic list"', 'arguments of flock are not inspected'),
     ("ros2 topic pub /cmd_vel 'unterminated", 'unbalanced quote'),
     ('ros2 topic pub /cmd_vel "unterminated', 'unbalanced quote'),
     ('echo `ros2 topic list', 'unbalanced backtick'),
@@ -288,10 +325,123 @@ def test_a_finding_and_an_unread_part_are_both_reported():
     result = analyze(PUB + '; eval "ros2 topic pub /cmd_vel $MSG"')
     assert (result['status'], result['confidence']) == HIGH
     assert result['reasons'] == ['eval builds its command at run time']
-    # A partly literal topic still classifies by its message type.
+    # The literal part classifies first, whichever half is dynamic.
     assert judged('ros2 topic pub $TOPIC ' + TWIST + ' {}') == HIGH
     assert judged('ros2 topic pub /$NS/cmd_vel $TYPE {}') == HIGH
-    assert judged('ros2 topic pub $TOPIC std_msgs/msg/String {}') == NONE
+    assert judged('ros2 action send_goal /navigate_to_pose $TYPE {}') == HIGH
+    assert judged('ros2 action send_goal $NAME nav2_msgs/action/Spin {}') == HIGH
+    assert judged('ros2 service call /emergency_stop/reset $TYPE') == HIGH
+    assert judged('ros2 param set $NODE FollowPath.max_vel_x 5.0') == HIGH
+    assert judged('ros2 param set /node max_vel_$AXIS 5.0') == HIGH
+    # A type that looks harmless does not settle an unknown topic: controller
+    # command topics carry plain std_msgs arrays.
+    assert judged('ros2 topic pub $TOPIC std_msgs/msg/String {}') == UNREAD
+    assert judged('ros2 topic pub /turtle1/cmd_vel $TYPE {}') == NONE
+
+
+def test_eval_reports_the_literal_part_and_that_the_rest_is_unknown():
+    # The topic is literal, so the finding stands; $MSG can still expand to a
+    # separator and another command, so the result is also marked incomplete.
+    result = analyze('eval "ros2 topic pub /cmd_vel $MSG"')
+    assert (result['status'], result['confidence']) == HIGH
+    assert result['reasons'] == ['eval builds its command at run time']
+    literal = analyze("eval '" + PUB.replace("'", '') + "'")
+    assert (literal['status'], literal['reasons']) == ('detected', [])
+    assert judged('eval "echo $CMD"; ros2 topic list') == UNREAD
+    # Without the literal text `ros2` the analysis does not start.
+    assert judged('eval "$CMD"') == NONE
+
+
+@pytest.mark.parametrize('command', [
+    'ROS_DOMAIN_ID=$DOMAIN ' + PUB,
+    'ROS_DOMAIN_ID="$DOMAIN" RMW_IMPLEMENTATION=$RMW ' + PUB,
+    'A="$(date)" B=2 ' + PUB,
+    'env ROS_DOMAIN_ID=$DOMAIN ' + PUB,
+    'sudo -u $USER ' + PUB,
+    'sudo -u "$(id -un)" -E ' + PUB,
+    'timeout $LIMIT ' + PUB,
+    'timeout -s INT "$LIMIT" ' + PUB,
+    '$HOME/ros2_ws/install/bin/ros2 topic pub /cmd_vel ' + TWIST + ' {}',
+    '"${ROS_BIN}"/ros2 topic pub /cmd_vel ' + TWIST + ' {}',
+])
+def test_dynamic_values_around_a_literal_program_do_not_hide_it(command):
+    result = analyze(command)
+    assert (result['status'], result['confidence'], result['reasons']) == ('detected', 'high', [])
+
+
+@pytest.mark.parametrize('command', [
+    'bash -c "cd $DIR && make"; ros2 topic list',
+    'bash -c "ros2 topic list $X"',
+    'source "$WS/install/setup.bash" && ros2 topic list',
+    '. $WS/install/setup.bash; ros2 topic echo /cmd_vel',
+    'cd "$WS" && colcon build && ros2 topic list',
+    'ROS_DOMAIN_ID=$DOMAIN ros2 topic list',
+    'echo "$CMD" ros2',
+])
+def test_dynamic_arguments_of_literal_commands_are_not_unread(command):
+    assert judged(command) == NONE, command
+    assert analyze(command)['reasons'] == []
+
+
+@pytest.mark.parametrize('command', [
+    "docker exec nav echo ros2 topic pub /cmd_vel " + TWIST + " '{}'",
+    'docker exec nav grep -r "ros2 topic pub /cmd_vel" /ws',
+    'docker exec -it nav cat /ws/ros2_notes.txt',
+    'docker run --rm ros:jazzy echo ros2 topic pub /cmd_vel',
+    'docker run --rm --entrypoint echo img ros2 topic pub /cmd_vel ' + TWIST,
+    'docker logs ros2',
+    'docker ps --filter name=ros2',
+    'docker compose logs ros2',
+    'docker compose -f ros2.yml up -d',
+    'kubectl logs ros2 topic pub /cmd_vel',
+    'kubectl get pods -l app=ros2',
+    'kubectl exec pod -- echo ros2 topic pub /cmd_vel',
+    'xargs echo ros2 topic pub /cmd_vel ' + TWIST,
+    'xargs -n 1 grep ros2',
+    'find . -name ros2 -newer bash',
+    'find . -name "*.py" -exec grep -l ros2 {} +',
+    'watch -n 1 "grep ros2 notes.md"',
+    'watch ros2 topic list',
+    'tmux send-keys "grep ros2 notes.md" Enter',
+    'tmux send-keys -t "$PANE" "ros2 topic list" Enter',
+    'tmux new-session -d -s ros2 htop',
+    'tmux kill-session -t ros2',
+    'tmux ls',
+    'docker run --some-new-flag img ls; ros2 topic list',
+])
+def test_arguments_of_a_program_that_is_not_ros2_are_data(command):
+    assert judged(command) == NONE, command
+    assert analyze(command)['reasons'] == []
+
+
+@pytest.mark.parametrize('command', [
+    'docker run --read-only ros:jazzy ros2 topic pub /cmd_vel ' + TWIST + ' {}',
+    'docker run --rm -it -v /ws:/ws --network host ros:jazzy ros2 topic pub /cmd_vel ' + TWIST,
+    'docker run --network=host -e A=1 -eB=2 --name nav ros:jazzy ros2 topic pub /cmd_vel ' + TWIST,
+    'docker run -d --privileged --init -P -w /ws -u robot ros:jazzy ros2 topic pub /cmd_vel '
+    + TWIST,
+    'docker run --rm --entrypoint ros2 img topic pub /cmd_vel ' + TWIST,
+    'docker run --rm --entrypoint=ros2 img topic pub /cmd_vel ' + TWIST,
+    'docker --context robot exec nav ros2 topic pub /cmd_vel ' + TWIST,
+    'docker exec -e ROS_DOMAIN_ID=$DOMAIN "$CONTAINER" ros2 topic pub /cmd_vel ' + TWIST,
+    'podman exec -it nav ros2 topic pub /cmd_vel ' + TWIST,
+    'docker compose exec nav ros2 topic pub /cmd_vel ' + TWIST,
+    'docker compose -f nav.yml exec -T nav ros2 topic pub /cmd_vel ' + TWIST,
+    'docker compose run --rm nav ros2 topic pub /cmd_vel ' + TWIST,
+    'docker-compose exec nav ros2 topic pub /cmd_vel ' + TWIST,
+    'kubectl exec pod -- ros2 topic pub /cmd_vel ' + TWIST,
+    'kubectl -n robots exec -it pod -c nav -- ros2 topic pub /cmd_vel ' + TWIST,
+    'xargs -n 1 ros2 topic pub /cmd_vel ' + TWIST,
+    'xargs -0 -I{} ros2 topic pub /cmd_vel ' + TWIST + ' {}',
+    'find . -name "*.yaml" -exec ros2 topic pub /cmd_vel ' + TWIST + ' {} \\;',
+    'find . -execdir ros2 control switch_controllers --activate jtc +',
+    'watch -n 1 ros2 topic pub -1 /cmd_vel ' + TWIST,
+    'watch -d -n 1 "ros2 topic pub -1 /cmd_vel ' + TWIST + '"',
+    'tmux new-window ros2 topic pub /cmd_vel ' + TWIST,
+    'tmux -L robot send-keys -t nav "ros2 topic pub /cmd_vel ' + TWIST + '" Enter',
+])
+def test_the_program_a_launcher_runs_is_located_and_judged(command):
+    assert judged(command) == HIGH, command
 
 
 def test_documented_limits_are_not_detected():
@@ -370,12 +520,24 @@ def test_report_carries_the_structured_result_in_both_modes():
 
 
 def test_unread_command_reaches_the_report_as_skipped():
+    for result in (_validator('--command', BUILT), _validator(payload=_bash(BUILT))):
+        report = json.loads(result.stdout)
+        assert result.returncode == 0 and report['issues'] == []
+        assert report['checks_skipped'] == [
+            'actuation: the command name is a variable or substitution']
+        assert report['actuation']['status'] == 'not_evaluated'
+
+
+def test_finding_and_unread_part_both_reach_the_report():
     command = 'eval "ros2 topic pub /cmd_vel $MSG"'
     for result in (_validator('--command', command), _validator(payload=_bash(command))):
         report = json.loads(result.stdout)
-        assert result.returncode == 0 and report['issues'] == []
+        assert result.returncode == 0
+        assert [issue['confidence'] for issue in report['issues']] == ['high']
         assert report['checks_skipped'] == ['actuation: eval builds its command at run time']
-        assert report['actuation']['status'] == 'not_evaluated'
+        assert report['actuation'] == {
+            'status': 'detected', 'confidence': 'high',
+            'reasons': ['eval builds its command at run time']}
 
 
 def test_report_schema_is_stable_without_a_command():
@@ -433,12 +595,34 @@ def test_default_mode_adds_context_and_makes_no_permission_decision(mode):
 def test_default_mode_tells_the_model_what_was_not_evaluated():
     result = _adapter('eval "ros2 topic pub /cmd_vel $MSG"')
     context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+    assert 'Actuation command' in context
     assert 'Skipped: actuation: eval builds its command at run time' in context
     assert 'permissionDecision' not in result.stdout
+    unread = _adapter(BUILT)
+    context = json.loads(unread.stdout)['hookSpecificOutput']['additionalContext']
+    assert context.endswith('Skipped: actuation: the command name is a variable or substitution')
+    assert 'permissionDecision' not in unread.stdout
+
+
+def test_low_confidence_finding_beside_an_unread_part():
+    # Advisory by default; in ask mode the unread part is reason enough.
+    assert analyze(LOW_AND_UNREAD)['confidence'] == 'low'
+    assert analyze(LOW_AND_UNREAD)['reasons'] == [
+        'the command name is a variable or substitution']
+    default = json.loads(_adapter(LOW_AND_UNREAD).stdout)['hookSpecificOutput']
+    assert 'permissionDecision' not in default
+    assert 'Possible actuation' in default['additionalContext']
+    assert 'Skipped: actuation:' in default['additionalContext']
+    asked = json.loads(_adapter(LOW_AND_UNREAD, 'ask').stdout)['hookSpecificOutput']
+    assert asked['permissionDecision'] == 'ask'
+
+
+LOW_AND_UNREAD = "ros2 action send_goal /do_thing my_pkg/action/Thing '{}'; bash -c \"$CMD\""
 
 
 @pytest.mark.parametrize('command', [PUB, NAV, 'eval "ros2 topic pub /cmd_vel $MSG"',
-                                     "bash -lc '" + PUB.replace("'", '') + "'"])
+                                     "bash -lc '" + PUB.replace("'", '') + "'", BUILT,
+                                     LOW_AND_UNREAD])
 def test_ask_mode_requests_confirmation_and_never_grants(command):
     result = _adapter(command, 'ask')
     assert result.returncode == 0
@@ -499,6 +683,10 @@ def test_adapter_reads_the_structured_field_not_the_message(monkeypatch):
         {**base, 'actuation': {'status': 'none', 'confidence': None, 'reasons': []}})
     assert not adapter.needs_confirmation(
         {**base, 'actuation': {'status': 'detected', 'confidence': 'low', 'reasons': []}})
+    assert adapter.needs_confirmation(
+        {**base, 'actuation': {'status': 'detected', 'confidence': 'low', 'reasons': ['r']}})
+    assert adapter.needs_confirmation(
+        {**base, 'actuation': {'status': 'detected', 'confidence': 'high', 'reasons': ['r']}})
     assert not adapter.needs_confirmation(
         {**base, 'actuation': {'status': 'off', 'confidence': None, 'reasons': []}})
     assert adapter.needs_confirmation(
