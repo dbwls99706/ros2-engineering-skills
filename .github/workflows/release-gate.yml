@@ -1,0 +1,63 @@
+name: Release gate
+
+# Runs the checks a release depends on but a pull request may only warn about.
+# It publishes nothing. A push to the default branch runs it on the commit a
+# tag would point at, before the tag exists; a tag push repeats it as a record.
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install dev dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Record the revision under test
+        run: git rev-parse HEAD | tee release-gate-revision.txt
+      - name: Source review dates (overdue is an error)
+        run: |
+          set -o pipefail
+          python scripts/validate_skill.py --check-sources | tee release-gate-sources.json
+      - name: Version surfaces agree
+        run: python -m pytest tests/test_skills2_frontmatter.py -q -k TestVersionConsistency
+      - name: Tag matches the bundle version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          python - <<'PYCODE'
+          import os
+          import sys
+          sys.path.insert(0, 'scripts')
+          from validate_skill import skill_frontmatter
+          version = skill_frontmatter('SKILL.md')['metadata']['version']
+          tag = os.environ['TAG_NAME']
+          print('tag', tag, 'bundle', version)
+          sys.exit(tag != 'v' + version)
+          PYCODE
+      - name: Retain the gate record
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-gate
+          path: |
+            release-gate-revision.txt
+            release-gate-sources.json
+          if-no-files-found: warn
+          retention-days: 90

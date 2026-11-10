@@ -2,7 +2,7 @@
 
 ![ros2-engineering-skills cover](docs/assets/cover.svg)
 
-Source version: **1.7.2**. See [release notes](CHANGELOG.md#172---2026-10-19) and
+Source version: **1.8.0**. See [release notes](CHANGELOG.md#180---2026-11-10) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -137,6 +137,14 @@ The plugin uses `.claude-plugin/plugin.json`, root `SKILL.md`, and
 `hooks/hooks.json`. It provides PreToolUse checks and advisory Stop reports.
 The hook command requires `python3`; it does not grant tool permissions.
 
+The PreToolUse hook also reports `ros2` commands that can move hardware, such as
+`ros2 topic pub /cmd_vel ...`, a navigation goal, a controller switch, or an
+e-stop reset. By default this is a note to the model and nothing is blocked. Set
+`ROS2_SKILL_ACTUATION=ask` to have Claude Code ask you before such a command
+runs (experimental; see [client compatibility](docs/CLIENT_COMPATIBILITY.md#actuation-commands)),
+or `off` to disable it. It matches names in POSIX shell commands and is not a
+safety function: keep an operator and an independent stop path.
+
 ### Knowledge-only skill: Codex, Claude Code, Cursor, Gemini CLI
 
 ```bash
@@ -189,6 +197,7 @@ python3 scripts/validate_skill.py --root /path/to/ros2-engineering-skills --inst
 python3 scripts/install_skill.py --verify --client codex
 python3 scripts/skill_validate_hook.py --file src/my_node.py
 python3 scripts/skill_validate_hook.py --command 'ros2 topic list'
+python3 scripts/skill_validate_hook.py --command 'ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{}"'
 SKILL_WORKSPACE=/path/to/ros2_ws python3 scripts/skill_stop_hook.py
 ```
 
@@ -228,9 +237,9 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `rosbag2_qos_checker.py` | Inspect bag metadata QoS | Static metadata analysis |
 | `launch_validator.py` | Detect selected Python launch defects | Does not start a graph |
 | `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
-| `skill_validate_hook.py` | Inspect source and command strings | Best-effort guard, not a security boundary |
-| `skill_stop_hook.py` | Check changed launch/package/Nav2 files | Advisory, not a complete build |
-| `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions or blocks Stop |
+| `skill_validate_hook.py` | Inspect source and command strings, including `ros2` commands that can move hardware | Best-effort guard, not a security or safety boundary; automatic source advice only with confirmed ROS context |
+| `skill_stop_hook.py` | Check changed launch/package/Nav2 files | Advisory, not a complete build; automatic runs skip launch-named files without ROS context |
+| `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions or blocks Stop; may ask for confirmation when `ROS2_SKILL_ACTUATION=ask` |
 | `validate_skill.py` | Validate metadata, local paths, packaging, source dates | Static checks, not client activation |
 | `install_skill.py` | Stage and validate knowledge-only installations | No settings changes or hook registration |
 | `eval_runner.py` | Check fixtures or lexically score supplied text | Does not invoke a model or prove semantics |
@@ -257,7 +266,9 @@ jobs for Humble, Jazzy, Kilted, Lyrical, and Rolling. It adds individual validat
 coverage floors, portable Windows installation, protocol integration, source-date
 checks, preregistered-suite checks, and a controlled QoS mismatch/repair experiment.
 Dependency vulnerability auditing is blocking, not advisory. The `Required test
-gates` summary rejects any required job that did not succeed.
+gates` summary rejects any required job that did not succeed. A separate `Release
+gate` workflow runs on every push to `main`: it fails on an overdue source review,
+which the pull-request job only reports.
 
 ROS image construction and test execution are separate. Every run executes the
 suite in a fresh, network-isolated container; a cached image is not a test pass.

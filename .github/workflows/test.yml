@@ -51,7 +51,7 @@ jobs:
         with:
           node-version: '24'
       - name: Install Claude Code
-        run: npm install --global @anthropic-ai/claude-code@2.1.241
+        run: npm install --global @anthropic-ai/claude-code@2.1.322
       - name: Validate plugin with Claude Code
         run: claude plugin validate . --strict
       - name: Verify loaded plugin components
@@ -352,7 +352,9 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Validate skill and plugin packaging
         run: |
-          python scripts/validate_skill.py --check-sources
+          # A review past its date is the maintainer's to clear, so a pull
+          # request reports it; Source review and Release gate fail on it.
+          python scripts/validate_skill.py --check-sources --overdue warn
           python -m pytest tests/test_skills2_frontmatter.py tests/test_repo_conventions.py \
             tests/test_installers.py tests/test_skill_contract.py tests/test_portable_installer.py \
             tests/test_protocol_integration.py tests/test_evidence_suites.py -q

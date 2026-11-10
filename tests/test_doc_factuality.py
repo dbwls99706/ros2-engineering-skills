@@ -233,8 +233,8 @@ class TestDistroMatrix:
 
     Deliberately anchored to specific table cells (not global string
     absence) so that changelog prose mentioning an old value never trips
-    the check. Pinned errors: Kilted EOL was recorded as Nov 2025 (official
-    EOL is Dec 2026), Kilted ros2_control was 4.x while
+    the check. Pinned errors: Kilted EOL was recorded as Nov 2025 (the release
+    list says Dec 2026 and REP 2000 says Nov 2026), Kilted ros2_control was 4.x while
     hardware-interface.md said 5.x, and the pre-Lyrical EventsExecutor was
     labeled stable although it ships in rclcpp::experimental.
     """
@@ -259,8 +259,38 @@ class TestDistroMatrix:
         assert 'Lyrical (LTS)' in rows['EOL'], (
             'engineering-principles.md distro table must carry a Lyrical (LTS) column')
 
-    def test_kilted_eol_cell_is_dec_2026(self):
-        assert self._distro_table()['EOL']['Kilted (non-LTS)'] == 'Dec 2026'
+    def test_kilted_eol_cell_records_both_published_dates(self):
+        # The release list (December 2026) and REP 2000 (November 2026)
+        # disagree, so the cell names the window instead of choosing a month.
+        cell = self._distro_table()['EOL']['Kilted (non-LTS)']
+        assert 'Nov' in cell and 'Dec 2026' in cell and '2025' not in cell
+        note = _read(PRINCIPLES_MD).split('**Kilted end of life:**', 1)[1].split('\n\n', 1)[0]
+        flat = ' '.join(note.split())
+        assert 'release list gives December 2026' in flat
+        assert 'REP 2000 gives "May 2025 - November 2026"' in flat
+
+    def test_distro_table_review_is_enforced_by_the_source_registry(self):
+        # A comment date nothing checks is easily missed. The two sources for
+        # the EOL row carry the same review date in docs/sources.json, where
+        # the weekly Source review and the Release gate fail once it passes.
+        import json
+        from datetime import date
+        text = _read(PRINCIPLES_MD)
+        next_review = date.fromisoformat(
+            re.search(r'<!-- NEXT_REVIEW: (\d{4}-\d{2}-\d{2}) -->', text).group(1))
+        last_updated = date.fromisoformat(
+            re.search(r'<!-- LAST_UPDATED: (\d{4}-\d{2}-\d{2}) ', text).group(1))
+        eol_checked = date.fromisoformat(
+            re.search(r'<!-- EOL_ROW_CHECKED: (\d{4}-\d{2}-\d{2}) ', text).group(1))
+        assert last_updated <= eol_checked < next_review
+        sources = {entry['id']: entry for entry in json.loads(
+            _read(os.path.join(ROOT, 'docs', 'sources.json')))['sources']}
+        for key in ('ros2-release-list', 'rep-2000-kilted'):
+            entry = sources[key]
+            assert 'references/engineering-principles.md' in entry['covers']
+            assert date.fromisoformat(entry['reviewed_on']) == eol_checked
+            assert next_review <= date.fromisoformat(entry['review_after'])
+            assert entry['claims']
 
     def test_lyrical_eol_cell_is_may_2031(self):
         assert self._distro_table()['EOL']['Lyrical (LTS)'] == 'May 2031'

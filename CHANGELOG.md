@@ -2,6 +2,121 @@
 
 All notable changes are documented here.
 
+## 1.8.0 - 2026-11-10
+
+Source bundle version 1.8.0. Two hook defects found by running the hooks on real
+inputs, one new advisory check, and a source-review gate that no longer fails
+unrelated pull requests. The hook-report contract moves to 1.5.0 because the
+PreToolUse report gains fields. Not run for this release: the Docker ROS jobs
+locally (CI runs them), any model benchmark, and the `ask` confirmation prompt
+in a real client — its output is covered by adapter tests only.
+
+Hooks:
+
+- PreToolUse source advice now requires confirmed ROS context for the file being
+  written: an unambiguous ROS import or include in the new text, a valid ROS
+  package manifest (`<package>` declaring an `ament_*` build) in the file's
+  directory or above it, or such an import in the first 64 KiB of the existing
+  file. Before, every `.py`/`.cpp` write in any project was checked, so a web
+  application's retry loop was told to use ROS timers. `from launch import ...`
+  and names starting with `ament_` are not evidence, and a payload without a
+  path needs the import in its text. The manual `--file` check is unchanged.
+- Stop validates a launch-named file only where ROS context is confirmed for
+  that file: a valid ROS package above it (read from disk, so a manifest
+  committed earlier still counts), or a launch import or
+  `generate_launch_description` in its text. A ROS package elsewhere in the
+  repository does not put an unrelated `deploy.launch.py` in scope. This narrows
+  the 1.7.1 statement that a `.launch.py` file "stays strict": it does inside a
+  ROS package, with launch code in the file, and whenever the workspace is named
+  with `SKILL_WORKSPACE`. `validate_launch_file_syntax()` itself is unchanged.
+- Advice wording no longer overstates the defect.
+  `spin_until_future_complete()` in a callback "can deadlock depending on
+  executor and callback-group configuration"; a call from `main()` is not
+  flagged as inherently wrong. `time.sleep()` is described as blocking the
+  executor thread inside a callback. With `ROS_DISTRO` unset, the
+  `ROS_LOCALHOST_ONLY` advice says the variable is the only option on Humble and
+  earlier and asks to confirm the distribution instead of prescribing
+  `ROS_AUTOMATIC_DISCOVERY_RANGE`.
+- New: the PreToolUse validator reports `ros2` commands that can move hardware
+  or change a motion gate — `ros2 topic pub` to velocity, trajectory, and
+  controller command topics, navigation and manipulation goals, `ros2 control`
+  state changes, stop-path and drive-enable services, limit and timeout
+  parameters, teleoperation nodes. Findings are warnings with
+  `category: actuation` and `confidence: high|low`; they never block. The same
+  analysis runs for the hook and for manual `--command`.
+- The analysis reads commands with a quote-aware scanner instead of the regex
+  prefix used for destructive commands, so `grep "ros2 topic pub /cmd_vel"`, a
+  commit message, and a single-quoted `$(...)` are data, while `"$(...)"`,
+  `bash -lc '...'`, `ssh host '...'`, a here-document fed to a shell, and
+  `$(...)` inside an unquoted here-document are commands. Syntax it does not
+  interpret is listed in `checks_skipped` as `actuation: <reason>` rather than
+  treated as clean. It is name-based, POSIX-shell only, ignores any command
+  without the literal text `ros2`, and is not a safety function.
+- For `docker`/`podman` `exec` and `run` (and compose), `kubectl exec ... --`,
+  `xargs`, and `find -exec`, the executed program is located from the tool's own
+  option table: `docker exec nav echo ros2 ...` is data,
+  `docker run --read-only img ros2 topic pub ...` is a command, and an option
+  outside the table is reported as unread instead of guessed at.
+- A leading assignment with a dynamic value (`ROS_DOMAIN_ID=$ID ros2 ...`) does
+  not hide the program. A command name that is itself a variable or
+  substitution is unread, which covers `bash -c "$CMD"`, `ssh host "$CMD"`, and
+  `tmux send-keys "$CMD"`. An `eval` with a dynamic part reports the finding
+  from its literal text and is marked unread as well. The literal part of a
+  `ros2` target is classified first; a target that is not literal and matches
+  no pattern is unread.
+- `ROS2_SKILL_ACTUATION` selects the delivery: `advise` (default) adds context
+  for the model; `ask` makes the Claude adapter return
+  `permissionDecision: "ask"` for high-confidence findings and whenever part of
+  the command could not be read, also beside a low-confidence finding; `off`
+  disables the analysis. The adapter decides from
+  the report's structured `actuation` field and never returns `allow`. A
+  destructive-command block still takes precedence. `ask` is experimental: see
+  the table in `docs/CLIENT_COMPATIBILITY.md` for what the hooks reference
+  documents and what has not yet been observed.
+- Hook-report contract 1.5.0: PreToolUse reports add `actuation`
+  (`status`, `confidence`, `reasons`); actuation issues add `category` and
+  `confidence`. Existing fields are unchanged.
+
+Validation and CI:
+
+- `validate_skill.py --check-sources` reports every overdue source review, not
+  only the first, and adds `sources_overdue` and `sources_due_soon` to its
+  metrics. `--overdue warn` reports overdue reviews without failing; structural
+  defects (a malformed or future review date, a window ending before it starts,
+  a missing covered file, a non-HTTPS URL, a duplicate id) fail in both modes.
+- The pull-request job uses `--overdue warn`, because a contributor cannot clear
+  a review date. The weekly Source review stays strict, and a new `Release gate`
+  workflow runs the strict check and the version-consistency tests on every push
+  to `main`, on `v*` tags, and on demand, and keeps its result as an artifact. It
+  publishes nothing. `docs/RELEASING.md` now requires that gate on the commit to
+  be tagged. Without this, 26 reviews due on 2026-12-06 and 2026-12-09 would
+  have failed every pull request from those dates on.
+- Plugin validation in CI uses Claude Code 2.1.322 (was 2.1.241).
+
+References and sources:
+
+- `references/engineering-principles.md` records that the published Kilted
+  end-of-life dates disagree — December 2026 in the ROS 2 release list, November
+  2026 in REP 2000 — instead of stating one month. The table's review is brought
+  forward to 2026-11-20 and both sources are registered with that date, so the
+  Source review and the Release gate fail if it is missed. Only the EOL row was
+  re-checked (2026-11-10); the rest of the table keeps its 2026-07-15 date.
+  `docs/ROS_CI.md` distinguishes supported distributions from legacy regression
+  targets past end of life.
+- Source registry: 17 entries were reread against their sources on 2026-11-10
+  and given new review dates — the fifteen message, REP, SROS2, rcl, and
+  domain-ID entries with stated claims, the Gemini CLI listing source, and the
+  Claude hooks reference, which now lists the specific claims this repository
+  relies on. Nine documentation-wide entries (Agent Skills, Claude skills, Codex,
+  Cursor, and Gemini skill pages, the Humble QoS page) were not reread and remain
+  due on 2026-12-06.
+
+Tests: 2,185 Python tests pass locally on Python 3.13 (1,833 before), with
+`skill_validate_hook.py` at 97%, `skill_stop_hook.py` at 93%, `claude_hook.py`
+at 98%, and `validate_skill.py` at 96% line coverage. Existing event-mode tests
+that expected advice for a file without ROS context now supply that context and
+keep their assertions; each has a twin asserting silence without it.
+
 ## 1.7.2 - 2026-10-19
 
 Source bundle version 1.7.2. Documentation corrections for Isaac ROS 5.0

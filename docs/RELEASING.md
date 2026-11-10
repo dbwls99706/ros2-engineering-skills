@@ -30,9 +30,19 @@ start at 0.1.0. Third-party versions must never be changed as part of a bundle b
    `chore: release vX.Y.Z` and avoid carrying intermediate commit bodies or footers
    into the mainline history.
 3. Resolve the new commit on `main` and check its workflows before creating tag
-   `vX.Y.Z` on that exact commit. Use the corresponding changelog section as the
+   `vX.Y.Z` on that exact commit. Require successful Test, Client discovery, and
+   Release gate runs on that SHA. The Release gate runs on every push to `main`,
+   so its result exists before the tag does; the run a tag push starts afterwards
+   is only a record. If a source review is overdue the gate fails: reread the
+   source and update the registry in a new change instead of tagging. Use the corresponding changelog section as the
    release notes, including known limitations. Publishing is a separate action.
 4. Start later work from updated `main`, not from an already-squashed release branch.
+
+Before a release, compare the distribution table's `NEXT_REVIEW` in
+`references/engineering-principles.md` with the nearest end-of-life date it lists.
+When a distribution is about to leave support, bring the review forward and give
+the sources for that row the same `review_after` in `docs/sources.json`, so the
+Source review and the Release gate fail if the review is missed.
 
 Keep historical verification records tied to their original commit IDs. Squash
 merging creates a new mainline commit; do not relabel prior runs as having tested

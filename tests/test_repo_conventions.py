@@ -55,3 +55,42 @@ def test_readme_preserves_before_after_examples():
     for prompt in prompts:
         assert prompt in readme
     assert 'ros2 topic info /camera/image_raw -v' in readme
+
+
+def _check_sources_commands(name):
+    github_dir = ROOT / '.github'
+    if not github_dir.is_dir():
+        pytest.skip('not a full checkout (.github absent)')
+    text = (github_dir / 'workflows' / name).read_text(encoding='utf-8')
+    commands = [line.strip() for line in text.splitlines()
+                if 'validate_skill.py' in line and '--check-sources' in line
+                and not line.lstrip().startswith('#')]
+    assert commands, name + ' must check source review dates'
+    return commands
+
+
+@pytest.mark.parametrize('name', ['source-review.yml', 'release-gate.yml'])
+def test_review_and_release_gates_fail_on_overdue_sources(name):
+    # The default mode is the strict one; these gates must not opt out of it.
+    for command in _check_sources_commands(name):
+        assert '--overdue' not in command, command
+
+
+def test_pull_request_gate_only_reports_overdue_sources():
+    for command in _check_sources_commands('test.yml'):
+        assert '--overdue warn' in command, command
+
+
+def test_release_gate_runs_before_a_tag_exists():
+    github_dir = ROOT / '.github'
+    if not github_dir.is_dir():
+        pytest.skip('not a full checkout (.github absent)')
+    yaml = pytest.importorskip('yaml')
+    workflow = yaml.safe_load(
+        (github_dir / 'workflows' / 'release-gate.yml').read_text(encoding='utf-8'))
+    triggers = workflow.get('on') or workflow.get(True)
+    assert 'main' in triggers['push']['branches']
+    assert triggers['push']['tags'] == ['v*']
+    assert 'workflow_dispatch' in triggers
+    # The gate reports; it must never publish or write to the repository.
+    assert workflow['permissions'] == {'contents': 'read'}
