@@ -25,6 +25,18 @@ Scope and limits — read before relying on this:
   substitution (``rm -rf $(echo /)``), aliasing, here-docs, and minor
   whitespace variations all defeat plain regex matching. Treat any code
   path that depends on these checks for safety as broken.
+* ROS 2 commands that can move hardware or change a motion gate
+  (``ros2 topic pub /cmd_vel``, a navigation goal, a controller switch, an
+  e-stop reset, a velocity limit) are reported as warnings with
+  ``category: actuation``. They never block and are not a safety function:
+  the check matches names, reads POSIX shell syntax only, and ignores any
+  command that does not contain the literal text ``ros2``. Syntax it cannot
+  interpret is listed in ``checks_skipped`` rather than treated as clean.
+  ``ROS2_SKILL_ACTUATION=off`` disables it; ``ask`` is handled by the Claude
+  adapter (``claude_hook.py``), not here.
+* In event mode the anti-pattern checks run only for a file with confirmed
+  ROS context (see ``_has_ros_context``); manual ``--file`` checks whatever
+  it is given.
 * The anti-pattern checks scan source for common ROS 2 mistakes. They skip
   single-line comments (``#`` in Python, ``//`` in C/C++, both for unknown
   extensions) but do *not* skip Python triple-quoted strings, so a
@@ -554,6 +566,693 @@ def _check_dangerous_commands(command):
     return issues
 
 
+# --- Actuation commands -----------------------------------------------------
+#
+# A `ros2` command that publishes a velocity, sends a motion goal, switches a
+# controller, resets a stop or changes a limit is the moment the skill's
+# guidance is about, so the hook says so. These findings are warnings: they
+# never block (exit 2 is reserved for the destructive patterns above), and
+# they are not a safety function. Names are matched, not behavior.
+#
+# The destructive patterns deliberately match inside quotes. That is wrong
+# here: `grep "ros2 topic pub /cmd_vel" notes.md` moves nothing. So this
+# analysis reads the command with a small quote-aware scanner and only judges
+# what it can interpret:
+#
+#   * simple commands split on ; && || | & newlines and grouping;
+#   * single quotes are data; double quotes and unquoted text execute `$(...)`
+#     and backticks, which are scanned in turn;
+#   * leading assignments and wrappers (sudo, env, timeout, nice, ...);
+#   * strings handed to a shell or a remote/contained shell: `bash -c`,
+#     `bash -lc`, `bash --login -c`, `ssh host '...'`, `docker exec ...`,
+#     `su -c`, a literal `eval`, tmux/screen/watch command strings;
+#   * here-documents: the body is a script when it feeds a shell, and
+#     otherwise only its `$(...)` is executed, and only when the delimiter is
+#     unquoted.
+#
+# What it cannot interpret is reported in `checks_skipped`, never as a pass:
+# unbalanced quoting, an unterminated here-document, nesting beyond
+# _ACTUATION_MAX_DEPTH, a variable as the command name, a shell reading
+# commands from a pipe, non-literal ros2 arguments. A command without the
+# literal text `ros2` is not analyzed at all, so `$CMD /cmd_vel`, an alias, or
+# a script that publishes is not detected. PowerShell and cmd are not parsed.
+ACTUATION_ENV = 'ROS2_SKILL_ACTUATION'
+ACTUATION_MODES = ('advise', 'ask', 'off')
+_ACTUATION_MAX_CHARS = 64 * 1024
+_ACTUATION_MAX_DEPTH = 3
+_POSIX_TOOLS = frozenset(('bash', 'shell', 'command', 'terminal'))
+_SHELLS = frozenset(('bash', 'sh', 'zsh', 'dash', 'ksh'))
+_RESERVED = frozenset(('if', 'then', 'elif', 'else', 'fi', 'do', 'done', 'while',
+                       'until', '{', '}', '!'))
+_ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\+?=')
+_VARIABLE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]')
+# Options that consume the following word, per wrapper; `positionals` are
+# dropped after the options (the duration of `timeout`, the mask of taskset).
+_WRAPPERS = {
+    'sudo': (('-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U', '-r', '-t',
+              '--user', '--group', '--host', '--prompt', '--chdir', '--role', '--type'), 0),
+    'doas': (('-u', '-C'), 0),
+    'env': (('-u', '--unset', '-C', '--chdir', '-S', '--split-string'), 0),
+    'nice': (('-n', '--adjustment'), 0),
+    'ionice': (('-c', '-n', '--class', '--classdata'), 0),
+    'timeout': (('-s', '--signal', '-k', '--kill-after'), 1),
+    'stdbuf': (('-i', '-o', '-e', '--input', '--output', '--error'), 0),
+    'chrt': ((), 1),
+    'taskset': ((), 1),
+    'nohup': ((), 0), 'setsid': ((), 0), 'time': ((), 0),
+    'exec': (('-a',), 0), 'command': ((), 0), 'builtin': ((), 0),
+}
+_SSH_VALUE_OPTIONS = frozenset(
+    '-' + letter for letter in 'BbcDEeFIiJLlmOopQRSWw')
+# Programs that run another program, or a command string, given as arguments.
+_LAUNCHERS = frozenset(('docker', 'podman', 'nerdctl', 'kubectl', 'xargs', 'parallel',
+                        'watch', 'find', 'tmux', 'screen', 'script', 'flock', 'chroot'))
+_TUTORIAL_PACKAGES = frozenset(('example_interfaces', 'action_tutorials_interfaces',
+                                'turtlesim', 'test_msgs'))
+_TURTLE_SEGMENT = re.compile(r'turtle\d*\Z')
+_MOTION_TOPIC = re.compile(
+    r'(?:cmd_vel\w*|\w+_cmd_vel|cmd_ackermann|ackermann_cmd\w*|joint_trajectory'
+    r'|joint_commands?|joint_jog|(?:position|velocity|effort)_commands?'
+    r'|delta_twist_cmds|delta_joint_cmds)\Z')
+_MOTION_MESSAGES = frozenset(('Twist', 'TwistStamped', 'JointTrajectory',
+                              'MultiDOFJointTrajectory', 'AckermannDrive',
+                              'AckermannDriveStamped', 'JointJog'))
+_MOTION_ACTIONS = frozenset((
+    'NavigateToPose', 'NavigateThroughPoses', 'FollowPath', 'FollowWaypoints',
+    'FollowGPSWaypoints', 'Spin', 'BackUp', 'DriveOnHeading', 'AssistedTeleop',
+    'FollowJointTrajectory', 'MoveGroup', 'MoveGroupSequence', 'ExecuteTrajectory',
+    'GripperCommand', 'ParallelGripperCommand', 'DockRobot', 'UndockRobot'))
+_MOTION_ACTION_NAME = re.compile(
+    r'(?:navigate_to_pose|navigate_through_poses|follow_path|follow_waypoints|spin'
+    r'|backup|drive_on_heading|follow_joint_trajectory|move_action|execute_trajectory'
+    r'|gripper_cmd|gripper_action|dock_robot|undock_robot)\Z')
+_STOP_PATH_SERVICE = re.compile(
+    r'e_?stop|emergency|clear_faults?|clear_errors?|reset_faults?|reset_errors?'
+    r'|brake|motor|torque|servo|actuator|arming|disarm|takeoff'
+    r'|(?<![a-z])arm(?![a-z])|(?<![a-z])land(?![a-z])')
+_CONTROLLER_SERVICE = re.compile(
+    r'(?:switch_controller|load_controller|unload_controller|configure_controller'
+    r'|set_hardware_component_state)\Z')
+_GATE_PARAMETER = re.compile(
+    r'(?:max|min)[_.]?\w*(?:vel|speed|acc|decel|jerk|effort|torque|current)'
+    r'|limit|timeout|watchdog|deadman|safety|e_?stop|collision', re.IGNORECASE)
+_TOPIC_PUB_VALUE_OPTIONS = frozenset((
+    '-r', '--rate', '-p', '--print', '-t', '--times', '-w',
+    '--wait-matching-subscriptions', '--keep-alive', '-n', '--node-name',
+    '--max-wait-time-secs', '--yaml-file', '--spin-time'))
+_SEND_GOAL_VALUE_OPTIONS = frozenset(('-t', '--timeout', '--spin-time'))
+_SERVICE_CALL_VALUE_OPTIONS = frozenset(('-r', '--rate', '--timeout', '--spin-time'))
+_CONTROL_VALUE_OPTIONS = frozenset((
+    '-c', '--controller-manager', '--activate', '--deactivate', '--start', '--stop',
+    '--set-state', '--switch-timeout', '--spin-time', '--param-file', '-p'))
+_ACTUATION_ADVICE = (
+    ' Not blocked. Confirm explicit authorization, an operator, and an independent '
+    'stop path before running it; see references/safety-estop.md and '
+    'references/evidence-progression.md section 2')
+
+
+class _Unparsed(Exception):
+    """The scanner met shell syntax it does not interpret."""
+
+
+class _Analysis:
+    def __init__(self):
+        self.commands = []  # (words, here-documents, depth); a word is (text, dynamic)
+        self.issues = []
+        self.reasons = []
+
+    def skip(self, reason):
+        if reason not in self.reasons:
+            self.reasons.append(reason)
+
+    def add(self, confidence, what):
+        message = (('Actuation command: ' if confidence == 'high' else 'Possible actuation: ')
+                   + what[:200] + ' can move hardware or change a motion gate.'
+                   + _ACTUATION_ADVICE)
+        if not any(issue['message'] == message for issue in self.issues):
+            self.issues.append({'file': '<bash>', 'line': 0, 'severity': 'warning',
+                                'message': message, 'category': 'actuation',
+                                'confidence': confidence})
+
+
+def _balanced(text, start):
+    """Index just past the parenthesis matching the one at *start*."""
+    depth, i, n = 0, start, len(text)
+    while i < n:
+        char = text[i]
+        if char == '\\':
+            i += 2
+            continue
+        if char == "'":
+            end = text.find("'", i + 1)
+            if end < 0:
+                break
+            i = end + 1
+            continue
+        if char == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == '\\':
+                    i += 1
+                elif text.startswith('$(', i):
+                    i = _balanced(text, i + 1) - 1
+                i += 1
+            if i >= n:
+                break
+            i += 1
+            continue
+        if char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise _Unparsed('unbalanced quote or parenthesis')
+
+
+def _scan_commands(text, depth, out):
+    """Split shell text into simple commands, keeping what quoting meant."""
+    if depth > _ACTUATION_MAX_DEPTH:
+        out.skip('command nesting is deeper than the analysis follows')
+        return
+    n = len(text)
+    words, heredocs, pending = [], [], []
+    state = {'buf': [], 'word': False, 'dynamic': False, 'skip': False,
+             'delimiter': None, 'quoted': False}
+
+    def literal(chunk):
+        state['buf'].append(chunk)
+        state['word'] = True
+
+    def end_word():
+        if not state['word']:
+            return
+        value = ''.join(state['buf'])
+        if state['delimiter'] is not None:
+            doc = {'delimiter': value, 'strip_tabs': state['delimiter'],
+                   'quoted': state['quoted'], 'body': None}
+            heredocs.append(doc)
+            pending.append(doc)
+            state['delimiter'] = None
+        elif state['skip']:
+            state['skip'] = False
+        else:
+            words.append((value, state['dynamic']))
+        state.update(buf=[], word=False, dynamic=False, quoted=False)
+
+    def end_command():
+        nonlocal words, heredocs
+        end_word()
+        if words or heredocs:
+            out.commands.append((words, heredocs, depth))
+        words, heredocs = [], []
+        state.update(skip=False, delimiter=None)
+
+    def substitution(start, placeholder):
+        """`$(`, `<(` or `>(` at *start*: its commands run; return the next index."""
+        end = _balanced(text, start + 1)
+        _scan_commands(text[start + 2:end - 1], depth + 1, out)
+        literal(placeholder)
+        state['dynamic'] = True
+        return end
+
+    def dollar(i, in_double):
+        if text.startswith('$((', i):
+            end = _balanced(text, i + 1)
+            literal(text[i:end])
+            state['dynamic'] = True
+            return end
+        if text.startswith('$(', i):
+            return substitution(i, '$()')
+        if text.startswith('${', i):
+            end = text.find('}', i)
+            if end < 0:
+                raise _Unparsed('unbalanced parameter expansion')
+            literal(text[i:end + 1])
+            state['dynamic'] = True
+            return end + 1
+        if not in_double and text.startswith("$'", i):
+            j = i + 2
+            while j < n and text[j] != "'":
+                j += 2 if text[j] == '\\' else 1
+            if j >= n:
+                raise _Unparsed('unbalanced quote')
+            literal(text[i + 2:j])
+            return j + 1
+        match = _VARIABLE.match(text, i + 1)
+        if not match:
+            literal('$')
+            return i + 1
+        literal(text[i:match.end()])
+        state['dynamic'] = True
+        return match.end()
+
+    def backtick(i):
+        j, inner = i + 1, []
+        while j < n and text[j] != '`':
+            if text[j] == '\\' and j + 1 < n:
+                j += 1
+            inner.append(text[j])
+            j += 1
+        if j >= n:
+            raise _Unparsed('unbalanced backtick')
+        _scan_commands(''.join(inner), depth + 1, out)
+        literal('$()')
+        state['dynamic'] = True
+        return j + 1
+
+    def heredoc_bodies(i):
+        for doc in pending:
+            lines = []
+            while True:
+                if i >= n:
+                    out.skip('a here-document is not terminated')
+                    del pending[:]
+                    return n
+                end = text.find('\n', i)
+                end = n if end < 0 else end
+                line = text[i:end]
+                i = min(end + 1, n)
+                if (line.lstrip('\t') if doc['strip_tabs'] else line) == doc['delimiter']:
+                    break
+                lines.append(line)
+            doc['body'] = '\n'.join(lines)
+        del pending[:]
+        return i
+
+    i = 0
+    while i < n:
+        char = text[i]
+        if char == '\\':
+            if text.startswith('\\\n', i):
+                i += 2
+                continue
+            literal(text[i + 1:i + 2])
+            if state['delimiter'] is not None:
+                state['quoted'] = True
+            i += 2
+        elif char == "'":
+            end = text.find("'", i + 1)
+            if end < 0:
+                raise _Unparsed('unbalanced quote')
+            literal(text[i + 1:end])
+            if state['delimiter'] is not None:
+                state['quoted'] = True
+            i = end + 1
+        elif char == '"':
+            literal('')
+            if state['delimiter'] is not None:
+                state['quoted'] = True
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == '\\' and i + 1 < n:
+                    if text[i + 1] == '\n':
+                        i += 2
+                    elif text[i + 1] in '"\\$`':
+                        literal(text[i + 1])
+                        i += 2
+                    else:
+                        literal('\\')
+                        i += 1
+                elif text[i] == '$':
+                    i = dollar(i, True)
+                elif text[i] == '`':
+                    i = backtick(i)
+                else:
+                    literal(text[i])
+                    i += 1
+            if i >= n:
+                raise _Unparsed('unbalanced quote')
+            i += 1
+        elif char == '$':
+            i = dollar(i, False)
+        elif char == '`':
+            i = backtick(i)
+        elif char in ' \t\r':
+            end_word()
+            i += 1
+        elif char == '\n':
+            end_command()
+            i = heredoc_bodies(i + 1) if pending else i + 1
+        elif char == ';':
+            end_command()
+            i += 1
+        elif char == '&':
+            if text.startswith('&&', i):
+                end_command()
+                i += 2
+            elif text.startswith('&>', i):
+                end_word()
+                i += 3 if text.startswith('&>>', i) else 2
+                state['skip'] = True
+            else:
+                end_command()
+                i += 1
+        elif char == '|':
+            end_command()
+            i += 2 if text[i + 1:i + 2] in ('|', '&') else 1
+        elif char in '()':
+            end_command()
+            i += 1
+        elif char in '<>':
+            if text.startswith(char + '(', i):
+                i = substitution(i, char + '()')
+                continue
+            if state['word'] and ''.join(state['buf']).isdigit() and not state['dynamic']:
+                state.update(buf=[], word=False)  # a file descriptor, not a word
+            else:
+                end_word()
+            if text.startswith('<<<', i):
+                i += 3
+                state['skip'] = True
+            elif text.startswith('<<', i):
+                i += 2
+                strip = text[i:i + 1] == '-'
+                i += 1 if strip else 0
+                state['delimiter'] = strip
+            else:
+                i += 1
+                if text[i:i + 1] in ('>', '|'):
+                    i += 1
+                if text[i:i + 1] == '&':
+                    i += 1
+                state['skip'] = True
+        elif char == '#' and not state['word']:
+            end = text.find('\n', i)
+            i = n if end < 0 else end
+        else:
+            literal(char)
+            i += 1
+    end_command()
+    if pending:
+        out.skip('a here-document is not terminated')
+
+
+def _scan_heredoc_substitutions(body, depth, out):
+    """An unquoted here-document expands `$(...)` and backticks before use."""
+    i, n = 0, len(body)
+    while i < n:
+        if body[i] == '\\':
+            i += 2
+        elif body.startswith('$((', i):
+            i = _balanced(body, i + 1)
+        elif body.startswith('$(', i):
+            end = _balanced(body, i + 1)
+            _scan_commands(body[i + 2:end - 1], depth + 1, out)
+            i = end
+        elif body[i] == '`':
+            end = body.find('`', i + 1)
+            if end < 0:
+                raise _Unparsed('unbalanced backtick')
+            _scan_commands(body[i + 1:end], depth + 1, out)
+            i = end + 1
+        else:
+            i += 1
+
+
+def _strip_wrapper(name, rest):
+    value_options, positionals = _WRAPPERS[name]
+    i = 0
+    while i < len(rest):
+        text, dynamic = rest[i]
+        if dynamic:
+            break
+        if text == '--':
+            i += 1
+            break
+        if name == 'env' and _ASSIGNMENT.match(text):
+            i += 1
+        elif text.startswith('-') and len(text) > 1:
+            i += 2 if text in value_options else 1
+        else:
+            break
+    return rest[i + positionals:]
+
+
+def _positionals(args, value_options):
+    """Positional words of a ros2 verb, skipping options and their values."""
+    result, i = [], 0
+    while i < len(args):
+        text, dynamic = args[i]
+        if not dynamic and text.startswith('-') and len(text) > 1:
+            takes_value = '=' not in text and (
+                text in value_options or text.startswith('--qos-'))
+            i += 2 if takes_value else 1
+            continue
+        result.append(args[i])
+        i += 1
+    return result
+
+
+def _segments(name):
+    return [part for part in name.lower().strip('/').split('/') if part]
+
+
+def _interface(type_name):
+    """('pkg', 'Name') from pkg/msg/Name, pkg/Name or a bare Name."""
+    parts = [part for part in type_name.split('/') if part]
+    return (parts[0] if len(parts) > 1 else '', parts[-1] if parts else '')
+
+
+def _is_tutorial(name, type_name):
+    return (_interface(type_name)[0] in _TUTORIAL_PACKAGES
+            or any(_TURTLE_SEGMENT.match(part) for part in _segments(name)))
+
+
+def _classify_ros2(args, out):
+    """Judge one `ros2 ...` invocation; *args* excludes the program name."""
+    if len(args) < 2:
+        return
+    if args[0][1] or args[1][1]:
+        out.skip('ros2 verb is not literal')
+        return
+    verb, sub, rest = args[0][0], args[1][0], args[2:]
+
+    def target(words, count):
+        """First *count* positionals as text, or None when one is not literal."""
+        chosen = words[:count]
+        if len(chosen) < count:
+            return ['' for _ in range(count)]
+        return [text for text, _dynamic in chosen] if not any(
+            dynamic for _text, dynamic in chosen) else None
+
+    if (verb, sub) == ('topic', 'pub'):
+        words = _positionals(rest, _TOPIC_PUB_VALUE_OPTIONS)
+        # A partly literal name still classifies: `/$NS/cmd_vel` ends in a
+        # motion topic whatever the namespace expands to.
+        topic = words[0][0] if words else ''
+        type_name = words[1][0] if len(words) > 1 else ''
+        if _is_tutorial(topic, type_name):
+            return
+        parts = _segments(topic)
+        controller_command = (len(parts) >= 2 and parts[-2].endswith('controller')
+                              and parts[-1] in ('commands', 'command', 'reference'))
+        if (controller_command or (parts and _MOTION_TOPIC.match(parts[-1]))
+                or _interface(type_name)[1] in _MOTION_MESSAGES):
+            out.add('high', '`ros2 topic pub` to ' + (topic or 'a ' + type_name + ' topic'))
+        elif len(words) >= 2 and words[0][1] and words[1][1]:
+            out.skip('ros2 topic pub target is not literal')
+    elif (verb, sub) == ('action', 'send_goal'):
+        names = target(_positionals(rest, _SEND_GOAL_VALUE_OPTIONS), 2)
+        if names is None:
+            out.skip('ros2 action send_goal target is not literal')
+            return
+        name, type_name = names
+        if _is_tutorial(name, type_name):
+            return
+        parts = _segments(name)
+        if (_interface(type_name)[1] in _MOTION_ACTIONS
+                or (parts and _MOTION_ACTION_NAME.match(parts[-1]))):
+            out.add('high', '`ros2 action send_goal` to ' + (name or type_name))
+        else:
+            out.add('low', '`ros2 action send_goal` to ' + (name or 'an action')
+                    + ' may command motion, and if it does it')
+    elif (verb, sub) == ('service', 'call'):
+        names = target(_positionals(rest, _SERVICE_CALL_VALUE_OPTIONS), 2)
+        if names is None:
+            out.skip('ros2 service call target is not literal')
+            return
+        name, type_name = names
+        if _is_tutorial(name, type_name):
+            return
+        parts = _segments(name)
+        if (_STOP_PATH_SERVICE.search(name.lower())
+                or (parts and _CONTROLLER_SERVICE.match(parts[-1]))):
+            out.add('high', '`ros2 service call` to ' + name)
+    elif verb == 'control':
+        if sub in ('switch_controllers', 'set_controller_state',
+                   'set_hardware_component_state'):
+            out.add('high', '`ros2 control ' + sub + '`')
+        elif sub == 'load_controller':
+            texts = [text for text, _dynamic in rest]
+            if any(text in ('--set-state=active', '--set-state=start') for text in texts) or any(
+                    text == '--set-state' and following in ('active', 'start')
+                    for text, following in zip(texts, texts[1:])):
+                out.add('high', '`ros2 control load_controller --set-state active`')
+    elif (verb, sub) == ('lifecycle', 'set'):
+        names = target(_positionals(rest, frozenset(('--spin-time',))), 2)
+        if names is None:
+            out.skip('ros2 lifecycle set target is not literal')
+        elif names[1] == 'activate':
+            out.add('low', '`ros2 lifecycle set ' + names[0] + ' activate` may enable '
+                    'a driver or controller, and if it does it')
+    elif (verb, sub) == ('param', 'set'):
+        names = target(_positionals(rest, frozenset(('--spin-time',))), 2)
+        if names is None:
+            out.skip('ros2 param set target is not literal')
+        elif _GATE_PARAMETER.search(names[1]):
+            out.add('high', '`ros2 param set` of ' + names[1] + ' on ' + names[0])
+    elif verb == 'run':
+        words = [sub] + [text for text, dynamic in rest[:1] if not dynamic]
+        if any('teleop' in word.lower() for word in words):
+            out.add('high', '`ros2 run` of a teleoperation node')
+
+
+def _inspect_shell(rest, heredocs, depth, out):
+    """A shell invocation; True when its here-documents were read as scripts."""
+    i, saw_c, reads_stdin = 0, False, False
+    while i < len(rest):
+        text, dynamic = rest[i]
+        if dynamic:
+            break
+        if text == '--':
+            i += 1
+            break
+        if text.startswith('--'):
+            i += 2 if text in ('--rcfile', '--init-file') else 1
+        elif text in ('-o', '+o', '-O', '+O'):
+            i += 2
+        elif re.fullmatch(r'[-+][A-Za-z]+', text):
+            if text[0] == '-':
+                saw_c = saw_c or 'c' in text
+                reads_stdin = reads_stdin or 's' in text
+            i += 1
+        else:
+            break
+    if saw_c:
+        if i < len(rest):
+            _scan_commands(rest[i][0], depth + 1, out)
+        return False
+    if i < len(rest) and not reads_stdin:
+        return False  # a script file: its contents are not visible here
+    bodies = [doc['body'] for doc in heredocs if doc['body'] is not None]
+    for body in bodies:
+        _scan_commands(body, depth + 1, out)
+    if not bodies:
+        out.skip('commands fed to a shell on standard input are not inspected')
+    return True
+
+
+def _inspect_command(words, heredocs, depth, out):
+    """Judge one simple command; True when here-documents were consumed."""
+    args = list(words)
+    while args:
+        text, dynamic = args[0]
+        if dynamic:
+            break
+        name = os.path.basename(text)
+        if _ASSIGNMENT.match(text) or text in _RESERVED:
+            args.pop(0)
+        elif name in _WRAPPERS:
+            args = _strip_wrapper(name, args[1:])
+        else:
+            break
+    if not args:
+        return False
+    head, dynamic = args[0]
+    rest = args[1:]
+    if dynamic:
+        if any(text == 'ros2' and not dyn for text, dyn in rest):
+            out.skip('the command name is a variable or substitution')
+        return False
+    name = os.path.basename(head)
+    if name == 'ros2':
+        _classify_ros2(rest, out)
+    elif name in _SHELLS:
+        return _inspect_shell(rest, heredocs, depth, out)
+    elif name == 'ssh':
+        i = 0
+        while i < len(rest) and not rest[i][1] and rest[i][0].startswith('-'):
+            i += 2 if rest[i][0] in _SSH_VALUE_OPTIONS else 1
+        remote = rest[i + 1:]
+        if remote:
+            _scan_commands(' '.join(text for text, _dynamic in remote), depth + 1, out)
+        else:
+            for doc in heredocs:
+                if doc['body'] is not None:
+                    _scan_commands(doc['body'], depth + 1, out)
+            return True
+    elif name == 'su':
+        for index, (text, _dynamic) in enumerate(rest[:-1]):
+            if text in ('-c', '--command'):
+                _scan_commands(rest[index + 1][0], depth + 1, out)
+    elif name == 'eval':
+        if any(dyn for _text, dyn in rest):
+            out.skip('eval builds its command at run time')
+        else:
+            _scan_commands(' '.join(text for text, _dynamic in rest), depth + 1, out)
+    elif name in _LAUNCHERS:
+        for index, (text, dyn) in enumerate(rest):
+            if dyn:
+                continue
+            if os.path.basename(text) == 'ros2' or os.path.basename(text) in _SHELLS:
+                return _inspect_command(rest[index:], heredocs, depth, out)
+            if 'ros2' in text and any(space in text for space in ' \t'):
+                _scan_commands(text, depth + 1, out)
+    return False
+
+
+def analyze_actuation(command, tool_name='bash'):
+    """Classify what a shell command would do to a robot.
+
+    Returns {'status', 'confidence', 'reasons', 'issues'}. status is 'detected'
+    when at least one finding exists, 'not_evaluated' when the command names
+    ros2 but could not be judged, 'off' when disabled, otherwise 'none'.
+    """
+    result = {'status': 'none', 'confidence': None, 'reasons': [], 'issues': []}
+    if os.environ.get(ACTUATION_ENV, '').strip().lower() == 'off':
+        result['status'] = 'off'
+        return result
+    if not isinstance(command, str) or 'ros2' not in command:
+        return result
+    out = _Analysis()
+    family = tool_name.lower().rstrip('_').split('__')[-1]
+    if family not in _POSIX_TOOLS:
+        out.skip('only POSIX shell commands are analyzed, not ' + (family or 'this tool'))
+    elif len(command) > _ACTUATION_MAX_CHARS:
+        out.skip('the command is longer than the analysis reads')
+    else:
+        try:
+            _scan_commands(command, 0, out)
+            index = 0
+            while index < len(out.commands):
+                words, heredocs, depth = out.commands[index]
+                index += 1
+                if not _inspect_command(words, heredocs, depth, out):
+                    for doc in heredocs:
+                        if doc['body'] is not None and not doc['quoted']:
+                            _scan_heredoc_substitutions(doc['body'], depth, out)
+        except _Unparsed as exc:
+            out.skip(str(exc))
+        except RecursionError:
+            out.skip('command nesting is deeper than the analysis follows')
+    result['issues'] = out.issues
+    result['reasons'] = out.reasons
+    if out.issues:
+        result['status'] = 'detected'
+        result['confidence'] = ('high' if any(
+            issue['confidence'] == 'high' for issue in out.issues) else 'low')
+    elif out.reasons:
+        result['status'] = 'not_evaluated'
+    return result
+
+
+def _actuation_report(analysis):
+    """The part of an analysis that goes into the JSON report."""
+    return {key: analysis[key] for key in ('status', 'confidence', 'reasons')}
+
+
 def _read_hook_payload():
     """Resolve (tool_name, tool_input_dict, cwd, debug_info) from the harness.
 
@@ -680,11 +1379,12 @@ def _manual_check_files(paths):
 
 
 def _event_mode_issues():
-    """Original event-mode checks; returns (issues, tool_name, tool_input,
-    debug)."""
+    """Event-mode checks; returns (issues, tool_name, tool_input, debug,
+    actuation analysis)."""
     tool_name, tool_input, cwd, debug = _read_hook_payload()
 
     issues = []
+    actuation = analyze_actuation('')
 
     # Normalize tool name for resilient matching across runtime variations.
     # This avoids silent bypass if the harness ever changes casing or adds
@@ -734,8 +1434,12 @@ def _event_mode_issues():
         command = tool_input.get('command', '')
         if command:
             issues.extend(_check_dangerous_commands(command))
+            # The scanner reads POSIX shell syntax only; for the PowerShell
+            # and cmd aliases it reports the command as not evaluated.
+            actuation = analyze_actuation(command, tool_name_lower)
+            issues.extend(actuation['issues'])
 
-    return issues, tool_name, tool_input, debug
+    return issues, tool_name, tool_input, debug, actuation
 
 
 def main(argv=None):
@@ -751,8 +1455,9 @@ def main(argv=None):
         help='check the named source files for ROS 2 anti-patterns')
     parser.add_argument(
         '--command', metavar='CMD', default=None,
-        help=('inspect a shell command string for dangerous patterns; '
-              'the string is analyzed only and never executed'))
+        help=('inspect a shell command string for dangerous patterns and for '
+              'ROS 2 commands that can move hardware; the string is analyzed '
+              'only and never executed'))
     parser.add_argument(
         '--debug', action='store_true',
         help='include payload-resolution debug info in the JSON result')
@@ -772,18 +1477,28 @@ def main(argv=None):
         if args.file:
             file_issues, checks_skipped = _manual_check_files(args.file)
             issues.extend(file_issues)
+        actuation = analyze_actuation('')
         if args.command is not None:
             issues.extend(_check_dangerous_commands(args.command))
+            # Same analysis as event mode, so a manual check and the hook
+            # agree on what a command would do.
+            actuation = analyze_actuation(args.command)
+            issues.extend(actuation['issues'])
     else:
-        issues, tool_name, tool_input, debug = _event_mode_issues()
+        issues, tool_name, tool_input, debug, actuation = _event_mode_issues()
+
+    # A command that names ros2 but could not be judged is not a clean pass.
+    checks_skipped = list(checks_skipped) + [
+        'actuation: ' + reason for reason in actuation['reasons']]
 
     result = {
         'hook': 'ros2-engineering-skills:pre-tool-use',
-        'version': '1.4.0',
+        'version': '1.5.0',
         'mode': 'manual' if manual_mode else 'event',
         'issues_count': len(issues),
         'issues': issues,
         'checks_skipped': checks_skipped,
+        'actuation': _actuation_report(actuation),
         'status': 'fail' if any(
             i['severity'] == 'error' for i in issues
         ) else 'pass',
