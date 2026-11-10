@@ -1226,7 +1226,7 @@ class TestValidateHookCLI:
     def test_write_antipattern_warns(self):
         tool_input = json.dumps({
             'file_path': 'test.py',
-            'content': 'time.sleep(5)\n',
+            'content': 'import rclpy\ntime.sleep(5)\n',
         })
         result = subprocess.run(
             [sys.executable,
@@ -1272,7 +1272,7 @@ class TestValidateHookCLI:
     def test_edit_tool_with_antipattern(self):
         tool_input = json.dumps({
             'file_path': 'test.py',
-            'new_string': 'global node_state\n',
+            'new_string': 'import rclpy\nglobal node_state\n',
         })
         result = subprocess.run(
             [sys.executable,
@@ -1393,7 +1393,7 @@ class TestValidateHookMainDirect:
         monkeypatch.setenv('TOOL_NAME', 'Write')
         monkeypatch.setenv('TOOL_INPUT', json.dumps({
             'file_path': 'test.py',
-            'content': 'time.sleep(5)\n',
+            'content': 'import rclpy\ntime.sleep(5)\n',
         }))
         with _pytest.raises(SystemExit) as exc_info:
             main(argv=[])
@@ -1405,7 +1405,7 @@ class TestValidateHookMainDirect:
         monkeypatch.setenv('TOOL_NAME', 'Edit')
         monkeypatch.setenv('TOOL_INPUT', json.dumps({
             'file_path': 'test.py',
-            'new_string': 'global node_ref\n',
+            'new_string': 'import rclpy\nglobal node_ref\n',
         }))
         with _pytest.raises(SystemExit) as exc_info:
             main(argv=[])
@@ -1512,7 +1512,7 @@ class TestClaudeCodeStdinPayload:
             'tool_input': {
                 'file_path': '/tmp/x.py',
                 'old_string': 'pass',
-                'new_string': 'import time\ntime.sleep(1)',
+                'new_string': 'import rclpy\nimport time\ntime.sleep(1)',
             },
         })
         assert r.returncode == 0  # warning, not blocking
@@ -1528,7 +1528,7 @@ class TestClaudeCodeStdinPayload:
             'tool_input': {
                 'file_path': '/tmp/x.py',
                 'edits': [
-                    {'old_string': 'a', 'new_string': 'clean = 1'},
+                    {'old_string': 'a', 'new_string': 'import rclpy\nclean = 1'},
                     {'old_string': 'b', 'new_string': 'time.sleep(2)'},
                 ],
             },

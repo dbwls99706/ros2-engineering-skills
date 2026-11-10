@@ -51,10 +51,11 @@ def test_manual_file_branches(monkeypatch, capsys, tmp_path, kind):
 
 
 @pytest.mark.parametrize('tool,input_data', [
-    ('Write', {'file_path': 'node.py', 'content': 'time.sleep(1)'}),
-    ('mcp__files__write', {'path': 'node.py', 'content': 'time.sleep(1)'}),
-    ('MultiEdit', {'file_path': 'node.py', 'edits': [None, {}, {'new_string': 'time.sleep(1)'}]}),
-    ('Edit', {'file_path': 'node.py', 'new_string': 'time.sleep(1)'}),
+    ('Write', {'file_path': 'node.py', 'content': 'import rclpy\ntime.sleep(1)'}),
+    ('mcp__files__write', {'path': 'node.py', 'content': 'import rclpy\ntime.sleep(1)'}),
+    ('MultiEdit', {'file_path': 'node.py',
+                   'edits': [None, {}, {'new_string': 'import rclpy\ntime.sleep(1)'}]}),
+    ('Edit', {'file_path': 'node.py', 'new_string': 'import rclpy\ntime.sleep(1)'}),
 ])
 def test_event_edits_retain_warnings(monkeypatch, capsys, tool, input_data):
     code, out = invoke(monkeypatch, capsys, ['--debug'],
@@ -97,6 +98,11 @@ def test_check_file_read_error_and_comment_heuristics(tmp_path):
     assert legacy.check_content(content, 'node.py')
 
 
+# One marker per language: `#include` is a comment to Python, and the
+# Python import is ignored by the C++ marker.
+ROS_TEXT = 'import rclpy\n#include <rclcpp/rclcpp.hpp>\n'
+
+
 @pytest.mark.parametrize('path,expected', [
     ('/w/README.md', 0), ('/w/docs/notes.txt', 0), ('/w/scripts/deploy.sh', 0),
     ('/w/config/params.yaml', 0), ('/w/src/node.py', 1), ('/w/src/node.cpp', 1), ('', 1)])
@@ -104,7 +110,16 @@ def test_event_mode_checks_only_source_files(monkeypatch, capsys, path, expected
     # Manual --file and check_file() skip unsupported extensions, but event
     # mode flagged prose that merely mentions the pattern (most time.sleep
     # findings in one project came from .md, .sh and test notes). A payload
-    # without a path is still checked.
+    # without a path is still checked when its text shows ROS context.
+    code, out = invoke(monkeypatch, capsys, [], {'tool_name': 'Write', 'tool_input': {
+        'file_path': path, 'content': ROS_TEXT + 'Avoid time.sleep(1) in callbacks\n'}})
+    assert code == 0 and json.loads(out.out)['issues_count'] == expected
+
+
+@pytest.mark.parametrize('path', ['/w/src/node.py', '/w/src/node.cpp', ''])
+def test_event_mode_skips_sources_without_ros_context(monkeypatch, capsys, path):
+    # The same text without a ROS import or include, outside any ROS package:
+    # the hook runs in every project, and this is not known to be a ROS node.
     code, out = invoke(monkeypatch, capsys, [], {'tool_name': 'Write', 'tool_input': {
         'file_path': path, 'content': 'Avoid time.sleep(1) in callbacks\n'}})
-    assert code == 0 and json.loads(out.out)['issues_count'] == expected
+    assert code == 0 and json.loads(out.out)['issues_count'] == 0

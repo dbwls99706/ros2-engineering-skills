@@ -59,6 +59,7 @@ import json
 import os
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 
 # Patterns that indicate potential ROS 2 anti-patterns in code being written.
@@ -74,6 +75,9 @@ import sys
 #                    unset); if present, regex only runs when the filter
 #                    returns True. Use for advice that is wrong on older
 #                    distributions.
+#
+# `message` is a string, or a callable(ros_distro) -> str for advice whose
+# wording depends on whether the distribution is known.
 
 # ROS_AUTOMATIC_DISCOVERY_RANGE arrived in Iron, which also deprecated
 # ROS_LOCALHOST_ONLY. On these earlier distributions the deprecated variable is
@@ -89,13 +93,17 @@ def _ros_distro():
 ANTIPATTERN_CHECKS = [
     {
         'pattern': r'time\.sleep\s*\(',
-        'message': 'Avoid time.sleep() in ROS 2 nodes — use create_wall_timer() instead',
+        'message': ('time.sleep() inside a callback blocks its executor thread; '
+                    'prefer a node timer there. A sleep outside callbacks, such as '
+                    'in main() or a test, is not inherently an anti-pattern'),
         'severity': 'warning',
     },
     {
         'pattern': r'spin_until_future_complete\s*\(',
-        'message': ('spin_until_future_complete inside a callback causes deadlock. '
-                    'Use async_send_request with a callback instead'),
+        'message': ('Calling spin_until_future_complete() inside a callback can '
+                    'deadlock depending on executor and callback-group '
+                    'configuration. Check the execution context; a call from '
+                    'main() is not inherently an anti-pattern'),
         'severity': 'warning',
     },
     {
@@ -110,10 +118,18 @@ ANTIPATTERN_CHECKS = [
     },
     {
         'pattern': r'ROS_LOCALHOST_ONLY',
-        'message': ('ROS_LOCALHOST_ONLY is deprecated since Iron. '
-                    'Use ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST instead'),
+        # Unknown distro: keep warning, but do not prescribe the replacement.
+        # An unset ROS_DISTRO is common in editors and CI, and telling a
+        # Humble or Foxy project to switch would open its discovery.
+        'message': lambda distro: (
+            'ROS_LOCALHOST_ONLY is deprecated since Iron. '
+            'Use ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST instead'
+            if distro else
+            'ROS_LOCALHOST_ONLY is deprecated since Iron in favor of '
+            'ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST, but on Humble and earlier '
+            'it is the only way to confine discovery. ROS_DISTRO is not set: '
+            'confirm the target distribution before changing it'),
         'severity': 'warning',
-        # Unknown distro: keep warning, as before.
         'distro_filter': lambda distro: distro not in _DISTROS_WITHOUT_DISCOVERY_RANGE,
     },
     {
@@ -205,6 +221,119 @@ def _is_in_comment(content, pos, markers=('#', '//')):
     return False
 
 
+# --- ROS context -----------------------------------------------------------
+#
+# The plugin hook runs on every source file a session writes, in every
+# project. The anti-pattern advice is only true of ROS 2 code, so event mode
+# applies it only where ROS context is established by one of:
+#
+#   1. an unambiguous ROS import or include in the text being written;
+#   2. a valid ROS package manifest in the file's directory or above it;
+#   3. such an import or include in the first _CONTEXT_HEAD_BYTES of the file
+#      already on disk (an Edit fragment rarely repeats the imports).
+#
+# Anything else is skipped: an unconfirmed context gets no advice rather than
+# advice that may be wrong. `from launch import ...` and names starting with
+# `ament_` are deliberately not evidence on their own - neither is unique to
+# ROS. A launch-named file may additionally use a `launch` import.
+_ROS_PY_MARKER = re.compile(
+    r'^[ \t]*(?:import|from)[ \t]+'
+    r'(?:rclpy|launch_ros|ament_index_python|rcl_interfaces|rosbag2_py|rosidl_runtime_py)\b'
+    r'|^[ \t]*from[ \t]+\w+_(?:msgs|interfaces)\.(?:msg|srv|action)[ \t]+import\b',
+    re.MULTILINE)
+_ROS_CPP_MARKER = re.compile(
+    r'^[ \t]*#[ \t]*include[ \t]*[<"]'
+    r'(?:(?:rclcpp(?:_lifecycle|_action|_components)?|rclc(?:_lifecycle|_parameter)?'
+    r'|rcl|rcutils|rmw|ament_index_cpp)/'
+    r'|\w+_(?:msgs|interfaces)/(?:msg|srv|action)/)',
+    re.MULTILINE)
+_LAUNCH_PY_MARKER = re.compile(
+    r'^[ \t]*(?:import|from)[ \t]+launch(?:_ros|_xml|_yaml|_testing)?\b', re.MULTILINE)
+_CONTEXT_HEAD_BYTES = 64 * 1024
+_MANIFEST_MAX_BYTES = 256 * 1024
+_ANCESTOR_LIMIT = 8
+
+
+def _has_ros_marker(text, filename=''):
+    """True when *text* carries an unambiguous ROS 2 import or include."""
+    if not text:
+        return False
+    ext = os.path.splitext(filename)[1] if filename else ''
+    if ext == '.py':
+        return bool(_ROS_PY_MARKER.search(text)
+                    or (_is_launch_file(filename) and _LAUNCH_PY_MARKER.search(text)))
+    if ext in _CPP_EXTENSIONS:
+        return bool(_ROS_CPP_MARKER.search(text))
+    return bool(_ROS_PY_MARKER.search(text) or _ROS_CPP_MARKER.search(text))
+
+
+def _is_ros_package_manifest(path):
+    """True for a package.xml that declares an ament build, not merely the name."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > _MANIFEST_MAX_BYTES:
+            return False
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError, ValueError, LookupError):
+        return False
+    if root.tag != 'package':
+        return False
+    declared = [node.text for tag in ('buildtool_depend', 'build_type')
+                for node in root.iter(tag)]
+    return any(isinstance(text, str) and text.strip().startswith('ament_')
+               for text in declared)
+
+
+def _ros_package_above(path, stop_dir=''):
+    """True when the file sits in, or below, a valid ROS package directory.
+
+    The manifest is looked up on disk from the file's own directory upwards,
+    so it is found whether or not this session touched it. The walk ends at
+    *stop_dir* when that is an ancestor, and after _ANCESTOR_LIMIT levels
+    otherwise.
+    """
+    current = os.path.dirname(os.path.abspath(path))
+    stop = os.path.abspath(stop_dir) if stop_dir else ''
+    if stop:
+        try:
+            if os.path.commonpath([current, stop]) != stop:
+                stop = ''
+        except ValueError:  # different drives
+            stop = ''
+    for _ in range(_ANCESTOR_LIMIT):
+        if _is_ros_package_manifest(os.path.join(current, 'package.xml')):
+            return True
+        parent = os.path.dirname(current)
+        if current == stop or parent == current:
+            break
+        current = parent
+    return False
+
+
+def _read_head(path):
+    """First _CONTEXT_HEAD_BYTES of an existing regular file, else ''."""
+    try:
+        if not os.path.isfile(path):
+            return ''
+        with open(path, 'rb') as handle:
+            return handle.read(_CONTEXT_HEAD_BYTES).decode('utf-8', errors='replace')
+    except OSError:
+        return ''
+
+
+def _has_ros_context(filepath, content, cwd=''):
+    """Decide whether automatic anti-pattern advice applies to this write."""
+    if _has_ros_marker(content, filepath):
+        return True
+    if not filepath:
+        return False
+    path = filepath
+    if cwd and not os.path.isabs(path):
+        path = os.path.join(cwd, path)
+    if _ros_package_above(path, cwd):
+        return True
+    return _has_ros_marker(_read_head(path), filepath)
+
+
 def check_content(content, filename='<input>'):
     """Check content for ROS 2 anti-patterns.
 
@@ -231,11 +360,12 @@ def check_content(content, filename='<input>'):
             if _is_in_comment(content, match.start(), markers):
                 continue
             line_num = content[:match.start()].count('\n') + 1
+            message = check['message']
             issues.append({
                 'file': filename,
                 'line': line_num,
                 'severity': check['severity'],
-                'message': check['message'],
+                'message': message(distro) if callable(message) else message,
             })
     return issues
 
@@ -424,8 +554,11 @@ def _check_dangerous_commands(command):
     return issues
 
 
-def _read_tool_context():
-    """Resolve (tool_name, tool_input_dict, debug_info) from the harness.
+def _read_hook_payload():
+    """Resolve (tool_name, tool_input_dict, cwd, debug_info) from the harness.
+
+    Stdin is consumed here, once. A caller that also needs `cwd` must use this
+    function instead of calling _read_tool_context() a second time.
 
     Real Claude Code (verified 2026-05-21 by capturing actual hook fires)
     sends the full hook payload as a JSON object on STDIN, NOT via env vars.
@@ -465,7 +598,10 @@ def _read_tool_context():
                     if not isinstance(tool_input, dict):
                         # Defensive: future schema versions might wrap it.
                         tool_input = {}
-                    return tool_name, tool_input, debug
+                    cwd = payload.get('cwd')
+                    if not isinstance(cwd, str) or not cwd.strip():
+                        cwd = ''
+                    return tool_name, tool_input, cwd, debug
             except json.JSONDecodeError as e:
                 debug['stdin_parse_error'] = str(e)
 
@@ -480,6 +616,12 @@ def _read_tool_context():
                 tool_input = parsed
         except json.JSONDecodeError as e:
             debug['env_parse_error'] = str(e)
+    return tool_name, tool_input, '', debug
+
+
+def _read_tool_context():
+    """(tool_name, tool_input_dict, debug_info): _read_hook_payload() without cwd."""
+    tool_name, tool_input, _cwd, debug = _read_hook_payload()
     return tool_name, tool_input, debug
 
 
@@ -540,7 +682,7 @@ def _manual_check_files(paths):
 def _event_mode_issues():
     """Original event-mode checks; returns (issues, tool_name, tool_input,
     debug)."""
-    tool_name, tool_input, debug = _read_tool_context()
+    tool_name, tool_input, cwd, debug = _read_hook_payload()
 
     issues = []
 
@@ -570,12 +712,17 @@ def _event_mode_issues():
         else:
             content = (tool_input.get('content', '')
                        or tool_input.get('new_string', ''))
-        # Same scope as check_file() and manual --file: these are source-code
-        # patterns. Prose (README.md, notes.txt), shell scripts and parameter
-        # files that mention time.sleep() or ROS_LOCALHOST_ONLY are not ROS 2
-        # nodes. A payload without a path is still checked.
-        ext = os.path.splitext(filepath)[1] if isinstance(filepath, str) else ''
-        if content and (not filepath or ext in CHECKABLE_EXTENSIONS):
+        # Same file types as check_file() and manual --file: these are
+        # source-code patterns. Prose (README.md, notes.txt), shell scripts and
+        # parameter files that mention time.sleep() or ROS_LOCALHOST_ONLY are
+        # not ROS 2 nodes. Unlike manual --file, where the user named the
+        # file, this runs unasked in every project, so it also requires
+        # confirmed ROS context; a payload without a path needs it in its text.
+        if not isinstance(filepath, str):
+            filepath = ''
+        ext = os.path.splitext(filepath)[1]
+        if (content and (not filepath or ext in CHECKABLE_EXTENSIONS)
+                and _has_ros_context(filepath, content, cwd)):
             issues = check_content(content, filepath)
 
     # For shell-style tools, check for dangerous patterns. Includes PowerShell

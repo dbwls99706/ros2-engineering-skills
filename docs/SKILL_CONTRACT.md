@@ -81,6 +81,27 @@ are different contracts. A unit test of the adapter is not a recorded client
 hook event, and a regex guard is not a security boundary. NotebookEdit source is
 normalized; unsupported or malformed payloads are not guessed into valid edits.
 
+Automatic checks apply only where ROS context is confirmed for the file itself.
+PreToolUse source advice needs an unambiguous ROS import or include in the text
+being written (`rclpy`, `launch_ros`, `rclcpp/...`, a `*_msgs`/`*_interfaces`
+message module), a valid ROS package manifest in the file's directory or above
+it, or such an import in the first 64 KiB of the file already on disk. A
+`package.xml` counts only when it parses as a `<package>` that declares an
+`ament_*` build; the file name alone, `from launch import ...`, and names
+starting with `ament_` are not evidence. A payload without a path needs the
+import in its text. Without confirmed context the hook says nothing: missing a
+helper file outside any package is preferred to advising a web project to use
+node timers. The manual `--file` check is not scoped, because the user named the
+file.
+
+Stop validates a launch-named file under the same per-file rule: a valid ROS
+package above it, or a launch import or `generate_launch_description` in its own
+text. A ROS package elsewhere in the repository does not put an unrelated
+`deploy.launch.py` in scope, and the manifest is read from disk, so one committed
+earlier still scopes a launch file added beside it. Naming the workspace with
+`SKILL_WORKSPACE` validates every launch-named file. The validation functions are
+unchanged; only the selection for automatic runs is.
+
 Stop selects existing Git-modified/untracked candidates before validation; a
 documentation-only change needs no Python directory walk. When Git cannot identify
 the change set, one depth-limited scan collects candidates. Both paths retain

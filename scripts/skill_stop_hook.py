@@ -18,6 +18,13 @@ must not make every Stop fail forever in a repo the skill never modified.
 Outside a git repository (or if git is unavailable) all discovered files
 are validated, as before.
 
+A launch-named file is validated only where ROS context is confirmed for
+that file: a valid ROS package manifest in its directory or above it, or a
+launch import or entry point in its own text. `deploy.launch.py` in a web
+project is not a ROS launch file, and a ROS package elsewhere in the same
+repository does not make it one. Naming the workspace explicitly with
+SKILL_WORKSPACE validates every launch-named file, as a manual run expects.
+
 Execution logging is opt-in: a summary line is appended to .skill-runs.log
 only when the SKILL_RUNS_LOG environment variable is set (see
 _resolve_log_path). Without the opt-in the hook never writes to the
@@ -42,6 +49,7 @@ import subprocess
 import sys
 import ast
 import importlib.util
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -324,6 +332,73 @@ def _not_a_launch_description(filepath, tree, symbols):
     if filepath.endswith('.launch.py'):
         return False
     return _is_test_module(filepath) or not _imports_launch(tree)
+
+
+# Same rule as skill_validate_hook.py; the two scripts stay importable on
+# their own, and tests/test_hook_ros_context.py holds them to one answer.
+_MANIFEST_MAX_BYTES = 256 * 1024
+_ANCESTOR_LIMIT = 8
+
+
+def _is_ros_package_manifest(path):
+    """True for a package.xml that declares an ament build, not merely the name."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > _MANIFEST_MAX_BYTES:
+            return False
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError, ValueError, LookupError):
+        return False
+    if root.tag != 'package':
+        return False
+    declared = [node.text for tag in ('buildtool_depend', 'build_type')
+                for node in root.iter(tag)]
+    return any(isinstance(text, str) and text.strip().startswith('ament_')
+               for text in declared)
+
+
+def _ros_package_above(path, stop_dir=''):
+    """True when the file sits in, or below, a valid ROS package directory.
+
+    The manifest is read from disk, not taken from the changed-file set: a
+    package.xml committed long ago still makes a new launch file beside it a
+    ROS launch file.
+    """
+    current = os.path.dirname(os.path.abspath(path))
+    stop = os.path.abspath(stop_dir) if stop_dir else ''
+    if stop:
+        try:
+            if os.path.commonpath([current, stop]) != stop:
+                stop = ''
+        except ValueError:  # different drives
+            stop = ''
+    for _ in range(_ANCESTOR_LIMIT):
+        if _is_ros_package_manifest(os.path.join(current, 'package.xml')):
+            return True
+        parent = os.path.dirname(current)
+        if current == stop or parent == current:
+            break
+        current = parent
+    return False
+
+
+def _workspace_is_explicit():
+    """SKILL_WORKSPACE names the workspace on purpose: a manual or test run."""
+    return bool(os.environ.get('SKILL_WORKSPACE'))
+
+
+def _launch_file_in_scope(filepath, workspace):
+    """Whether an automatic run should validate this launch-named file.
+
+    This only selects files. validate_launch_file_syntax() is unchanged and
+    stays strict for everything it is given.
+    """
+    if _ros_package_above(filepath, workspace):
+        return True
+    try:
+        with open(filepath, 'rb') as fh:
+            return _looks_like_launch_source(fh.read())
+    except OSError:
+        return False
 
 
 def validate_launch_file_syntax(filepath):
@@ -739,6 +814,10 @@ def main():
     all_issues = []
 
     launch_files, package_xmls, yaml_files = _validation_files(workspace)
+    if not _workspace_is_explicit():
+        scope_root = os.path.realpath(workspace)
+        launch_files = [lf for lf in launch_files
+                        if _launch_file_in_scope(lf, scope_root)]
 
     for lf in launch_files:
         all_issues.extend(validate_launch_file_syntax(lf))

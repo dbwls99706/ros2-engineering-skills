@@ -228,8 +228,8 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `rosbag2_qos_checker.py` | Inspect bag metadata QoS | Static metadata analysis |
 | `launch_validator.py` | Detect selected Python launch defects | Does not start a graph |
 | `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
-| `skill_validate_hook.py` | Inspect source and command strings | Best-effort guard, not a security boundary |
-| `skill_stop_hook.py` | Check changed launch/package/Nav2 files | Advisory, not a complete build |
+| `skill_validate_hook.py` | Inspect source and command strings | Best-effort guard, not a security boundary; automatic source advice only with confirmed ROS context |
+| `skill_stop_hook.py` | Check changed launch/package/Nav2 files | Advisory, not a complete build; automatic runs skip launch-named files without ROS context |
 | `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions or blocks Stop |
 | `validate_skill.py` | Validate metadata, local paths, packaging, source dates | Static checks, not client activation |
 | `install_skill.py` | Stage and validate knowledge-only installations | No settings changes or hook registration |
