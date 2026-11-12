@@ -552,17 +552,255 @@ DANGEROUS_COMMAND_PATTERNS = [
 ]
 
 
-def _check_dangerous_commands(command):
-    """Check a bash command string for dangerous patterns."""
+def _match_dangerous(text):
+    """Every destructive pattern that matches *text* as written."""
     issues = []
     for check in DANGEROUS_COMMAND_PATTERNS:
-        if re.search(check['pattern'], command, check.get('flags', 0)):
+        if re.search(check['pattern'], text, check.get('flags', 0)):
             issues.append({
                 'file': '<bash>',
                 'line': 0,
                 'severity': 'error',
                 'message': check['message'],
             })
+    return issues
+
+
+# The patterns above read the command as text, which errs both ways: quoted
+# text handed to grep or echo is refused although nothing runs, and
+# `bash -c 'rm -rf /'` passes because the pattern expects a separator, not a
+# closing quote, after the path. For POSIX shell tools the quote-aware scanner
+# further down (written for the actuation check) settles both, under one
+# rule: a command that would run stays refused; only text confirmed to be
+# data is let through.
+#
+#   * Data. The literal arguments of grep/egrep/fgrep, rg, echo and printf
+#     are data when the command stands at the top level with nothing in front
+#     of it, does not write to a file, and everything after it in the same
+#     pipeline is a plain filter. Arguments that contain a substitution or a
+#     variable are never treated as data, because that part runs first.
+#     `printf -v` stores instead of printing and `rg --pre` runs a program, so
+#     neither qualifies. If the scan is incomplete in any way nothing is
+#     treated as data and the pattern verdict stands.
+#   * Commands. Each program the scanner finds would run - inside `bash -c`,
+#     `ssh host '...'`, `$(...)`, a subshell, after sudo or xargs - is checked
+#     against the command-position patterns as program plus arguments.
+#   * Echoed scripts. The text a literal echo or printf writes to a file, or
+#     pipes into a shell, is checked as a script.
+#
+# Not interpreted: `git -c alias.x='!...'` shell aliases, and anything a
+# variable expands to. Other tools (PowerShell, cmd) keep the pattern verdict.
+_DATA_PROGRAMS = frozenset(('grep', 'egrep', 'fgrep', 'rg', 'echo', 'printf'))
+_PIPE_FILTERS = frozenset(('head', 'tail', 'wc', 'sort', 'uniq', 'less', 'cat',
+                           'grep', 'egrep', 'fgrep', 'rg'))
+_REINTERPRETERS = frozenset(('eval', 'source', '.', 'xargs', 'parallel'))
+_DESTRUCTIVE_HINT = re.compile(r'\b(?:rm|mkfs|dd|chmod)\b')
+
+
+def _plain_program(words):
+    """Bare program name of a command with nothing in front of it.
+
+    `./grep` and `/tmp/echo` are whatever file is there, so a path is not
+    accepted as one of the known data programs or filters.
+    """
+    if not words or words[0][1] or '/' in words[0][0]:
+        return ''
+    return words[0][0]
+
+
+def _unwrapped(words):
+    """*words* without leading assignments and wrappers such as sudo or env."""
+    args = list(words)
+    while args and not args[0][1]:
+        text = args[0][0]
+        if _ASSIGNMENT.match(text):
+            args.pop(0)
+        elif os.path.basename(text) in _WRAPPERS:
+            args = _strip_wrapper(os.path.basename(text), args[1:])
+        else:
+            break
+    return args
+
+
+def _runs_a_program(name, words):
+    """Options that make an otherwise data-only program store or execute."""
+    texts = [text for text, dynamic in words[1:] if not dynamic]
+    if name == 'printf':
+        return any(text.startswith('-v') for text in texts)
+    if name == 'rg':
+        return any(text.startswith(('--pre', '--hostname-bin')) for text in texts)
+    if name == 'sort':
+        return any(text.startswith(('-o', '--output')) for text in texts)
+    if name == 'uniq':
+        return len([text for text in texts if not text.startswith('-')]) > 1
+    return False
+
+
+def _reads_stdin_as_script(words):
+    """A shell with no command string and no script file: it runs its input."""
+    words = _unwrapped(words)
+    if not words or words[0][1] or os.path.basename(words[0][0]) not in _SHELLS:
+        return False
+    for text, dynamic in words[1:]:
+        if dynamic or not text.startswith('-') or (not text.startswith('--') and 'c' in text):
+            return False
+    return True
+
+
+def _top_level_pipelines(out):
+    """Top-level commands grouped into pipelines, in source order."""
+    pipelines, current = [], []
+    for words, _heredocs, depth, meta in out.commands:
+        if depth != 0:
+            continue
+        current.append((words, meta))
+        if meta['sep'] != '|':
+            pipelines.append(current)
+            current = []
+    if current:
+        pipelines.append(current)
+    return pipelines
+
+
+def _mask_data_arguments(command, out):
+    """*command* with confirmed data blanked out, or None when nothing is data."""
+    if out.reasons or out.grouped or any(
+            name in _REINTERPRETERS for name, _rest in out.executed):
+        return None
+    masked = list(command)
+    for pipeline in _top_level_pipelines(out):
+        for index, (words, meta) in enumerate(pipeline):
+            name = _plain_program(words)
+            if name not in _DATA_PROGRAMS or _runs_a_program(name, words):
+                continue
+            rest = pipeline[index + 1:]
+            if meta['redirect_out'] or any(
+                    later['redirect_out'] or _plain_program(following) not in _PIPE_FILTERS
+                    or _runs_a_program(_plain_program(following), following)
+                    for following, later in rest):
+                continue
+            for (text, dynamic), (start, end) in zip(words[1:], meta['spans'][1:]):
+                if not dynamic:
+                    masked[start:end] = ' ' * (end - start)
+    masked = ''.join(masked)
+    return None if masked == command else masked
+
+
+def _executed_issues(out):
+    """Command-position patterns applied to each program that would run."""
+    issues = []
+
+    def refuse(message):
+        issues.append({'file': '<bash>', 'line': 0, 'severity': 'error', 'message': message})
+
+    for name, rest in out.executed:
+        if name == 'rm':
+            # The patterns read `rm <short options> /`. As arguments the
+            # target is unambiguous whatever precedes it: `--`, a long
+            # option such as --no-preserve-root, or another path.
+            operands, options_done = [], False
+            for word, dynamic in rest:
+                if dynamic:
+                    continue
+                if not options_done and word == '--':
+                    options_done = True
+                elif options_done or not word.startswith('-'):
+                    operands.append(word)
+            if '/' in operands:
+                refuse('Refusing to remove root filesystem (rm -rf /)')
+            if '/*' in operands:
+                refuse('Refusing to remove all files from root (rm -rf /*)')
+        # An argument with whitespace in it is one argument, not several.
+        text = ' '.join([name] + ['ARG' if re.search(r'\s', word) else word
+                                  for word, _dynamic in rest])
+        for check in DANGEROUS_COMMAND_PATTERNS:
+            if (check['position'] == 'command' and re.match(
+                    check['pattern'], text, check.get('flags', 0))
+                    and all(check['message'] != known['message'] for known in issues)):
+                refuse(check['message'])
+    return issues
+
+
+def _echoed_scripts(out):
+    """Text a literal echo or printf writes to a file or pipes into a shell."""
+    scripts = []
+    for pipeline in _top_level_pipelines(out):
+        for index, (words, meta) in enumerate(pipeline):
+            name = _plain_program(words)
+            if name not in ('echo', 'printf') or any(dynamic for _text, dynamic in words):
+                continue
+            args = [text for text, _dynamic in words[1:]]
+            if name == 'printf' and any(arg.startswith('-v') for arg in args):
+                continue
+            runnable = meta['redirect_out']
+            for following, later in pipeline[index + 1:]:
+                # Piped into a shell, or saved with tee or a redirection.
+                if (_reads_stdin_as_script(following) or later['redirect_out']
+                        or _plain_program(_unwrapped(following)) == 'tee'):
+                    runnable = True
+                    break
+                if _plain_program(following) != 'cat' or len(following) > 1:
+                    break
+            if not runnable:
+                continue
+            if name == 'echo':
+                while args and re.fullmatch(r'-[neE]+', args[0]):
+                    args.pop(0)
+                scripts.append(' '.join(args))
+            elif args:
+                template = args[0].replace('\\n', '\n').replace('\\t', '\t')
+                values = args[1:]
+                if values and set(re.findall(r'%[^%]', template)) <= {'%s', '%b'}:
+                    slots = max(len(re.findall(r'%[sb]', template)), 1)
+                    for start in range(0, len(values), slots):
+                        line = template
+                        for value in values[start:start + slots]:
+                            line = re.sub(r'%[sb]', lambda _m, v=value: v, line, count=1)
+                        scripts.append(line)
+                else:
+                    scripts.extend([template] + values)
+    return scripts
+
+
+def _command_shape(command):
+    """The scanned command, or None when it is too long or cannot be read."""
+    if len(command) > _ACTUATION_MAX_CHARS:
+        return None
+    out = _Analysis()
+    try:
+        _traverse(command, out)
+    except (_Unparsed, RecursionError):
+        return None
+    return out
+
+
+def _check_dangerous_commands(command, tool_name='bash'):
+    """Check a shell command string for destructive commands.
+
+    The patterns give the baseline. For a POSIX shell command that the
+    scanner reads completely, text confirmed to be data is removed from that
+    baseline and programs that would run are added to it.
+    """
+    issues = _match_dangerous(command)
+    family = tool_name.lower().rstrip('_').split('__')[-1]
+    if family not in _POSIX_TOOLS or not (issues or _DESTRUCTIVE_HINT.search(command)):
+        return issues
+    out = _command_shape(command)
+    if out is None:
+        return issues
+    if issues:
+        masked = _mask_data_arguments(command, out)
+        if masked is not None:
+            issues = _match_dangerous(masked)
+    found = _executed_issues(out)
+    for script in _echoed_scripts(out):
+        found.extend(_match_dangerous(script))
+        inner = _command_shape(script)
+        if inner is not None:
+            found.extend(_executed_issues(inner))
+    for issue in found:
+        if all(issue['message'] != known['message'] for known in issues):
+            issues.append(issue)
     return issues
 
 
@@ -737,7 +975,12 @@ class _Unparsed(Exception):
 
 class _Analysis:
     def __init__(self):
-        self.commands = []  # (words, here-documents, depth); a word is (text, dynamic)
+        # (words, here-documents, depth, meta); a word is (text, dynamic) and
+        # meta holds the word spans in the scanned text, whether the command
+        # redirects its output to a file, and the separator that ended it.
+        self.commands = []
+        self.executed = []  # (program, arguments) of every command that would run
+        self.grouped = False  # a subshell or brace group appears at the top level
         self.issues = []
         self.reasons = []
 
@@ -797,11 +1040,14 @@ def _scan_commands(text, depth, out):
         out.skip('command nesting is deeper than the analysis follows')
         return
     n = len(text)
-    words, heredocs, pending = [], [], []
+    words, heredocs, pending, spans = [], [], [], []
     state = {'buf': [], 'word': False, 'dynamic': False, 'skip': False,
-             'delimiter': None, 'quoted': False}
+             'delimiter': None, 'quoted': False, 'pos': 0, 'start': 0,
+             'redirect': '', 'to_file': False}
 
     def literal(chunk):
+        if not state['word']:
+            state['start'] = state['pos']
         state['buf'].append(chunk)
         state['word'] = True
 
@@ -817,17 +1063,24 @@ def _scan_commands(text, depth, out):
             state['delimiter'] = None
         elif state['skip']:
             state['skip'] = False
+            if state['redirect'] == 'out' and value != '/dev/null':
+                state['to_file'] = True
         else:
             words.append((value, state['dynamic']))
+            spans.append((state['start'], state['pos']))
         state.update(buf=[], word=False, dynamic=False, quoted=False)
 
-    def end_command():
-        nonlocal words, heredocs
+    def end_command(separator):
+        nonlocal words, heredocs, spans
         end_word()
         if words or heredocs:
-            out.commands.append((words, heredocs, depth))
-        words, heredocs = [], []
-        state.update(skip=False, delimiter=None)
+            out.commands.append((words, heredocs, depth, {
+                'spans': spans, 'redirect_out': state['to_file'], 'sep': separator}))
+            if depth == 0 and any(text in ('{', '}') and not dynamic
+                                  for text, dynamic in words):
+                out.grouped = True
+        words, heredocs, spans = [], [], []
+        state.update(skip=False, delimiter=None, to_file=False)
 
     def substitution(start, placeholder):
         """`$(`, `<(` or `>(` at *start*: its commands run; return the next index."""
@@ -904,6 +1157,7 @@ def _scan_commands(text, depth, out):
     i = 0
     while i < n:
         char = text[i]
+        state['pos'] = i
         if char == '\\':
             if text.startswith('\\\n', i):
                 i += 2
@@ -953,27 +1207,30 @@ def _scan_commands(text, depth, out):
             end_word()
             i += 1
         elif char == '\n':
-            end_command()
+            end_command('\n')
             i = heredoc_bodies(i + 1) if pending else i + 1
         elif char == ';':
-            end_command()
+            end_command(';')
             i += 1
         elif char == '&':
             if text.startswith('&&', i):
-                end_command()
+                end_command('&&')
                 i += 2
             elif text.startswith('&>', i):
                 end_word()
                 i += 3 if text.startswith('&>>', i) else 2
-                state['skip'] = True
+                state.update(skip=True, redirect='out')
             else:
-                end_command()
+                end_command('&')
                 i += 1
         elif char == '|':
-            end_command()
+            # `|` and `|&` connect a pipeline; `||` separates commands.
+            end_command('||' if text.startswith('||', i) else '|')
             i += 2 if text[i + 1:i + 2] in ('|', '&') else 1
         elif char in '()':
-            end_command()
+            end_command(char)
+            if depth == 0:
+                out.grouped = True
             i += 1
         elif char in '<>':
             if text.startswith(char + '(', i):
@@ -985,26 +1242,29 @@ def _scan_commands(text, depth, out):
                 end_word()
             if text.startswith('<<<', i):
                 i += 3
-                state['skip'] = True
+                state.update(skip=True, redirect='in')
             elif text.startswith('<<', i):
                 i += 2
                 strip = text[i:i + 1] == '-'
                 i += 1 if strip else 0
                 state['delimiter'] = strip
             else:
+                kind = 'out' if char == '>' else 'in'
                 i += 1
                 if text[i:i + 1] in ('>', '|'):
                     i += 1
                 if text[i:i + 1] == '&':
                     i += 1
-                state['skip'] = True
+                    kind = 'dup'  # `>&2`, `2>&1`: a descriptor, not a file
+                state.update(skip=True, redirect=kind)
         elif char == '#' and not state['word']:
             end = text.find('\n', i)
             i = n if end < 0 else end
         else:
             literal(char)
             i += 1
-    end_command()
+    state['pos'] = n
+    end_command('end')
     if pending:
         out.skip('a here-document is not terminated')
 
@@ -1357,6 +1617,7 @@ def _inspect_command(words, heredocs, depth, out):
         # `$CMD`, `$(which tool)` and `"$PREFIX"` are not known.
         out.skip('the command name is a variable or substitution')
         return False
+    out.executed.append((name, rest))
     if name == 'ros2':
         _classify_ros2(rest, out)
     elif name in _SHELLS:
@@ -1390,6 +1651,19 @@ def _inspect_command(words, heredocs, depth, out):
     return False
 
 
+def _traverse(command, out):
+    """Scan *command* and visit every command in it that would run."""
+    _scan_commands(command, 0, out)
+    index = 0
+    while index < len(out.commands):
+        words, heredocs, depth, _meta = out.commands[index]
+        index += 1
+        if not _inspect_command(words, heredocs, depth, out):
+            for doc in heredocs:
+                if doc['body'] is not None and not doc['quoted']:
+                    _scan_heredoc_substitutions(doc['body'], depth, out)
+
+
 def analyze_actuation(command, tool_name='bash'):
     """Classify what a shell command would do to a robot.
 
@@ -1411,15 +1685,7 @@ def analyze_actuation(command, tool_name='bash'):
         out.skip('the command is longer than the analysis reads')
     else:
         try:
-            _scan_commands(command, 0, out)
-            index = 0
-            while index < len(out.commands):
-                words, heredocs, depth = out.commands[index]
-                index += 1
-                if not _inspect_command(words, heredocs, depth, out):
-                    for doc in heredocs:
-                        if doc['body'] is not None and not doc['quoted']:
-                            _scan_heredoc_substitutions(doc['body'], depth, out)
+            _traverse(command, out)
         except _Unparsed as exc:
             out.skip(str(exc))
         except RecursionError:
@@ -1620,7 +1886,7 @@ def _event_mode_issues():
     ) and tool_input:
         command = tool_input.get('command', '')
         if command:
-            issues.extend(_check_dangerous_commands(command))
+            issues.extend(_check_dangerous_commands(command, tool_name_lower))
             # The scanner reads POSIX shell syntax only; for the PowerShell
             # and cmd aliases it reports the command as not evaluated.
             actuation = analyze_actuation(command, tool_name_lower)
