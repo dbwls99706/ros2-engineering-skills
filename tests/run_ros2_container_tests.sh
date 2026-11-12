@@ -71,10 +71,17 @@ colcon test --executor sequential --event-handlers console_direct+ \
 colcon test-result --verbose
 
 source "$WS/install/setup.bash"
+echo '=== Generated QoS event example: imports, containers, signatures ==='
+# Reads the commented example out of the generated node and executes it. This
+# mode calls no rclpy.init(), so it is not covered by the Rolling exclusion.
+python3 "$ROOT/tests/check_qos_event_callbacks.py" "$WS/src/test_py_pkg"
 echo '=== Generated Python package tests ==='
 (cd "$WS/src/test_py_pkg" && python3 -m pytest test/ -v "${pytest_extra[@]}")
 if [[ "$ROS_DISTRO" != rolling ]]; then
     (cd "$WS/src/test_lifecycle_pkg" && python3 -m pytest test/ -v)
+    echo '=== Generated QoS event example: real subscription and publisher ==='
+    timeout --signal=TERM --kill-after=5s 30s \
+        python3 "$ROOT/tests/check_qos_event_callbacks.py" "$WS/src/test_py_pkg" --runtime
     timeout --signal=TERM --kill-after=5s 30s \
         python3 "$ROOT/tests/check_generated_lifecycle.py" test_lifecycle_pkg --plain-package test_py_pkg
     # Runs before the fleet gate so its diagnostics survive a fleet failure.

@@ -855,4 +855,9 @@ class TestQoSEventCallbacksInGeneratedCode:
         create_python_package("py_qos", tmp_path)
         src = (tmp_path / "py_qos" / "py_qos" / "py_qos_node.py").read_text(encoding="utf-8")
         assert "on_qos_event" in src
-        assert "QoSEventHandler" in src
+        # The comment used to name QoSEventHandler(incompatible_qos_callback=...),
+        # which no rclpy release accepts. tests/test_qos_event_example.py checks
+        # the example itself.
+        assert "QoSEventHandler" not in src
+        assert "SubscriptionEventCallbacks(incompatible_qos=self.on_qos_event)" in src
+        assert "PublisherEventCallbacks(incompatible_qos=self.on_qos_event)" in src

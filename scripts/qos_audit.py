@@ -772,7 +772,7 @@ class PythonExtractor:
         dotted = _dotted(node)
         if dotted is not None:
             if self._shared_profile_changed(dotted):
-                raise Unresolved(f"shared profile {dotted} is modified in this module")
+                raise Unresolved(f"{dotted} is modified in this module")
             dotted = self._expand(dotted, scope, line)
             last = dotted.split(".")[-1]
             if last in PY_STANDARD_PROFILES:

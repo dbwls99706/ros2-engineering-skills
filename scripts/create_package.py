@@ -716,8 +716,24 @@ class {class_name}Node(Node):
     def timer_callback(self):
         pass  # Implement your logic here
 
-    # QoS event callbacks — attach to publishers/subscribers via
-    # event_callbacks=QoSEventHandler(incompatible_qos_callback=self.on_qos_event)
+    # QoS event callbacks: to be told when a peer offers or requests incompatible
+    # QoS, pass event_callbacks when creating the endpoint. The lines between the
+    # markers are a working example for __init__; uncomment them there.
+    # rclpy.qos_event is the module name on Humble; later releases use
+    # rclpy.event_handler and Lyrical removed the old name.
+    # --- qos event example: begin ---
+    # try:
+    #     from rclpy.event_handler import PublisherEventCallbacks, SubscriptionEventCallbacks
+    # except ImportError:  # Humble
+    #     from rclpy.qos_event import PublisherEventCallbacks, SubscriptionEventCallbacks
+    # from rcl_interfaces.msg import Log
+    # self.example_sub = self.create_subscription(
+    #     Log, 'example', lambda msg: None, 10,
+    #     event_callbacks=SubscriptionEventCallbacks(incompatible_qos=self.on_qos_event))
+    # self.example_pub = self.create_publisher(
+    #     Log, 'example', 10,
+    #     event_callbacks=PublisherEventCallbacks(incompatible_qos=self.on_qos_event))
+    # --- qos event example: end ---
     def on_qos_event(self, event):
         self.get_logger().warn(
             f'QoS incompatibility detected: {{event.last_policy_kind}}')
