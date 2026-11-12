@@ -78,6 +78,33 @@ shell command nor grants permission with `permissionDecision: allow`.
 | Repeated Stop | Advisory skip; does not rescan indefinitely |
 | Invalid payload, timeout, malformed child output | Explicit skipped advisory, not a pass |
 
+### Destructive commands
+
+The patterns for `rm -rf /`, `mkfs`, `dd` to a block device, and the like give
+the baseline verdict and are the only check for PowerShell and `cmd`. For a
+POSIX shell command they are refined by the command's structure, under one
+rule: a command that would run stays refused, and only text confirmed to be data
+is let through.
+
+- Data: the literal arguments of `grep`/`egrep`/`fgrep`, `rg`, `echo`, and
+  `printf`, when the command stands at the top level with nothing in front of
+  it, writes to no file, and is followed in its pipeline only by `head`, `tail`,
+  `wc`, `sort`, `uniq`, `less`, `cat`, or grep. An argument containing a
+  substitution or a variable is never data, `printf -v` and `rg --pre` do not
+  qualify, and a path such as `./grep` is not the known program.
+- Commands: every program that would run — inside `bash -c`, `ssh host '...'`,
+  `$(...)`, a subshell, after `sudo` or `xargs` — is checked as program plus
+  arguments, so `bash -c 'rm -rf /'` and `rm -rf --no-preserve-root /` are
+  refused.
+- Echoed scripts: the text a literal `echo` or `printf` pipes into a shell,
+  saves with `tee`, or redirects to a file is checked as a script.
+
+If the command contains a group, an `eval`, or anything the scanner cannot read,
+nothing is treated as data and the pattern verdict stands. Not interpreted:
+`git -c alias.x='!...'` shell aliases, whatever a variable expands to, and a
+script that is written now and run later by other means. This remains a guard
+against obvious accidents, not a security boundary.
+
 ### Commands that can move hardware
 
 The PreToolUse validator reports `ros2` commands that publish a velocity or

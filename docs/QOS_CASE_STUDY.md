@@ -28,4 +28,14 @@ distribution matrix. Rolling's already-documented runtime limitation remains an
 explicit skip, not an L3 pass. Read the job log for the exact image and result;
 the presence of this script alone proves only that the example exists.
 
+The static audit, `scripts/qos_audit.py`, is a separate check: it reads
+declarations and never runs them. A Python profile kept in a variable is judged
+from its constructor only while the object cannot have changed. Plain attribute
+assignments in the same function body before the use are applied in statement
+order; any other change, and any alias or call that could change the object,
+leaves the endpoint unresolved instead of confirmed. The audit reads one module
+at a time, so another module that modifies a shared profile such as
+`qos_profile_sensor_data` is not seen. The running graph
+(`ros2 topic info -v`) remains the evidence for what is actually offered.
+
 Source: [ROS 2 Humble QoS compatibility tables](https://docs.ros.org/en/humble/Concepts/Intermediate/About-Quality-of-Service-Settings.html).

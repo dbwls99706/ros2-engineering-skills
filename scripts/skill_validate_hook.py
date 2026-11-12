@@ -21,10 +21,19 @@ Scope and limits — read before relying on this:
 
 * The Bash dangerous-command checks below are best-effort sanity guards
   intended to catch obvious accidents like a literal ``rm -rf /``. They are
-  *not* a security boundary. Variable expansion (``rm -rf $X``), command
-  substitution (``rm -rf $(echo /)``), aliasing, here-docs, and minor
-  whitespace variations all defeat plain regex matching. Treat any code
-  path that depends on these checks for safety as broken.
+  *not* a security boundary. Variable expansion (``rm -rf $X``), a path
+  built by command substitution (``rm -rf $(echo /)``), aliasing, a
+  ``git -c alias.x='!...'`` shell alias, and a script that is run later all
+  get past them. Treat any code path that depends on these checks for
+  safety as broken.
+* For a POSIX shell command the patterns are refined by reading the command
+  structure. Literal arguments of ``grep``, ``rg``, ``echo`` and ``printf``
+  that stay on the terminal or go through plain filters are data, so
+  ``grep 'rm -rf /' notes.md`` is not refused. A command that would run is
+  refused wherever it sits: inside ``bash -c '...'``, ``ssh host '...'``,
+  ``$(...)``, a subshell, after ``sudo`` or ``xargs``, or as the text a
+  literal ``echo`` pipes into a shell or writes to a file. When the command
+  cannot be read completely the pattern verdict stands unchanged.
 * ROS 2 commands that can move hardware or change a motion gate
   (``ros2 topic pub /cmd_vel``, a navigation goal, a controller switch, an
   e-stop reset, a velocity limit) are reported as warnings with

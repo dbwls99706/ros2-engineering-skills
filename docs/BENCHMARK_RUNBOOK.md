@@ -299,7 +299,39 @@ to `skill_revision`. The first published Claude Code benchmark uses
 `verified_checkout` binding; `asserted` binding is not used for an
 exact-revision comparison claim.
 
-## 9. What this runbook does not establish
+## 9. Before the experiment: pilot and client observation
+
+These two steps prepare the experiment. Neither is part of it, and neither is
+recorded as a result.
+
+**Pilot.** Before committing to 42 sessions, run one pair (plugin on, plugin
+off) with a prompt that is **not** one of the seven suite cases, in the same two
+configuration directories. Record wall time and token use per session and
+multiply by 21 for an estimate. Do not add the pilot to `capture.json`, do not
+grade it, and discard its output: a session that informed the setup is not an
+unbiased trial.
+
+**`ask` observation.** `ROS2_SKILL_ACTUATION=ask` is documented as experimental
+until it has been seen in a client. Record each observation in this shape and
+only then update the table in
+[client compatibility](CLIENT_COMPATIBILITY.md#actuation-commands):
+
+```text
+Client and version:   <output of `claude --version`>
+Session mode:         interactive | -p | bypassPermissions | dontAsk
+Environment:          ROS2_SKILL_ACTUATION=ask
+Command proposed:     <exact command, e.g. ros2 topic pub /cmd_vel ...>
+Prompt shown:         yes | no   Reason text shown: <verbatim or "none">
+After "no":           command ran | command did not run
+After "yes":          command ran | command did not run
+Date and observer:    <YYYY-MM-DD, who>
+```
+
+Use a topic no robot subscribes to, in an isolated ROS domain or with no ROS
+installed; the observation is about the prompt, not about motion. A row that was
+not observed stays "Not yet recorded".
+
+## 10. What this runbook does not establish
 
 It does not prove transcript authenticity, that the skill activated in every
 ON session, that any difference comes from the skill body rather than the
