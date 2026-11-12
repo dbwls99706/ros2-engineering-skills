@@ -603,7 +603,6 @@ _DATA_PROGRAMS = frozenset(('grep', 'egrep', 'fgrep', 'rg', 'echo', 'printf'))
 _PIPE_FILTERS = frozenset(('head', 'tail', 'wc', 'sort', 'uniq', 'less', 'cat',
                            'grep', 'egrep', 'fgrep', 'rg'))
 _REINTERPRETERS = frozenset(('eval', 'source', '.', 'xargs', 'parallel'))
-_DESTRUCTIVE_HINT = re.compile(r'\b(?:rm|mkfs|dd|chmod)\b')
 
 
 def _plain_program(words):
@@ -683,10 +682,12 @@ def _mask_data_arguments(command, out):
             if name not in _DATA_PROGRAMS or _runs_a_program(name, words):
                 continue
             rest = pipeline[index + 1:]
-            if meta['redirect_out'] or any(
+            if (meta['redirect_out'] or any(
                     later['redirect_out'] or _plain_program(following) not in _PIPE_FILTERS
                     or _runs_a_program(_plain_program(following), following)
-                    for following, later in rest):
+                    for following, later in rest)) and not _written_output(pipeline, index):
+                # Kept, unless the output is rendered: then that string is
+                # what gets checked, and the separate arguments say nothing.
                 continue
             for (text, dynamic), (start, end) in zip(words[1:], meta['spans'][1:]):
                 if not dynamic:
@@ -730,44 +731,218 @@ def _executed_issues(out):
     return issues
 
 
+_SIMPLE_ESCAPES = {'a': '\a', 'b': '\b', 'e': '\x1b', 'E': '\x1b', 'f': '\f',
+                   'n': '\n', 'r': '\r', 't': '\t', 'v': '\v', '\\': '\\'}
+_OCTAL = '01234567'
+_HEX = '0123456789abcdefABCDEF'
+
+
+def _decode_escapes(text, mode):
+    r"""Backslash escapes as bash reads them: (text, stopped), or None.
+
+    The rules differ by where the text stands, and the differences decide
+    what reaches a shell:
+
+        mode        \123       \0123        \c            \" \' \?
+        format      octal      \012 + "3"   kept          the character
+        percent_b   octal      octal        output ends   kept
+        echo        kept       octal        output ends   kept
+        ansi_c      octal      \012 + "3"   not modelled  the character
+
+    `format` is a printf format string, `percent_b` an argument of %b,
+    `echo` the arguments of `echo -e`, `ansi_c` the inside of $'...'. \xHH
+    and the single-letter escapes are the same everywhere; an escape bash
+    does not know keeps its backslash. None means the result is not
+    modelled: \u and \U, a control character written \cX, a NUL, or a byte
+    above 0x7f, whose meaning depends on the locale.
+    """
+    out, i, n = [], 0, len(text)
+    while i < n:
+        char = text[i]
+        if char != '\\' or i + 1 >= n:
+            out.append(char)
+            i += 1
+            continue
+        nxt = text[i + 1]
+        if nxt in _SIMPLE_ESCAPES:
+            out.append(_SIMPLE_ESCAPES[nxt])
+            i += 2
+            continue
+        if nxt in '\'"?':
+            out.append(nxt if mode in ('format', 'ansi_c') else '\\' + nxt)
+            i += 2
+            continue
+        if nxt == 'c':
+            if mode in ('percent_b', 'echo'):
+                return ''.join(out), True
+            if mode == 'ansi_c':
+                return None
+            out.append('\\c')
+            i += 2
+            continue
+        digits = None
+        if nxt in _OCTAL:
+            j = i + 1
+            if nxt == '0' and mode in ('percent_b', 'echo'):
+                j += 1  # \0 and then up to three digits
+            elif mode == 'echo':
+                j = -1  # echo reads an octal value only after \0
+            if j >= 0:
+                end = j
+                while end < n and end - j < 3 and text[end] in _OCTAL:
+                    end += 1
+                digits, base, i = text[j:end] or '0', 8, end
+        elif nxt == 'x':
+            end = i + 2
+            while end < n and end - (i + 2) < 2 and text[end] in _HEX:
+                end += 1
+            if end > i + 2:
+                digits, base, i = text[i + 2:end], 16, end
+        elif nxt in 'uU' and i + 2 < n and text[i + 2] in _HEX:
+            return None
+        if digits is None:
+            out.append('\\' + nxt)
+            i += 2
+            continue
+        value = int(digits, base)
+        if not 0 < value < 0x80:
+            return None
+        out.append(chr(value))
+    return ''.join(out), False
+
+
+_CONVERSION = re.compile(r'%(?:(%)|(-?)([1-9]\d*)?(\.\d*)?([sb]))')
+
+
+def _render_printf(args):
+    """What `printf` writes for these literal arguments, or None.
+
+    Modelled: literal text and its escapes, %%, %s with an optional `-`,
+    width and precision, and %b with the escapes of its argument. The format
+    is reused while arguments remain, the passes are joined with nothing in
+    between, and a missing argument is empty. Anything else is None, never a
+    guess: options, other conversions and flags, `*`, a sized %b.
+    """
+    if args and args[0] == '--':
+        args = args[1:]
+    if not args or args[0].startswith('-'):
+        return None
+    template, tokens, conversions, pos = args[0], [], 0, 0
+    while pos < len(template):
+        end = template.find('%', pos)
+        if end != pos:
+            end = len(template) if end < 0 else end
+            decoded = _decode_escapes(template[pos:end], 'format')
+            if decoded is None:
+                return None
+            tokens.append(('text', decoded[0]))
+            pos = end
+            continue
+        match = _CONVERSION.match(template, pos)
+        if not match:
+            return None
+        percent, left, width, precision, kind = match.groups()
+        if percent:
+            tokens.append(('text', '%'))
+        elif kind == 'b' and (left or width or precision):
+            return None
+        else:
+            tokens.append((kind, (left, int(width or 0),
+                                  None if precision is None else int(precision[1:] or 0))))
+            conversions += 1
+        pos = match.end()
+    values, out = list(args[1:]), []
+    while True:
+        for kind, detail in tokens:
+            if kind == 'text':
+                out.append(detail)
+                continue
+            value = values.pop(0) if values else ''
+            if kind == 'b':
+                decoded = _decode_escapes(value, 'percent_b')
+                if decoded is None:
+                    return None
+                value, stopped = decoded
+                if stopped:
+                    return ''.join(out) + value
+            else:
+                left, width, precision = detail
+                if (width or precision is not None) and not value.isascii():
+                    return None  # padding counts bytes or characters by locale
+                if precision is not None:
+                    value = value[:precision]
+                value = value.ljust(width) if left else value.rjust(width)
+            out.append(value)
+        if not conversions or not values:
+            return ''.join(out)
+
+
+def _render_echo(args):
+    """What bash's `echo` writes for these literal arguments, or None.
+
+    Only leading arguments made of n, e and E are options, and the last of
+    -e and -E decides whether escapes are read. This is the bash builtin
+    with its defaults; a shell whose echo reads escapes without -e is not
+    modelled.
+    """
+    args, interpret, newline = list(args), False, True
+    while args and re.fullmatch(r'-[neE]+', args[0]):
+        for flag in args.pop(0)[1:]:
+            if flag == 'n':
+                newline = False
+            else:
+                interpret = flag == 'e'
+    text = ' '.join(args)
+    if interpret:
+        decoded = _decode_escapes(text, 'echo')
+        if decoded is None:
+            return None
+        text, stopped = decoded
+        if stopped:
+            return text
+    return text + ('\n' if newline else '')
+
+
+def _written_output(pipeline, index):
+    """Output of the literal echo or printf at *index* that is run or saved.
+
+    Returns None when the command is something else, has an argument that is
+    not literal, or its output only reaches the terminal or a filter. Returns
+    '' when the output goes to a shell or a file but cannot be rendered.
+    """
+    words, meta = pipeline[index]
+    name = _plain_program(words)
+    if name not in ('echo', 'printf') or any(dynamic for _text, dynamic in words):
+        return None
+    runnable = meta['redirect_out']
+    for following, later in pipeline[index + 1:]:
+        # Piped into a shell, or saved with tee or a redirection.
+        if (_reads_stdin_as_script(following) or later['redirect_out']
+                or _plain_program(_unwrapped(following)) == 'tee'):
+            runnable = True
+            break
+        if _plain_program(following) != 'cat' or len(following) > 1:
+            break
+    if not runnable:
+        return None
+    args = [text for text, _dynamic in words[1:]]
+    rendered = _render_echo(args) if name == 'echo' else _render_printf(args)
+    return rendered or ''
+
+
 def _echoed_scripts(out):
-    """Text a literal echo or printf writes to a file or pipes into a shell."""
+    """Text a literal echo or printf writes to a file or pipes into a shell.
+
+    Each command gives its complete output as one string, the way the
+    reader of that output sees it. Output that cannot be rendered is left
+    out rather than checked in pieces.
+    """
     scripts = []
     for pipeline in _top_level_pipelines(out):
-        for index, (words, meta) in enumerate(pipeline):
-            name = _plain_program(words)
-            if name not in ('echo', 'printf') or any(dynamic for _text, dynamic in words):
-                continue
-            args = [text for text, _dynamic in words[1:]]
-            if name == 'printf' and any(arg.startswith('-v') for arg in args):
-                continue
-            runnable = meta['redirect_out']
-            for following, later in pipeline[index + 1:]:
-                # Piped into a shell, or saved with tee or a redirection.
-                if (_reads_stdin_as_script(following) or later['redirect_out']
-                        or _plain_program(_unwrapped(following)) == 'tee'):
-                    runnable = True
-                    break
-                if _plain_program(following) != 'cat' or len(following) > 1:
-                    break
-            if not runnable:
-                continue
-            if name == 'echo':
-                while args and re.fullmatch(r'-[neE]+', args[0]):
-                    args.pop(0)
-                scripts.append(' '.join(args))
-            elif args:
-                template = args[0].replace('\\n', '\n').replace('\\t', '\t')
-                values = args[1:]
-                if values and set(re.findall(r'%[^%]', template)) <= {'%s', '%b'}:
-                    slots = max(len(re.findall(r'%[sb]', template)), 1)
-                    for start in range(0, len(values), slots):
-                        line = template
-                        for value in values[start:start + slots]:
-                            line = re.sub(r'%[sb]', lambda _m, v=value: v, line, count=1)
-                        scripts.append(line)
-                else:
-                    scripts.extend([template] + values)
+        for index in range(len(pipeline)):
+            rendered = _written_output(pipeline, index)
+            if rendered:
+                scripts.append(rendered)
     return scripts
 
 
@@ -792,8 +967,10 @@ def _check_dangerous_commands(command, tool_name='bash'):
     """
     issues = _match_dangerous(command)
     family = tool_name.lower().rstrip('_').split('__')[-1]
-    if family not in _POSIX_TOOLS or not (issues or _DESTRUCTIVE_HINT.search(command)):
+    if family not in _POSIX_TOOLS:
         return issues
+    # No shortcut on the raw text: `printf '%s%s' r 'm -rf /' | sh` and
+    # `r''m -rf /` name the program only once the words are put together.
     out = _command_shape(command)
     if out is None:
         return issues
@@ -1120,7 +1297,13 @@ def _scan_commands(text, depth, out):
                 j += 2 if text[j] == '\\' else 1
             if j >= n:
                 raise _Unparsed('unbalanced quote')
-            literal(text[i + 2:j])
+            decoded = _decode_escapes(text[i + 2:j], 'ansi_c')
+            if decoded is None:
+                # An escape this does not model: the word is not known text.
+                literal(text[i + 2:j])
+                state['dynamic'] = True
+            else:
+                literal(decoded[0])
             return j + 1
         match = _VARIABLE.match(text, i + 1)
         if not match:

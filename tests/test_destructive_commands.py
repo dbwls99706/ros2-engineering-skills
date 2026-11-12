@@ -9,6 +9,7 @@ input did before this change and what it must do now.
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -17,6 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 
+import skill_validate_hook as hook  # noqa: E402
 from skill_validate_hook import _check_dangerous_commands  # noqa: E402
 
 # Passed before and must keep passing.
@@ -208,3 +210,282 @@ def test_manual_mode_matches_the_hook():
         result = subprocess.run([sys.executable, '-B', script, '--command', command],
                                 capture_output=True, text=True, timeout=15)
         assert result.returncode == code, command
+
+
+# --- Output of echo and printf, checked as the one string it is -------------
+
+# Passed before although the completed output is a destructive command.
+RENDERED_BLOCKED = [
+    r"printf '%s' 'rm ' '-rf /' | sh",
+    r"printf '%s' 'rm -rf' ' /' > w.sh",
+    r"printf '%b' 'rm -rf /\n' | sh",
+    r"printf '%b' 'rm\x20-rf\x20/' | sh",
+    r"echo -e 'rm\x20-rf\x20/' | sh",
+    r"printf '%s' 'r' 'm -rf /' | tee w.sh",
+    r"printf '%s' 'r' 'm -rf /' | cat | sh",
+    r"printf '%-3s%s' 'rm' '-rf /' | sh",
+    r"printf '%.2s %s' 'rmdir' '-rf /' | sh",
+]
+
+# The same, with nothing in the raw text that names the program.
+NO_HINT_BLOCKED = [
+    r"printf '%s%s' 'r' 'm -rf /' | sh",
+    r"printf '%b' '\x72\x6d -rf /' | sh",
+    r"echo -e '\x72\x6d -rf /' | sh",
+    r"echo -E -e '\x72\x6d -rf /' | sh",
+    r"echo -en '\0162m -rf /\n' | sh",
+    r"printf '\x72m -rf /\n' | bash",
+    r"printf '\162\155 -rf /' | sh",
+    r"printf '%b' '\0162\0155 -rf /' | sh",
+    r"printf '%s%s%s' r m ' -rf /' | sudo sh",
+    'printf "%s%s" "r" "m -rf /" | sh',
+    r"echo $'\x72m -rf /' | sh",
+    r"$'\x72m' -rf /",
+    "r''m -rf /",
+    r"r\m -rf /",
+    '"r"m -rf /',
+]
+
+# Blocked before and still blocked: one argument, or a format that completes it.
+RENDERED_STILL_BLOCKED = [
+    r"printf '%s%s\n' 'rm ' '-rf /' | sh",
+    r"printf '%s %s\n' rm '-rf /' | sh",
+    r"printf 'rm %s\n' '-rf /' | sh",
+    r"printf '%s\n' 'rm -rf /' | sh",
+    r"printf 'rm -rf %s\n' / | sh",
+    r"printf '%s' 'mkfs.ext4 ' '/dev/sda1' | sh",
+    r"printf '%5s' 'rm -rf /' | sh",
+]
+
+# Blocked before although the completed output is a sentence, not a command.
+RENDERED_FALSE_POSITIVES = [
+    r"printf '%s' 'never run ' 'rm -rf /' >> NOTES.md",
+    r"printf '%s %s\n' 'do not' 'rm -rf / here' >> NOTES.md",
+]
+
+# Passed before and still passes: the output is not that command. bash's echo
+# leaves escapes alone unless -e is the last of -e and -E; \c in a format is
+# two characters, and in a %b argument it ends the output.
+RENDERED_ALLOWED = [
+    r"printf '%d\n' 3 >> n.txt",
+    r"printf '100%%\n' > p.txt",
+    r"printf '%s\n' hello > out.txt",
+    r"echo -e -E '\x72\x6d -rf /' | sh",
+    r"echo '\x72\x6d -rf /' | sh",
+    r"printf '\c%s' 'rm -rf /' | sh",
+    r"printf '%b%s' '\c' 'rm -rf /' | sh",
+    r"echo -e 'ok\c rm -rf /' | sh",
+    r"printf '%.0s%s' 'rm -rf /' 'ls' | sh",
+    "echo 'colcon build' | sh",
+]
+
+# Not rendered: other conversions, and the joined output of several commands.
+# These keep the pattern verdict, which for these inputs is a pass.
+NOT_RENDERED = [
+    r"printf '%q' 'rm -rf /' | sh",
+    r"printf '%c%s' 'r' 'm -rf /' | sh",
+    r"printf '%*s' 3 'rm -rf /' | sh",
+    r"{ printf 'rm '; printf '-rf /'; } | sh",
+    r"printf '%s' 'r' 'm -rf /' | rev | sh",
+]
+
+
+@pytest.mark.parametrize('command', RENDERED_BLOCKED + NO_HINT_BLOCKED + RENDERED_STILL_BLOCKED)
+def test_completed_output_that_is_a_command_is_blocked(command):
+    issues = _check_dangerous_commands(command)
+    assert issues and all(issue['severity'] == 'error' for issue in issues), command
+
+
+@pytest.mark.parametrize('command', RENDERED_FALSE_POSITIVES + RENDERED_ALLOWED)
+def test_completed_output_that_is_not_a_command_passes(command):
+    assert not blocked(command), command
+
+
+@pytest.mark.parametrize('command', NOT_RENDERED)
+def test_documented_gap_output_that_is_not_rendered(command):
+    assert not blocked(command), command
+
+
+@pytest.mark.parametrize('command', NO_HINT_BLOCKED[:3] + RENDERED_BLOCKED[:2])
+def test_hook_refuses_rendered_commands(command):
+    result = _hook(command)
+    assert result.returncode == 2 and not result.stdout and result.stderr, command
+
+
+@pytest.mark.parametrize('command', RENDERED_FALSE_POSITIVES + RENDERED_ALLOWED[3:5])
+def test_hook_lets_rendered_text_through(command):
+    result = _hook(command)
+    assert result.returncode == 0 and json.loads(result.stdout) == {}, command
+
+
+class TestDecodeEscapes:
+    """One row per place where bash reads the same text differently."""
+
+    @pytest.mark.parametrize('text,fmt,percent_b,echo,ansi_c', [
+        (r'\0123', '\n3', 'S', 'S', '\n3'),
+        (r'\123', 'S', 'S', r'\123', 'S'),
+        (r'A\cB', r'A\cB', ('A', True), ('A', True), None),
+        (r'\"', '"', r'\"', r'\"', '"'),
+        (r"\'", "'", r"\'", r"\'", "'"),
+        (r'\?', '?', r'\?', r'\?', '?'),
+        (r'\x41\x4a', 'AJ', 'AJ', 'AJ', 'AJ'),
+        (r'\x414', 'A4', 'A4', 'A4', 'A4'),
+        (r'a\nb\tc\\d', 'a\nb\tc\\d', 'a\nb\tc\\d', 'a\nb\tc\\d', 'a\nb\tc\\d'),
+        (r'\e\E', '\x1b\x1b', '\x1b\x1b', '\x1b\x1b', '\x1b\x1b'),
+        (r'\q\8\xZ\-', r'\q\8\xZ\-', r'\q\8\xZ\-', r'\q\8\xZ\-', r'\q\8\xZ\-'),
+        ('end\\', 'end\\', 'end\\', 'end\\', 'end\\'),
+        (r'\u0041', None, None, None, None),
+        (r'\U00000041', None, None, None, None),
+        (r'\uZ', r'\uZ', r'\uZ', r'\uZ', r'\uZ'),
+        (r'\0', None, None, None, None),
+        (r'\200', None, None, r'\200', None),
+        (r'\x80', None, None, None, None),
+        (r'\0101', '\x081', 'A', 'A', '\x081'),
+    ])
+    def test_modes(self, text, fmt, percent_b, echo, ansi_c):
+        for mode, expected in (('format', fmt), ('percent_b', percent_b),
+                               ('echo', echo), ('ansi_c', ansi_c)):
+            if isinstance(expected, str):
+                expected = (expected, False)
+            assert hook._decode_escapes(text, mode) == expected, (text, mode)
+
+
+class TestRenderPrintf:
+    @pytest.mark.parametrize('args,expected', [
+        (['%s', 'a', 'b', 'c'], 'abc'),
+        (['%s-%s\\n', 'a', 'b', 'c'], 'a-b\nc-\n'),
+        (['x\\n', 'a', 'b'], 'x\n'),
+        (['%s|%s'], '|'),
+        (['100%%\\n'], '100%\n'),
+        (['%b', 'a\\nb'], 'a\nb'),
+        (['%s', 'a\\nb'], 'a\\nb'),
+        (['%b|%s', 'a\\cb', 'never'], 'a'),
+        (['[%b]', '\\c', 'x'], '['),
+        (['\\c%s', 'x'], '\\cx'),
+        (['%5s|', 'ab'], '   ab|'),
+        (['%-5s|', 'ab'], 'ab   |'),
+        (['%.1s|', 'ab'], 'a|'),
+        (['%.s|', 'ab'], '|'),
+        (['%4.1s|', 'ab'], '   a|'),
+        (['\\x25s', 'a'], '%s'),
+        (['\\%s', 'a'], '\\a'),
+        (['--', '%s\\n', 'a'], 'a\n'),
+        (['', 'a'], ''),
+    ])
+    def test_rendered(self, args, expected):
+        assert hook._render_printf(args) == expected, args
+
+    @pytest.mark.parametrize('args', [
+        [], ['-v', 'x', '%s', 'a'], ['-vx', 'a'], ['-x'], ['%d', '3'], ['%q', 'a b'], ['%c', 'a'],
+        ['%*s', '3', 'a'], ['%05s', 'a'], ['%+s', 'a'], ['%5b', 'a'], ['%.1b', 'a'], ['%'],
+        ['%s%', 'a'], ['%5s', 'é'], ['\\u0041'], ['%b', '\\u0041'], ['%b', '\\0'], ['%z', 'a'],
+    ])
+    def test_not_rendered(self, args):
+        assert hook._render_printf(args) is None, args
+
+
+class TestRenderEcho:
+    @pytest.mark.parametrize('args,expected', [
+        (['a', 'b'], 'a b\n'),
+        (['-n', 'a'], 'a'),
+        (['a\\nb'], 'a\\nb\n'),
+        (['-e', 'a\\nb'], 'a\nb\n'),
+        (['-e', '-E', 'a\\nb'], 'a\\nb\n'),
+        (['-E', '-e', 'a\\nb'], 'a\nb\n'),
+        (['-eE', 'a\\nb'], 'a\\nb\n'),
+        (['-Ee', 'a\\nb'], 'a\nb\n'),
+        (['-ne', 'a\\tb'], 'a\tb'),
+        (['-e', 'a\\cb', 'c'], 'a'),
+        (['-e', '\\0101', '\\101'], 'A \\101\n'),
+        (['-x', 'a'], '-x a\n'),
+        (['-e', '-x', '-n', 'a\\nb'], '-x -n a\nb\n'),
+        (['a', '-e', 'b\\n'], 'a -e b\\n\n'),
+        (['-', 'a'], '- a\n'),
+        (['--', 'a'], '-- a\n'),
+        ([], '\n'),
+    ])
+    def test_rendered(self, args, expected):
+        assert hook._render_echo(args) == expected, args
+
+    def test_not_rendered(self):
+        assert hook._render_echo(['-e', '\\u0041']) is None
+        assert hook._render_echo(['-e', '\\0']) is None
+        assert hook._render_echo(['\\u0041']) == '\\u0041\n'
+
+
+def test_ansi_c_quoted_words_are_decoded_or_marked_unknown():
+    out = hook._command_shape(r"$'\x65cho' $'a\tb' $'\u0041' plain")
+    words = out.commands[0][0]
+    assert words == [('echo', False), ('a\tb', False), (r'\u0041', True), ('plain', False)]
+
+
+def _bash():
+    """bash 5 or later, whose builtins the renderers describe."""
+    path = shutil.which('bash')
+    if sys.platform == 'win32' or not path:
+        return None
+    try:
+        major = subprocess.run([path, '--noprofile', '--norc', '-c', 'echo "${BASH_VERSINFO[0]}"'],
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return path if major.isdigit() and int(major) >= 5 else None
+
+
+# Harmless text only: letters, digits and every escape the decoder reads.
+ESCAPED = [r'A\aZ', r'A\bZ', r'A\cZ', r'A\eZ', r'A\EZ', r'A\fZ', r'A\nZ', r'A\rZ', r'A\tZ',
+           r'A\vZ', r'A\\Z', r"A\'Z", r'A\"Z', r'A\?Z', r'A\1Z', r'A\7Z', r'A\8Z', r'A\xZ',
+           r'A\uZ', r'A\UZ', r'A\qZ', r'A\$Z', r'A\-Z', r'A\ Z', r'\0123Z', r'\123Z', r'\1234',
+           r'\101', r'\0101', r'\00101', r'\x4a', r'\x41Z', r'\x414', r'\x', 'A\\', r'\101\c\102',
+           r'\cZ', r'\60\061\x32', r'\\n', r'\\\n', r'%%', r'A\x25Z', r'\0777', r'\777', r'\08']
+PRINTF_CASES = ([[text] for text in ESCAPED]
+                + [['%b', text] for text in ESCAPED]
+                + [['%s', text] for text in ESCAPED]
+                + [['[%b]%s', text, 'tail'] for text in ESCAPED]
+                + [['%s', 'a', 'b', 'c'], ['%s-%s\\n', 'a', 'b', 'c'], ['x\\n', 'a', 'b'],
+                   ['%s|%s|%s\\n', 'a'], ['%5s|%-5s|%.2s|%6.2s|%.s|\\n', 'ab', 'cd', 'efgh',
+                                          'ijkl', 'mn'],
+                   ['%3s', 'abcdef'], ['%-3s|', 'abcdef'], ['%s %b\\n', 'a\\tb', 'a\\tb', 'c'],
+                   ['--', '%s\\n', 'a'], ['100%%\\n'], ['', 'a'], ['%b%b', 'A\\c', 'B'],
+                   ['\\%s', 'a'], ['%s%%%s', 'a', 'b', 'c']])
+ECHO_CASES = ([[text] for text in ESCAPED]
+              + [['-e', text] for text in ESCAPED]
+              + [['-e', text, 'tail'] for text in ESCAPED]
+              + [['-n', 'a'], ['-e', '-E', 'A\\nB'], ['-E', '-e', 'A\\nB'], ['-eE', 'A\\nB'],
+                 ['-Ee', 'A\\nB'], ['-ne', 'A\\tB'], ['-en', 'A\\tB'], ['-x', 'a'],
+                 ['-e', '-x', '-n', 'A\\nB'], ['a', '-e', 'B\\n'], ['-', 'a'], ['--', 'a'], [],
+                 ['-nn', 'a'], ['-n', '-n', 'a'], ['-ex', 'A\\nB'], ['a', 'b', 'c']])
+
+
+def _real(bash, script, args):
+    environ = {'PATH': os.environ.get('PATH', ''), 'LC_ALL': 'C'}
+    return subprocess.run([bash, '--noprofile', '--norc', '-c', script, 'bash'] + args,
+                          capture_output=True, timeout=10, env=environ).stdout
+
+
+def test_renderers_agree_with_bash():
+    """Whatever a renderer returns is exactly what bash writes.
+
+    Inputs the renderers decline (None) are left out: declining is always
+    allowed, a wrong string never is.
+    """
+    bash = _bash()
+    if bash is None:
+        pytest.skip('needs bash 5 or later')
+    compared = 0
+    for args in PRINTF_CASES:
+        rendered = hook._render_printf(args)
+        if rendered is not None:
+            assert _real(bash, 'printf "$@"', args) == rendered.encode(), ('printf', args)
+            compared += 1
+    for args in ECHO_CASES:
+        rendered = hook._render_echo(args)
+        if rendered is not None:
+            assert _real(bash, 'echo "$@"', args) == rendered.encode(), ('echo', args)
+            compared += 1
+    for text in ESCAPED:
+        decoded = hook._decode_escapes(text, 'ansi_c')
+        if decoded is not None and not text.endswith('\\') and "\\'" not in text:
+            assert _real(bash, "printf '%s' $'" + text + "'", []) == decoded[0].encode(), text
+            compared += 1
+    assert compared > 300
