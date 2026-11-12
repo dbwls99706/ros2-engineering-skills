@@ -665,29 +665,35 @@ class PythonExtractor:
 
     # -- shared standard profiles ----------------------------------------------
 
-    def _shared_key(self, node: ast.AST) -> Optional[tuple]:
-        """("profile" | "member", key) when *node* names a standard profile.
+    def _shared_keys(self, node: ast.AST) -> set:
+        """Every ("profile" | "member", key) that *node* may name.
 
         qos_profile_sensor_data and QoSPresetProfiles.SENSOR_DATA.value are
         one object, and an import alias or a module path is another spelling
         of it; all of them map to the same key. "member" is the enum member
-        without `.value`. Every import of the head name in this file is
-        considered, so a name bound more than once errs towards a match.
+        without `.value`.
+
+        A name can be imported more than once in a file, for example as the
+        same alias for different profiles in two functions. Which import is
+        in force at a given use is not worked out: every one of them counts,
+        so a change made through the name is recorded for each profile the
+        name may stand for.
         """
+        keys: set = set()
         dotted = _dotted(node)
         if dotted is None:
-            return None
+            return keys
         head, _, rest = dotted.partition(".")
-        for target in sorted(self._imports.get(head, ())):
+        for target in self._imports.get(head, ()):
             parts = (target + ("." + rest if rest else "")).split(".")
             if parts[-1] in PY_STANDARD_PROFILES:
-                return "profile", PY_STANDARD_PROFILES[parts[-1]]
-            if len(parts) >= 3 and parts[-3] == "QoSPresetProfiles" and parts[-1] == "value":
-                if parts[-2] in PY_PRESET_KEYS:
-                    return "profile", PY_PRESET_KEYS[parts[-2]]
-            if len(parts) >= 2 and parts[-2] == "QoSPresetProfiles" and parts[-1] in PY_PRESET_KEYS:
-                return "member", PY_PRESET_KEYS[parts[-1]]
-        return None
+                keys.add(("profile", PY_STANDARD_PROFILES[parts[-1]]))
+            elif (len(parts) >= 3 and parts[-3] == "QoSPresetProfiles" and parts[-1] == "value"
+                    and parts[-2] in PY_PRESET_KEYS):
+                keys.add(("profile", PY_PRESET_KEYS[parts[-2]]))
+            elif len(parts) >= 2 and parts[-2] == "QoSPresetProfiles" and parts[-1] in PY_PRESET_KEYS:
+                keys.add(("member", PY_PRESET_KEYS[parts[-1]]))
+        return keys
 
     def _shared_taint(self) -> dict:
         """key -> calls and other uses that may have changed that shared profile.
@@ -700,40 +706,39 @@ class PythonExtractor:
         if self._tainted is None:
             tainted: dict = {}
             for node in ast.walk(self.tree):
-                if not isinstance(node, (ast.Name, ast.Attribute)):
-                    continue
-                found = self._shared_key(node)
-                if found is None:
-                    continue
-                kind, key = found
-                parent = self._parents.get(id(node))
-                if not isinstance(node.ctx, ast.Load):
-                    tainted.setdefault(key, []).append(None)  # rebound or deleted
-                    continue
-                if kind == "member":
-                    # `.value` is classified as the profile; reading another
-                    # attribute of the member, such as `.name`, is harmless.
-                    reads = isinstance(parent, ast.Attribute) and parent.value is node and isinstance(
-                        parent.ctx, ast.Load)
-                    user = self._parents.get(id(parent)) if reads else None
-                    if not reads or (isinstance(user, ast.Call) and user.func is parent):
-                        tainted.setdefault(key, []).append(None)
-                    continue
-                use, detail = self._use(node)
-                if use == "modified":
-                    tainted.setdefault(key, []).append(
-                        detail if isinstance(detail, ast.Call) else None)
-                elif use == "escapes":
-                    tainted.setdefault(key, []).append(None)
-                elif use == "alias":
-                    target = detail.targets[0] if isinstance(detail, ast.Assign) else detail.target
-                    modified, escapes = self._object_uses(
-                        self._enclosing_function(detail),
-                        target.id if isinstance(target, ast.Name) else "")
-                    if modified or escapes or not isinstance(target, ast.Name):
-                        tainted.setdefault(key, []).append(None)
+                if isinstance(node, (ast.Name, ast.Attribute)):
+                    for kind, key in sorted(self._shared_keys(node)):
+                        tainted.setdefault(key, []).extend(self._taints(node, kind))
             self._tainted = tainted
         return self._tainted
+
+    def _taints(self, node: ast.AST, kind: str) -> list:
+        """What one occurrence of a shared profile, or of its enum member, taints."""
+        parent = self._parents.get(id(node))
+        if not isinstance(getattr(node, "ctx", None), ast.Load):
+            return [None]  # rebound or deleted
+        if kind == "member":
+            # `.value` is classified as the profile; reading another
+            # attribute of the member, such as `.name`, is harmless.
+            reads = isinstance(parent, ast.Attribute) and parent.value is node and isinstance(
+                parent.ctx, ast.Load)
+            user = self._parents.get(id(parent)) if reads else None
+            if not reads or (isinstance(user, ast.Call) and user.func is parent):
+                return [None]
+            return []
+        use, detail = self._use(node)
+        if use == "modified":
+            return [detail if isinstance(detail, ast.Call) else None]
+        if use == "escapes":
+            return [None]
+        if use == "alias":
+            target = detail.targets[0] if isinstance(detail, ast.Assign) else detail.target
+            modified, escapes = self._object_uses(
+                self._enclosing_function(detail),
+                target.id if isinstance(target, ast.Name) else "")
+            if modified or escapes or not isinstance(target, ast.Name):
+                return [None]
+        return []
 
     def _stored_profile_reached(self) -> bool:
         """Some `<object>.qos_profile` in this module is more than read.
@@ -915,9 +920,9 @@ class PythonExtractor:
             return profile
         dotted = _dotted(node)
         if dotted is not None:
-            shared = self._shared_key(node)
-            if shared is not None and any(
-                    source is not call for source in self._shared_taint().get(shared[1], ())):
+            if any(source is not call
+                   for _kind, key in self._shared_keys(node)
+                   for source in self._shared_taint().get(key, ())):
                 raise Unresolved(f"shared profile {dotted} is modified, aliased or passed to "
                                  "another call in this module")
             dotted = self._expand(dotted, scope, line)

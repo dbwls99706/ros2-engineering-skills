@@ -1568,6 +1568,103 @@ def publish(node):
         assert code == 0 and not publisher_reasons(data), label
         assert summary["confirmed_compatible"] == 1
 
+    # One alias for different profiles: every profile the name may stand for
+    # is treated as changed. The change always goes through `profile`.
+    AMBIGUOUS_ALIAS = {
+        "second import in an uncalled function": f"""
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    profile.reliability = {BEST}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+
+def unrelated():
+    from rclpy.qos import qos_profile_sensor_data as profile
+    print(profile.depth)
+""",
+        "the other import comes first": f"""
+def unrelated():
+    from rclpy.qos import qos_profile_sensor_data as profile
+    print(profile.depth)
+
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    profile.reliability = {BEST}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""",
+        "three imports under one alias": f"""
+def first():
+    from rclpy.qos import qos_profile_parameters as profile
+    return profile.depth
+
+def second():
+    from rclpy.qos import qos_profile_sensor_data as profile
+    return profile.depth
+
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    setattr(profile, 'reliability', {BEST})
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""",
+        "module alias reused by a function import": f"""
+from rclpy.qos import qos_profile_sensor_data as profile
+
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    profile.reliability = {BEST}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""",
+        "alias for the preset enum and for the module": f"""
+def publish(node):
+    from rclpy.qos import QoSPresetProfiles as P
+    setattr(P.SERVICES_DEFAULT.value, 'reliability', {BEST})
+    node.create_publisher(String, '/data', qos_profile_services_default)
+
+def unrelated():
+    from rclpy import qos as P
+    print(P.qos_profile_sensor_data.depth)
+""",
+        "enum member handed on under a reused alias": f"""
+def publish(node):
+    from rclpy.qos import QoSPresetProfiles as P
+    tune(P.SERVICES_DEFAULT)
+    node.create_publisher(String, '/data', qos_profile_services_default)
+
+def tune(member):
+    member.value.reliability = {BEST}
+
+def unrelated():
+    import rclpy.qos as P
+    print(P.qos_profile_sensor_data.depth)
+""",
+    }
+
+    @pytest.mark.parametrize("label", sorted(AMBIGUOUS_ALIAS))
+    def test_an_alias_bound_to_several_profiles(self, tmp_path, label):
+        code, data, summary = shared_case(tmp_path, self.AMBIGUOUS_ALIAS[label])
+        assert summary["confirmed_compatible"] == 0 and summary["confirmed_incompatible"] == 0
+        assert code == 1 and publisher_reasons(data), label
+
+    def test_an_unrelated_function_does_not_change_the_verdict(self, tmp_path):
+        with_it = self.AMBIGUOUS_ALIAS["second import in an uncalled function"]
+        without = with_it.split("def unrelated")[0]
+        first = shared_case(tmp_path / "a", without)
+        second = shared_case(tmp_path / "b", with_it)
+        assert first[0] == second[0] == 1
+        assert first[2]["unresolved_endpoints"] == second[2]["unresolved_endpoints"] == 1
+
+    def test_an_alias_bound_once_keeps_its_precision(self, tmp_path):
+        code, data, summary = shared_case(tmp_path, """
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    node.create_publisher(String, '/data', profile)
+
+def unrelated():
+    from rclpy.qos import qos_profile_sensor_data as other
+    other.depth = 1
+""")
+        assert code == 0 and not publisher_reasons(data)
+        assert summary["confirmed_compatible"] == 1
+
 
 class TestProfileKeptByAnotherObject:
     """Publishers, subscriptions, clients and services keep the profile object."""
