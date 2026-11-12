@@ -78,6 +78,53 @@ shell command nor grants permission with `permissionDecision: allow`.
 | Repeated Stop | Advisory skip; does not rescan indefinitely |
 | Invalid payload, timeout, malformed child output | Explicit skipped advisory, not a pass |
 
+### Destructive commands
+
+The patterns for `rm -rf /`, `mkfs`, `dd` to a block device, and the like give
+the baseline verdict and are the only check for PowerShell and `cmd`. For a
+POSIX shell command they are refined by the command's structure, under one
+rule: a command that would run stays refused, and only text confirmed to be data
+is let through.
+
+- Data: the literal arguments of `grep`/`egrep`/`fgrep`, `rg`, `echo`, and
+  `printf`, when the command stands at the top level with nothing in front of
+  it, writes to no file, and is followed in its pipeline only by `head`, `tail`,
+  `wc`, `sort`, `uniq`, `less`, `cat`, or grep. An argument containing a
+  substitution or a variable is never data, `printf -v` and `rg --pre` do not
+  qualify, and a path such as `./grep` is not the known program.
+- Commands: every program that would run — inside `bash -c`, `ssh host '...'`,
+  `$(...)`, a subshell, after `sudo` or `xargs` — is checked as program plus
+  arguments, so `bash -c 'rm -rf /'` and `rm -rf --no-preserve-root /` are
+  refused.
+- Echoed scripts: the output a literal `echo` or `printf` pipes into a shell,
+  saves with `tee`, or redirects to a file is rendered and checked as a complete
+  script. Rendering covers literal text, `%%`, `%s` with an optional `-`, width
+  and precision, `%b`, format reuse, and the options of `echo`.
+
+The shell that will run the command is not known, and bash, dash and zsh read
+the same `echo` or `printf` differently: `\162` is an octal value to dash's
+`echo` and plain text to bash's and zsh's, `\x22` is a quote to zsh and bash
+`-e` and plain text to dash, `-e` is an option in bash and zsh and text in dash,
+and a zsh format string reads `\102` while a zsh `%b` argument does not. Each
+shell is therefore rendered on its own, from rules measured with bash 5.2,
+dash 0.5.12 and zsh 5.9, and one destructive result is enough to refuse. The
+readings are not merged: resolving more escapes can produce a quote that hides
+a command one of the shells would run. Output that a shell's rules do not cover
+(`\u`, a NUL, a byte above 0x7f), or that would pass 64 KiB, is not rendered
+and not checked in pieces; the pattern verdict of those arguments then stands.
+
+The structural check runs on every POSIX command, whether or not its raw text
+names a destructive program, so `r''m -rf /` and
+`echo -e '\x72m -rf /' | sh` are refused. If the command contains a group, an
+`eval`, or anything the scanner cannot read, nothing is treated as data and the
+pattern verdict stands. If the analysis itself fails, the unrefined pattern
+verdict and everything found up to that point are returned. Not interpreted:
+`git -c alias.x='!...'` shell aliases, whatever a variable expands to, `printf`
+conversions other than `%s` and `%b`, output joined from several commands
+(`{ printf 'rm '; printf '-rf /'; } | sh`), shells other than bash, dash and
+zsh, and a script that is written now and run later by other means. This remains
+a guard against obvious accidents, not a security boundary.
+
 ### Commands that can move hardware
 
 The PreToolUse validator reports `ros2` commands that publish a velocity or

@@ -2,6 +2,172 @@
 
 All notable changes are documented here.
 
+## 1.8.1 - 2026-11-12
+
+Source bundle version 1.8.1. Three checks gave a wrong answer on inputs the test
+suite did not contain; each was reproduced before it was changed. No new
+capability. The hook-report contract stays at 1.5.0; `qos_audit.py` is 0.1.1.
+Not run for this release: the Docker ROS jobs locally (CI runs them), any model
+benchmark, and the `ask` confirmation prompt in a real client.
+
+QoS audit (`scripts/qos_audit.py`):
+
+- A Python profile modified after construction was judged from its constructor.
+  `q = QoSProfile(reliability=RELIABLE)` followed by
+  `q.reliability = BEST_EFFORT` was reported as `confirmed_compatible` with a
+  RELIABLE subscription, and `--strict` exited 0. The same held when the object
+  was changed through an alias, by a function it was passed to, by `setattr`,
+  inside a branch, or as a module object changed by another function.
+- A profile reached through a variable is now trusted only while the object
+  cannot have changed. An attribute assignment, augmented assignment or
+  deletion, an alias, a call it is passed to, a method call, or storing it makes
+  the endpoint unresolved, with the reason stated. A module-level profile is
+  checked across the whole module.
+- A shared profile such as `qos_profile_sensor_data` is held to the same rule,
+  under every name the module has for it: an import alias, `rclpy.qos.<name>`,
+  a module alias, and `QoSPresetProfiles.<NAME>.value`, which is the same
+  object. Reading an attribute and passing it as the QoS of `create_publisher`
+  or `create_subscription` keep it trusted; `setattr`, a helper function, a
+  method call, storing it, and handing it to `create_client`,
+  `create_service` or a message filter make every endpoint of that module that
+  uses it unresolved.
+- rclpy publishers, subscriptions, clients and services keep the profile object
+  they are given, and `qos_overriding_options` writes to it. An endpoint call
+  with that option, or with `*args`/`**kwargs`, therefore counts as a change
+  for every other user of the same profile, while that endpoint keeps its
+  declared baseline. A module that assigns through, aliases or passes on some
+  `.qos_profile` (`pub.qos_profile.reliability = ...`) leaves every profile
+  reached through a name unresolved; a profile written in the call itself is
+  not affected, and neither is reading `pub.qos_profile.depth`.
+- Plain `name.reliability|durability|liveliness|depth = <literal>` statements of
+  the same function body are applied when they certainly ran before the use.
+  Order is the order of statements, not of line numbers, so
+  `q.reliability = X; node.create_publisher(..., q)` on one line is read
+  correctly, and a later statement does not reach back to an endpoint already
+  created. A use inside a generator expression runs when the generator is
+  consumed and is unresolved. The reported example is now
+  `confirmed_incompatible`.
+- A name imported more than once, such as the same alias for
+  `qos_profile_services_default` in one function and `qos_profile_sensor_data`
+  in another, stands for every profile it is bound to: a change made through it
+  is recorded for each of them. Which import is in force at a given line is not
+  worked out, so a module that reuses an alias this way may leave both profiles
+  unresolved.
+- Only the module being read is inspected: a change made in another module, or
+  through `getattr`, `globals()` or a decorator, is not seen.
+
+Generated packages (`scripts/create_package.py`):
+
+- The Python node carried the comment
+  `event_callbacks=QoSEventHandler(incompatible_qos_callback=...)`, which no
+  rclpy release accepts. It is replaced by a marked example using
+  `SubscriptionEventCallbacks(incompatible_qos=...)` and
+  `PublisherEventCallbacks(incompatible_qos=...)`, imported from
+  `rclpy.event_handler` with `rclpy.qos_event` as the Humble fallback. Checked
+  against the rclpy sources: the classes live in `rclpy.qos_event` on Humble and
+  in `rclpy.event_handler` from Jazzy on; `rclpy.qos_event` is a deprecated
+  re-export on Jazzy and Kilted and is absent on Lyrical and Rolling.
+- `tests/check_qos_event_callbacks.py` reads that example out of a generated
+  package, removes the comment markers and executes it, so the check follows the
+  generator instead of a copy. In the ROS containers it verifies the imports,
+  the callback containers and the `event_callbacks` parameter on all five
+  distributions without calling `rclpy.init()`, and creates a real subscription
+  and publisher on Humble, Jazzy, Kilted and Lyrical. Rolling keeps its existing
+  exclusion for node creation. A test that asserted the old class name now
+  asserts the corrected example.
+
+Hooks (`scripts/skill_validate_hook.py`):
+
+- The destructive-command check refused text that was only data:
+  `grep 'rm -rf / --no-preserve-root' README.md`,
+  `printf "%s\n" "rm -rf / is dangerous"`, `echo 'mkfs.ext4 /dev/sda1'`. For a
+  POSIX shell command, the literal arguments of `grep`/`egrep`/`fgrep`, `rg`,
+  `echo` and `printf` are now treated as data when the command stands at the top
+  level with nothing in front of it, writes to no file, and is followed in its
+  pipeline only by plain filters. An argument containing a substitution or a
+  variable is never data, because that part runs first; `printf -v`, `rg --pre`,
+  and a path such as `./grep` do not qualify; and if the command contains a
+  group, an `eval`, or anything the scanner cannot read, the pattern verdict
+  stands.
+- The same check let commands that would run pass: `bash -c 'rm -rf /'`,
+  `sh -c "rm -rf /"`, `ssh host 'rm -rf /'`, `(rm -rf /)`, `x=$(rm -rf /)`,
+  `rm -rf --no-preserve-root /`, `rm -rf -- /`, and `rm -rf /tmp/x /`. The
+  pattern expected a separator, not a closing quote or parenthesis, after the
+  path, and only short options before it. Each program the scanner finds would
+  run is now checked as program plus arguments, wherever it sits.
+- The output a literal `echo` or `printf` pipes into a shell, saves with `tee`,
+  or redirects to a file is rendered and checked as a complete script, so
+  `echo 'rm -rf /' | bash`, `echo 'rm -rf /' > wipe.sh` and
+  `printf '%s' 'rm ' '-rf /' | sh` are refused, and
+  `printf '%s' 'never run ' 'rm -rf /' >> NOTES.md` passes like
+  `printf '%s\n' 'never run rm -rf / on the robot' >> NOTES.md`, by the same
+  line-start rule as a here-document. Rendering covers literal text, `%%`,
+  `%s` with `-`, width and precision, `%b`, format reuse, and the options of
+  `echo`.
+- bash, dash and zsh read the same `echo` or `printf` differently, and the hook
+  does not know which of them runs the command. Each is rendered on its own,
+  from rules measured with bash 5.2, dash 0.5.12 and zsh 5.9, and one
+  destructive result is enough to refuse. `echo '\0162m -rf /' | sh` is `rm`
+  in dash and zsh, `echo '\x72m -rf /' | sh` in zsh, and
+  `echo 'echo \x22; \162m -rf "/"; \x22' | sh` only in dash, where `\x22`
+  stays as it is and `\162` becomes `r`. The readings are not merged: resolving
+  every escape turns `\x22` into a quote that hides that `rm`. Options differ
+  as well (`-e` is text in dash, a lone `-` ends the options in zsh), and so do
+  places: a zsh format string reads `\102`, a zsh `%b` argument does not.
+  Where one shell's output cannot be rendered (`\u`, a NUL, a byte above
+  0x7f), the pattern verdict of those arguments is kept.
+- Rendered output is limited to 64 KiB, counted over every piece before it is
+  built: literal text, `%%`, values, padding, and each pass of a reused format.
+  A width or precision of more than five digits is not converted to a number.
+  `printf '%99999999999999999999s' x > notes.txt; rm -rf /` raised an error
+  inside the check, which the adapter reported as skipped, so the `rm` was let
+  through; a width of two thousand million did not return within three
+  minutes. Beyond the limit only the rendering is given up.
+- If the structural analysis fails for any reason, the unrefined pattern
+  verdict, the programs found to run, and the findings from output rendered up
+  to that point are returned. A failure can no longer turn a refusal into a
+  pass.
+- The structural check now runs on every POSIX command instead of only those
+  whose raw text names a destructive program, so `r''m -rf /`,
+  `printf '%s%s' 'r' 'm -rf /' | sh` and `echo -e '\x72m -rf /' | sh` are
+  refused. `$'...'` words are decoded, or treated as unknown when they contain
+  an escape that is not modelled.
+- Not interpreted, and recorded as such: `git -c alias.x='!...'` shell aliases,
+  whatever a variable expands to, `printf` conversions other than `%s` and
+  `%b`, output joined from several commands, shells other than bash, dash and
+  zsh, and a script written now and run later. This is still a guard against
+  obvious accidents, not a security boundary. PowerShell and `cmd` keep the
+  pattern verdict unchanged.
+
+Documentation:
+
+- `docs/BENCHMARK_RUNBOOK.md` adds the steps that precede the paired experiment:
+  a pilot pair with a prompt outside the suite, excluded from the results, and a
+  record format for observing the `ask` prompt in a client. No session was run;
+  the client-compatibility table is unchanged.
+- Nine rclpy sources are registered: three for the generated example and six
+  for what rclpy does with a profile object it is given. Two sections of the
+  zsh manual are registered for its `echo` and `printf`; where zsh 5.9 differs
+  from the manual, the measured behavior is used and the difference is stated.
+
+Tests: 2,620 Python tests pass locally on Python 3.13 (2,185 in 1.8.0, all
+retained). One existing assertion changed: the generated node must no longer
+contain `QoSEventHandler`. Over a grid of 17,920 command shapes compared with
+1.8.0, the 450 that changed from refused to allowed are all a bare
+`grep`/`rg`/`echo`/`printf` with a literal argument and no shell, file, or
+substitution after it; 384 changed from allowed to refused. The `printf` and
+`echo` renderers are compared with the shells themselves on harmless inputs —
+837 with bash, 819 with dash, 775 with zsh — and whatever a renderer returns
+must equal what that shell writes; the comparison is skipped for a shell that
+is not installed. For 15,961 `printf`/`echo` commands built from split,
+hex-escaped, octal-escaped and quote-wrapped destructive text, the output part
+alone was run in all three shells: no command whose real output is destructive
+in any of them was allowed, and the 12 refused although their output is
+harmless everywhere are `%b` arguments after `\c` piped into a shell, where the
+pattern verdict is kept. For the QoS audit, every combination of five spellings
+of a shared profile with ten ways to change it or pass it on is unresolved, and
+so are six modules that import one alias for several profiles.
+
 ## 1.8.0 - 2026-11-10
 
 Source bundle version 1.8.0. Two hook defects found by running the hooks on real

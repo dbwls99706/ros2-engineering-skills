@@ -1152,3 +1152,607 @@ class TestEmptyScan:
         write(tmp_path, "node.py", py_node(explicit(), explicit()))
         code, data = audit(tmp_path, "--strict")
         assert data["empty_scan"] is False and data["scanned_files"] == 1
+
+
+# ---------------------------------------------------------------------------
+# A profile object that changes after it is constructed
+# ---------------------------------------------------------------------------
+
+RELIABLE_Q = ("QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, "
+              "liveliness=LivelinessPolicy.AUTOMATIC)")
+BEST_EFFORT_Q = RELIABLE_Q.replace("RELIABLE", "BEST_EFFORT")
+MUTATION_SUB = f"""
+class Listener(Node):
+    def __init__(self):
+        self.create_subscription(String, '/data', self.cb, {RELIABLE_Q})
+"""
+
+
+def mutation_case(tmp_path: Path, publisher: str) -> tuple:
+    write(tmp_path, "node.py", textwrap.dedent(publisher) + MUTATION_SUB, PY_HEADER)
+    code, data = audit(tmp_path, "--strict")
+    return code, data, data["summary"]
+
+
+def publisher_reasons(data: dict) -> list:
+    return [reason for endpoint in data["unresolved"] if endpoint["kind"] == "publisher"
+            for reason in endpoint["unresolved"]]
+
+
+class TestProfileModifiedAfterConstruction:
+    """The constructor arguments describe the object only until it changes."""
+
+    def test_constructor_value_is_the_baseline(self, tmp_path):
+        code, _, summary = mutation_case(tmp_path, f"""
+            def publish(node):
+                q = {BEST_EFFORT_Q}
+                node.create_publisher(String, '/data', q)
+            """)
+        assert code == 1 and summary["confirmed_incompatible"] == 1
+
+    def test_unchanged_profile_is_still_confirmed(self, tmp_path):
+        code, data, summary = mutation_case(tmp_path, f"""
+            def publish(node):
+                q = {RELIABLE_Q}
+                print(q.depth, q.reliability)
+                node.create_publisher(String, '/data', q)
+            """)
+        assert code == 0 and summary["confirmed_compatible"] == 1 and not data["unresolved"]
+
+    @pytest.mark.parametrize("label,publisher,reason", [
+        ("alias", """
+            def publish(node):
+                q = {q}
+                r = q
+                r.reliability = ReliabilityPolicy.BEST_EFFORT
+                node.create_publisher(String, '/data', q)
+            """, "aliased or passed"),
+        ("passed to a function", """
+            def tune(profile):
+                profile.reliability = ReliabilityPolicy.BEST_EFFORT
+
+            def publish(node):
+                q = {q}
+                tune(q)
+                node.create_publisher(String, '/data', q)
+            """, "aliased or passed"),
+        ("setattr", """
+            def publish(node):
+                q = {q}
+                setattr(q, 'reliability', ReliabilityPolicy.BEST_EFFORT)
+                node.create_publisher(String, '/data', q)
+            """, "aliased or passed"),
+        ("method call", """
+            def publish(node):
+                q = {q}
+                q.update(reliability=ReliabilityPolicy.BEST_EFFORT)
+                node.create_publisher(String, '/data', q)
+            """, "aliased or passed"),
+        ("stored on self", """
+            class Talker(Node):
+                def __init__(self):
+                    q = {q}
+                    self.qos = q
+                    self.qos.reliability = ReliabilityPolicy.BEST_EFFORT
+                    self.create_publisher(String, '/data', q)
+            """, "aliased or passed"),
+        ("module object changed by another function", """
+            QOS = {q}
+
+            def configure():
+                QOS.reliability = ReliabilityPolicy.BEST_EFFORT
+
+            def publish(node):
+                node.create_publisher(String, '/data', QOS)
+            """, "modified after construction"),
+        ("changed inside a branch", """
+            def publish(node, lossy):
+                q = {q}
+                if lossy:
+                    q.reliability = ReliabilityPolicy.BEST_EFFORT
+                node.create_publisher(String, '/data', q)
+            """, "modified after construction"),
+        ("changed inside a loop", """
+            def publish(node):
+                q = {q}
+                for topic in ('/data', '/other'):
+                    node.create_publisher(String, topic, q)
+                    q.reliability = ReliabilityPolicy.BEST_EFFORT
+            """, "modified after construction"),
+        ("changed by a nested function", """
+            def publish(node):
+                q = {q}
+
+                def degrade():
+                    q.reliability = ReliabilityPolicy.BEST_EFFORT
+                degrade()
+                node.create_publisher(String, '/data', q)
+            """, "modified after construction"),
+        ("augmented assignment", """
+            def publish(node):
+                q = {q}
+                q.depth += 1
+                node.create_publisher(String, '/data', q)
+            """, "modified after construction"),
+        ("attribute deleted", """
+            def publish(node):
+                q = {q}
+                del q.reliability
+                node.create_publisher(String, '/data', q)
+            """, "modified after construction"),
+        ("history changed", """
+            def publish(node):
+                q = {q}
+                q.history = HistoryPolicy.KEEP_ALL
+                node.create_publisher(String, '/data', q)
+            """, "modified after construction"),
+        ("value is not a literal member", """
+            def publish(node, wanted):
+                q = {q}
+                q.reliability = wanted
+                node.create_publisher(String, '/data', q)
+            """, "is a parameter"),
+        ("lazy generator runs after the change", """
+            def publish(node):
+                q = {q}
+                pending = (node.create_publisher(String, '/data', q) for _ in range(1))
+                q.reliability = ReliabilityPolicy.BEST_EFFORT
+                list(pending)
+            """, "modified after construction"),
+    ])
+    def test_a_changed_or_escaped_profile_is_never_confirmed(self, tmp_path, label, publisher,
+                                                             reason):
+        code, data, summary = mutation_case(tmp_path, publisher.format(q=RELIABLE_Q))
+        assert summary["confirmed_compatible"] == 0, label
+        assert summary["confirmed_incompatible"] == 0, label
+        assert code == 1 and summary["unresolved_endpoints"] >= 1, label
+        assert any(reason in text for text in publisher_reasons(data)), publisher_reasons(data)
+
+    @pytest.mark.parametrize("publisher,expected", [
+        # The reported case: a straight-line change before the use is applied.
+        ("""
+            def publish(node):
+                q = {q}
+                q.reliability = ReliabilityPolicy.BEST_EFFORT
+                node.create_publisher(String, '/data', q)
+            """, "confirmed_incompatible"),
+        # Statement order, not line number, decides.
+        ("""
+            def publish(node):
+                q = {q}
+                q.reliability = ReliabilityPolicy.BEST_EFFORT; node.create_publisher(String, '/data', q)
+            """, "confirmed_incompatible"),
+        ("""
+            def publish(node):
+                q = {q}
+                node.create_publisher(String, '/data', q); q.reliability = ReliabilityPolicy.BEST_EFFORT
+            """, "confirmed_compatible"),
+        # A later change does not reach back to a use that already ran.
+        ("""
+            def publish(node):
+                q = {q}
+                node.create_publisher(String, '/data', q)
+                q.reliability = ReliabilityPolicy.BEST_EFFORT
+            """, "confirmed_compatible"),
+        ("""
+            def publish(node, topics):
+                q = {q}
+                for topic in topics:
+                    node.create_publisher(String, '/data', q)
+                q.reliability = ReliabilityPolicy.BEST_EFFORT
+            """, "confirmed_compatible"),
+        # The last change before the use wins.
+        ("""
+            def publish(node):
+                q = {q}
+                q.reliability = ReliabilityPolicy.BEST_EFFORT
+                q.reliability = ReliabilityPolicy.RELIABLE
+                q.depth = 3
+                node.create_publisher(String, '/data', q)
+            """, "confirmed_compatible"),
+    ])
+    def test_straight_line_changes_are_applied_in_statement_order(self, tmp_path, publisher,
+                                                                  expected):
+        code, data, summary = mutation_case(tmp_path, publisher.format(q=RELIABLE_Q))
+        assert summary[expected] == 1, summary
+        assert not data["unresolved"]
+        assert code == (1 if expected == "confirmed_incompatible" else 0)
+
+    def test_one_profile_used_before_and_after_a_change(self, tmp_path):
+        write(tmp_path, "node.py", f"""
+def publish(node):
+    q = {RELIABLE_Q}
+    node.create_publisher(String, '/before', q)
+    q.reliability = ReliabilityPolicy.BEST_EFFORT
+    node.create_publisher(String, '/after', q)
+
+def listen(node):
+    node.create_subscription(String, '/before', node.cb, {RELIABLE_Q})
+    node.create_subscription(String, '/after', node.cb, {RELIABLE_Q})
+""", PY_HEADER)
+        code, data = audit(tmp_path, "--strict")
+        verdict = {pair["topic"]: pair["compatibility"] for pair in pairs(data)}
+        assert verdict == {"/before": COMPATIBLE, "/after": INCOMPATIBLE} and code == 1
+
+    @pytest.mark.parametrize("publisher", [
+        # The alias is changed, so the shared object is too.
+        """
+            def publish(node):
+                q = qos_profile_sensor_data
+                q.reliability = ReliabilityPolicy.RELIABLE
+                node.create_publisher(String, '/data', q)
+            """,
+        # Another endpoint in the module reads the same shared object.
+        """
+            def tune():
+                q = qos_profile_sensor_data
+                q.reliability = ReliabilityPolicy.RELIABLE
+
+            def publish(node):
+                node.create_publisher(String, '/data', qos_profile_sensor_data)
+            """,
+        """
+            def tune():
+                qos_profile_sensor_data.reliability = ReliabilityPolicy.RELIABLE
+
+            def publish(node):
+                node.create_publisher(String, '/data', qos_profile_sensor_data)
+            """,
+        """
+            from rclpy.qos import QoSPresetProfiles
+
+            def tune():
+                QoSPresetProfiles.SENSOR_DATA.value.reliability = ReliabilityPolicy.RELIABLE
+
+            def publish(node):
+                node.create_publisher(String, '/data', QoSPresetProfiles.SENSOR_DATA.value)
+            """,
+    ])
+    def test_shared_standard_profile_changed_in_the_module_is_unresolved(self, tmp_path, publisher):
+        code, data, summary = mutation_case(tmp_path, publisher)
+        assert summary["confirmed_compatible"] == 0 and summary["confirmed_incompatible"] == 0
+        assert code == 1 and publisher_reasons(data)
+
+    def test_alias_of_a_shared_profile_that_is_never_changed_still_resolves(self, tmp_path):
+        code, data, summary = mutation_case(tmp_path, """
+            def publish(node):
+                q = qos_profile_sensor_data
+                node.create_publisher(String, '/data', q)
+            """)
+        # sensor data is best effort against a reliable subscription
+        assert summary["confirmed_incompatible"] == 1 and not data["unresolved"]
+
+
+# ---------------------------------------------------------------------------
+# Shared standard profiles and profiles kept by the objects they were given to
+# ---------------------------------------------------------------------------
+
+SHARED_HEADER = PY_HEADER + """\
+from rclpy.qos import QoSPresetProfiles
+from rclpy.qos import qos_profile_services_default
+from rclpy.qos import qos_profile_services_default as svc_qos
+import rclpy.qos
+import rclpy.qos as rq
+"""
+BEST = "ReliabilityPolicy.BEST_EFFORT"
+# Every way the reviewed module reaches the same shared object ...
+SHARED_SPELLINGS = {
+    "name": "qos_profile_services_default",
+    "import alias": "svc_qos",
+    "module path": "rclpy.qos.qos_profile_services_default",
+    "module alias": "rq.qos_profile_services_default",
+    "preset value": "QoSPresetProfiles.SERVICES_DEFAULT.value",
+}
+# ... and every way it changes or hands it on.
+SHARED_CHANGES = {
+    "attribute assignment": "{p}.reliability = {best}",
+    "setattr": "setattr({p}, 'reliability', {best})",
+    "passed to a function": "tune({p})",
+    "method call": "{p}.update(reliability={best})",
+    "stored on an object": "node.qos = {p}\n    node.qos.reliability = {best}",
+    "put in a container": "profiles = [{p}]\n    profiles[0].reliability = {best}",
+    "variable alias": "alias = {p}\n    alias.reliability = {best}",
+    "given to a client": "node.create_client(Empty, 'srv', qos_profile={p})",
+    "given to a service": "node.create_service(Empty, 'srv', node.cb, qos_profile={p})",
+    "given to a message filter": "Subscriber(node, String, '/data', qos_profile={p})",
+}
+
+
+def shared_case(tmp_path: Path, publisher: str) -> tuple:
+    write(tmp_path, "node.py", textwrap.dedent(publisher) + MUTATION_SUB, SHARED_HEADER)
+    code, data = audit(tmp_path, "--strict")
+    return code, data, data["summary"]
+
+
+class TestSharedProfiles:
+    @pytest.mark.parametrize("change", sorted(SHARED_CHANGES))
+    @pytest.mark.parametrize("spelling", sorted(SHARED_SPELLINGS))
+    def test_changed_or_passed_on_under_any_spelling_is_never_confirmed(self, tmp_path, change,
+                                                                        spelling):
+        # The change uses one spelling; the endpoint always uses the plain name.
+        statement = SHARED_CHANGES[change].format(p=SHARED_SPELLINGS[spelling], best=BEST)
+        code, data, summary = shared_case(tmp_path, f"""
+def tune(profile):
+    profile.reliability = {BEST}
+
+def publish(node):
+    {statement}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""")
+        assert summary["confirmed_compatible"] == 0 and summary["confirmed_incompatible"] == 0
+        assert code == 1 and publisher_reasons(data), (change, spelling)
+
+    @pytest.mark.parametrize("spelling", sorted(SHARED_SPELLINGS))
+    def test_endpoint_spelling_does_not_matter_either(self, tmp_path, spelling):
+        code, data, summary = shared_case(tmp_path, f"""
+def publish(node):
+    setattr(qos_profile_services_default, 'reliability', {BEST})
+    node.create_publisher(String, '/data', {SHARED_SPELLINGS[spelling]})
+""")
+        assert summary["confirmed_compatible"] == 0 and code == 1 and publisher_reasons(data)
+
+    @pytest.mark.parametrize("publisher", [
+        # Only read.
+        """
+def publish(node):
+    print(qos_profile_services_default.depth, svc_qos.reliability)
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""",
+        # A variable alias that nothing changes.
+        """
+def publish(node):
+    q = rq.qos_profile_services_default
+    node.create_publisher(String, '/data', q)
+""",
+        # Used by two endpoints.
+        """
+def publish(node):
+    node.create_publisher(String, '/other', svc_qos)
+    node.create_publisher(String, '/data', QoSPresetProfiles.SERVICES_DEFAULT.value)
+""",
+        # A different shared profile is changed; this one is not.
+        """
+def publish(node):
+    qos_profile_sensor_data.depth = 1
+    setattr(qos_profile_system_default, 'depth', 2)
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""",
+    ])
+    def test_an_untouched_shared_profile_still_resolves(self, tmp_path, publisher):
+        code, data, summary = shared_case(tmp_path, publisher)
+        # services_default is reliable, like the subscription
+        assert not publisher_reasons(data)
+        assert summary["confirmed_incompatible"] == 0 and summary["not_evaluated_pairs"] == 0
+
+    def test_enum_member_passed_on_without_value(self, tmp_path):
+        code, data, summary = shared_case(tmp_path, f"""
+def publish(node):
+    member = QoSPresetProfiles.SERVICES_DEFAULT
+    member.value.reliability = {BEST}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""")
+        assert summary["confirmed_compatible"] == 0 and code == 1 and publisher_reasons(data)
+
+    @pytest.mark.parametrize("label,statement", [
+        ("import inside a function",
+         f"from rclpy.qos import qos_profile_services_default as local\n    local.reliability = {BEST}"),
+        ("loop variable",
+         f"for each in (qos_profile_services_default,):\n        each.reliability = {BEST}"),
+        ("inside a lambda", f"later = lambda: setattr(svc_qos, 'reliability', {BEST})"),
+        ("assignment expression",
+         f"if (found := qos_profile_services_default):\n        found.reliability = {BEST}"),
+        ("augmented assignment", "svc_qos.depth += 1"),
+        ("deleted attribute", "del rq.qos_profile_services_default.reliability"),
+    ])
+    def test_less_common_ways_to_reach_it(self, tmp_path, label, statement):
+        code, data, summary = shared_case(tmp_path, f"""
+def publish(node):
+    {statement}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""")
+        assert summary["confirmed_compatible"] == 0 and summary["confirmed_incompatible"] == 0
+        assert code == 1 and publisher_reasons(data), label
+
+    @pytest.mark.parametrize("label,statement", [
+        ("another shared profile is changed", "rclpy.qos.qos_profile_sensor_data.depth = 1"),
+        ("only the member name is read", "print(QoSPresetProfiles.SERVICES_DEFAULT.name)"),
+        ("an unchanged variable alias",
+         "alias = svc_qos\n    node.create_publisher(String, '/other', alias)"),
+    ])
+    def test_unrelated_code_does_not_cost_the_verdict(self, tmp_path, label, statement):
+        code, data, summary = shared_case(tmp_path, f"""
+def publish(node):
+    {statement}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""")
+        assert code == 0 and not publisher_reasons(data), label
+        assert summary["confirmed_compatible"] == 1
+
+    # One alias for different profiles: every profile the name may stand for
+    # is treated as changed. The change always goes through `profile`.
+    AMBIGUOUS_ALIAS = {
+        "second import in an uncalled function": f"""
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    profile.reliability = {BEST}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+
+def unrelated():
+    from rclpy.qos import qos_profile_sensor_data as profile
+    print(profile.depth)
+""",
+        "the other import comes first": f"""
+def unrelated():
+    from rclpy.qos import qos_profile_sensor_data as profile
+    print(profile.depth)
+
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    profile.reliability = {BEST}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""",
+        "three imports under one alias": f"""
+def first():
+    from rclpy.qos import qos_profile_parameters as profile
+    return profile.depth
+
+def second():
+    from rclpy.qos import qos_profile_sensor_data as profile
+    return profile.depth
+
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    setattr(profile, 'reliability', {BEST})
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""",
+        "module alias reused by a function import": f"""
+from rclpy.qos import qos_profile_sensor_data as profile
+
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    profile.reliability = {BEST}
+    node.create_publisher(String, '/data', qos_profile_services_default)
+""",
+        "alias for the preset enum and for the module": f"""
+def publish(node):
+    from rclpy.qos import QoSPresetProfiles as P
+    setattr(P.SERVICES_DEFAULT.value, 'reliability', {BEST})
+    node.create_publisher(String, '/data', qos_profile_services_default)
+
+def unrelated():
+    from rclpy import qos as P
+    print(P.qos_profile_sensor_data.depth)
+""",
+        "enum member handed on under a reused alias": f"""
+def publish(node):
+    from rclpy.qos import QoSPresetProfiles as P
+    tune(P.SERVICES_DEFAULT)
+    node.create_publisher(String, '/data', qos_profile_services_default)
+
+def tune(member):
+    member.value.reliability = {BEST}
+
+def unrelated():
+    import rclpy.qos as P
+    print(P.qos_profile_sensor_data.depth)
+""",
+    }
+
+    @pytest.mark.parametrize("label", sorted(AMBIGUOUS_ALIAS))
+    def test_an_alias_bound_to_several_profiles(self, tmp_path, label):
+        code, data, summary = shared_case(tmp_path, self.AMBIGUOUS_ALIAS[label])
+        assert summary["confirmed_compatible"] == 0 and summary["confirmed_incompatible"] == 0
+        assert code == 1 and publisher_reasons(data), label
+
+    def test_an_unrelated_function_does_not_change_the_verdict(self, tmp_path):
+        with_it = self.AMBIGUOUS_ALIAS["second import in an uncalled function"]
+        without = with_it.split("def unrelated")[0]
+        first = shared_case(tmp_path / "a", without)
+        second = shared_case(tmp_path / "b", with_it)
+        assert first[0] == second[0] == 1
+        assert first[2]["unresolved_endpoints"] == second[2]["unresolved_endpoints"] == 1
+
+    def test_an_alias_bound_once_keeps_its_precision(self, tmp_path):
+        code, data, summary = shared_case(tmp_path, """
+def publish(node):
+    from rclpy.qos import qos_profile_services_default as profile
+    node.create_publisher(String, '/data', profile)
+
+def unrelated():
+    from rclpy.qos import qos_profile_sensor_data as other
+    other.depth = 1
+""")
+        assert code == 0 and not publisher_reasons(data)
+        assert summary["confirmed_compatible"] == 1
+
+
+class TestProfileKeptByAnotherObject:
+    """Publishers, subscriptions, clients and services keep the profile object."""
+
+    @pytest.mark.parametrize("label,publisher", [
+        ("through a client", f"""
+def publish(node):
+    q = {RELIABLE_Q}
+    client = node.create_client(Empty, 'srv', qos_profile=q)
+    client.qos_profile.reliability = {BEST}
+    node.create_publisher(String, '/data', q)
+"""),
+        ("through an earlier publisher", f"""
+def publish(node):
+    q = {RELIABLE_Q}
+    first = node.create_publisher(String, '/other', q)
+    first.qos_profile.reliability = {BEST}
+    node.create_publisher(String, '/data', q)
+"""),
+        ("through a publisher of a shared profile", f"""
+def publish(node):
+    first = node.create_publisher(String, '/other', qos_profile_services_default)
+    setattr(first.qos_profile, 'reliability', {BEST})
+    node.create_publisher(String, '/data', qos_profile_services_default)
+"""),
+        ("stored profile aliased", f"""
+def publish(node):
+    q = {RELIABLE_Q}
+    first = node.create_publisher(String, '/other', q)
+    kept = first.qos_profile
+    kept.reliability = {BEST}
+    node.create_publisher(String, '/data', q)
+"""),
+        ("override on another endpoint of the same object", f"""
+def publish(node, options):
+    q = {RELIABLE_Q}
+    node.create_publisher(String, '/other', q, qos_overriding_options=options)
+    node.create_publisher(String, '/data', q)
+"""),
+        ("override on another endpoint of a shared profile", """
+def publish(node, options):
+    node.create_subscription(String, '/other', node.cb, svc_qos,
+                             qos_overriding_options=options)
+    node.create_publisher(String, '/data', qos_profile_services_default)
+"""),
+        ("unreadable call on another endpoint", f"""
+def publish(node, extra):
+    q = {RELIABLE_Q}
+    node.create_publisher(String, '/other', q, **extra)
+    node.create_publisher(String, '/data', q)
+"""),
+        ("given to a client", f"""
+def publish(node):
+    q = {RELIABLE_Q}
+    node.create_client(Empty, 'srv', qos_profile=q)
+    node.create_publisher(String, '/data', q)
+"""),
+    ])
+    def test_profile_reachable_through_another_object_is_never_confirmed(self, tmp_path, label,
+                                                                         publisher):
+        code, data, summary = shared_case(tmp_path, publisher)
+        assert summary["confirmed_compatible"] == 0 and summary["confirmed_incompatible"] == 0
+        assert code == 1 and publisher_reasons(data), label
+
+    @pytest.mark.parametrize("publisher", [
+        # Reading the stored profile changes nothing.
+        f"""
+def publish(node):
+    q = {RELIABLE_Q}
+    first = node.create_publisher(String, '/other', q)
+    print(first.qos_profile.depth)
+    node.create_publisher(String, '/data', q)
+""",
+        # A profile written in the call is shared with no other endpoint.
+        f"""
+def publish(node):
+    first = node.create_publisher(String, '/other', 10)
+    first.qos_profile.reliability = {BEST}
+    node.create_publisher(String, '/data', {RELIABLE_Q})
+""",
+        # The overriding endpoint keeps its own declared baseline.
+        f"""
+def publish(node, options):
+    q = {RELIABLE_Q}
+    node.create_publisher(String, '/data', q, qos_overriding_options=options)
+""",
+    ])
+    def test_cases_that_stay_resolved(self, tmp_path, publisher):
+        code, data, summary = shared_case(tmp_path, publisher)
+        assert not publisher_reasons(data)
+        assert summary["confirmed_incompatible"] == 0 and summary["not_evaluated_pairs"] == 0

@@ -15,6 +15,26 @@ parameters, runtime QoS overrides, RMW defaults, and delivery quality are not
 observed; confirm the running graph with `ros2 topic info -v` (L3+).
 Values that cannot be determined statically are reported as unresolved,
 never guessed.
+
+A Python profile held in a variable is judged from its constructor only while
+the object cannot have changed. Attribute assignments made by plain statements
+of the same function body before the use are applied in statement order. Any
+other change, and any alias or call that could change the object, makes the
+endpoint unresolved.
+
+A shared profile such as qos_profile_sensor_data is held to the same rule
+across the module, under every name it has there: an import alias, a module
+path, QoSPresetProfiles.SENSOR_DATA.value. A name imported more than once
+stands for every profile it is bound to. The only uses that keep it trusted
+are reading an attribute and passing it as the QoS of create_publisher or
+create_subscription. rclpy endpoints, clients and services keep the profile
+object they are given, and qos_overriding_options writes to it, so an endpoint
+call with that option or with *args/**kwargs counts as a change for every
+other user of the object, and a module that assigns through, aliases or passes
+on some `.qos_profile` leaves every profile reached through a name unresolved.
+
+Only the module being read is inspected: a change made in another module, or
+through getattr, globals() or a decorator, is not seen.
 """
 
 import argparse
@@ -39,7 +59,7 @@ from qos_checker import (  # noqa: E402
     check_compatibility,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 MAX_FILE_BYTES = 1024 * 1024
 EXCLUDED_DIRS = {"build", "install", "log", ".git", "__pycache__", "node_modules"}
@@ -416,6 +436,12 @@ class _Scope:
             return None
         return next(iter(targets))
 
+    def owner(self, name: str) -> "_Scope":
+        """The scope whose binding lookup() returns for *name*."""
+        if self.assign_counts.get(name, 0) == 0 and self.parent is not None:
+            return self.parent.owner(name)
+        return self
+
     def lookup(self, name: str, line: int) -> ast.AST:
         if name in self.params or name in self.declared:
             raise Unresolved(f"name '{name}' is a parameter or global/nonlocal")
@@ -477,11 +503,30 @@ def _bound_names(node: ast.AST):
         yield node.name
 
 
+# Position of the QoS argument in the endpoint factories.
+_ENDPOINT_QOS_INDEX = {"create_publisher": 2, "create_subscription": 3}
+# Profile attributes whose plain assignment is applied; anything else that
+# changes the object makes it unresolved.
+_APPLIED_FIELDS = ("reliability", "durability", "liveliness", "depth")
+
+
 class PythonExtractor:
     def __init__(self, path: str, source: str):
         self.path = path
         self.tree = ast.parse(source, filename=path)
         self.endpoints: list = []
+        self._parents = {id(child): parent for parent in ast.walk(self.tree)
+                         for child in ast.iter_child_nodes(parent)}
+        self._uses: dict = {}
+        # name -> every module path an import in this file binds it to
+        self._imports: dict = {}
+        for node in ast.walk(self.tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for name, target in _import_bindings(node):
+                    if target is not None:
+                        self._imports.setdefault(name, set()).add(target)
+        self._tainted: Optional[dict] = None
+        self._stored_reached: Optional[bool] = None
 
     def run(self) -> list:
         self._visit(self.tree, None)
@@ -511,12 +556,270 @@ class PythonExtractor:
             elif isinstance(child, ast.ClassDef):
                 self._visit_class(child, module_scope)
 
-    def _resolve(self, node: ast.AST, scope: _Scope, line: int, depth: int = 0) -> ast.AST:
+    def _resolve(self, node: ast.AST, scope: _Scope, line: int, depth: int = 0,
+                 chain: Optional[list] = None) -> ast.AST:
+        """Follow single assignments to a value; *chain* collects (name, owning scope)."""
         if isinstance(node, ast.Name) and scope.import_target(node.id, line) is None:
             if depth > 8:
                 raise Unresolved(f"name '{node.id}' resolution is too deep")
-            return self._resolve(scope.lookup(node.id, line), scope, line, depth + 1)
+            value = scope.lookup(node.id, line)
+            if chain is not None:
+                chain.append((node.id, scope.owner(node.id)))
+            return self._resolve(value, scope, line, depth + 1, chain)
         return node
+
+    # -- has the object changed since it was constructed? ---------------------
+
+    def _endpoint_call(self, node: ast.AST) -> Optional[ast.Call]:
+        """The endpoint factory call that receives *node* as its QoS, if any."""
+        parent = self._parents.get(id(node))
+        call = self._parents.get(id(parent)) if isinstance(parent, ast.keyword) else parent
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                and call.func.attr in _ENDPOINT_QOS_INDEX):
+            return None
+        if isinstance(parent, ast.keyword):
+            return call if parent.arg == "qos_profile" else None
+        index = _ENDPOINT_QOS_INDEX[call.func.attr]
+        return call if len(call.args) > index and call.args[index] is node else None
+
+    @staticmethod
+    def _call_may_modify_qos(call: ast.Call) -> bool:
+        """The factory may write to the profile it is given, or cannot be read.
+
+        rclpy applies `qos_overriding_options` with setattr on the profile
+        object itself, so every other user of that object sees the result.
+        *args and **kwargs can carry the same option unseen.
+        """
+        if any(isinstance(arg, ast.Starred) for arg in call.args):
+            return True
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                return True
+            if keyword.arg == "qos_overriding_options" and not (
+                    isinstance(keyword.value, ast.Constant) and keyword.value.value is None):
+                return True
+        return False
+
+    def _use(self, node: ast.AST) -> tuple:
+        """Classify one read of an expression that denotes a profile object.
+
+        ("read", None)      an attribute of it is read
+        ("endpoint", call)  it is the QoS of an endpoint factory call
+        ("modified", x)     an attribute is assigned, augmented or deleted (x is
+                            that attribute), or the endpoint call may write to
+                            it (x is the call)
+        ("alias", assign)   `name = <it>`: the same object under a variable
+        ("escapes", None)   anything else: an argument to another call
+                            (setattr, a helper, create_client, a message
+                            filter), a method call, a container, an attribute
+                            of another object, a return value. Code this audit
+                            does not follow can then modify it; clients and
+                            services, like endpoints, keep the object.
+        """
+        parent = self._parents.get(id(node))
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            if isinstance(parent.ctx, (ast.Store, ast.Del)):
+                return "modified", parent
+            user = self._parents.get(id(parent))
+            if isinstance(user, ast.Call) and user.func is parent:
+                return "escapes", None
+            return "read", None
+        call = self._endpoint_call(node)
+        if call is not None:
+            return ("modified", call) if self._call_may_modify_qos(call) else ("endpoint", call)
+        if isinstance(parent, ast.Assign) and parent.value is node and len(
+                parent.targets) == 1 and isinstance(parent.targets[0], ast.Name):
+            return "alias", parent
+        if isinstance(parent, ast.AnnAssign) and parent.value is node and isinstance(
+                parent.target, ast.Name):
+            return "alias", parent
+        return "escapes", None
+
+    def _object_uses(self, root: ast.AST, name: str) -> tuple:
+        """(what modifies the object, whether it escapes) for a variable.
+
+        Every read of the name under *root* is classified with _use(), nested
+        functions included. An alias of a variable counts as an escape: the
+        alias is not followed.
+        """
+        key = (id(root), name)
+        if key not in self._uses:
+            modified, escapes = [], False
+            for node in ast.walk(root):
+                if not (isinstance(node, ast.Name) and node.id == name
+                        and isinstance(node.ctx, ast.Load)):
+                    continue
+                kind, detail = self._use(node)
+                if kind == "modified":
+                    modified.append(detail)
+                elif kind in ("alias", "escapes"):
+                    escapes = True
+            self._uses[key] = (modified, escapes)
+        return self._uses[key]
+
+    def _enclosing_function(self, node: ast.AST) -> ast.AST:
+        current: Optional[ast.AST] = node
+        while current is not None and not isinstance(
+                current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)):
+            current = self._parents.get(id(current))
+        return current if current is not None else self.tree
+
+    # -- shared standard profiles ----------------------------------------------
+
+    def _shared_keys(self, node: ast.AST) -> set:
+        """Every ("profile" | "member", key) that *node* may name.
+
+        qos_profile_sensor_data and QoSPresetProfiles.SENSOR_DATA.value are
+        one object, and an import alias or a module path is another spelling
+        of it; all of them map to the same key. "member" is the enum member
+        without `.value`.
+
+        A name can be imported more than once in a file, for example as the
+        same alias for different profiles in two functions. Which import is
+        in force at a given use is not worked out: every one of them counts,
+        so a change made through the name is recorded for each profile the
+        name may stand for.
+        """
+        keys: set = set()
+        dotted = _dotted(node)
+        if dotted is None:
+            return keys
+        head, _, rest = dotted.partition(".")
+        for target in self._imports.get(head, ()):
+            parts = (target + ("." + rest if rest else "")).split(".")
+            if parts[-1] in PY_STANDARD_PROFILES:
+                keys.add(("profile", PY_STANDARD_PROFILES[parts[-1]]))
+            elif (len(parts) >= 3 and parts[-3] == "QoSPresetProfiles" and parts[-1] == "value"
+                    and parts[-2] in PY_PRESET_KEYS):
+                keys.add(("profile", PY_PRESET_KEYS[parts[-2]]))
+            elif len(parts) >= 2 and parts[-2] == "QoSPresetProfiles" and parts[-1] in PY_PRESET_KEYS:
+                keys.add(("member", PY_PRESET_KEYS[parts[-1]]))
+        return keys
+
+    def _shared_taint(self) -> dict:
+        """key -> calls and other uses that may have changed that shared profile.
+
+        One pass over the module, with the same classification as a variable.
+        The value lists what taints the key: an endpoint call that may write
+        to the profile (so that call itself can still be judged), or None for
+        anything that taints every use.
+        """
+        if self._tainted is None:
+            tainted: dict = {}
+            for node in ast.walk(self.tree):
+                if isinstance(node, (ast.Name, ast.Attribute)):
+                    for kind, key in sorted(self._shared_keys(node)):
+                        tainted.setdefault(key, []).extend(self._taints(node, kind))
+            self._tainted = tainted
+        return self._tainted
+
+    def _taints(self, node: ast.AST, kind: str) -> list:
+        """What one occurrence of a shared profile, or of its enum member, taints."""
+        parent = self._parents.get(id(node))
+        if not isinstance(getattr(node, "ctx", None), ast.Load):
+            return [None]  # rebound or deleted
+        if kind == "member":
+            # `.value` is classified as the profile; reading another
+            # attribute of the member, such as `.name`, is harmless.
+            reads = isinstance(parent, ast.Attribute) and parent.value is node and isinstance(
+                parent.ctx, ast.Load)
+            user = self._parents.get(id(parent)) if reads else None
+            if not reads or (isinstance(user, ast.Call) and user.func is parent):
+                return [None]
+            return []
+        use, detail = self._use(node)
+        if use == "modified":
+            return [detail if isinstance(detail, ast.Call) else None]
+        if use == "escapes":
+            return [None]
+        if use == "alias":
+            target = detail.targets[0] if isinstance(detail, ast.Assign) else detail.target
+            modified, escapes = self._object_uses(
+                self._enclosing_function(detail),
+                target.id if isinstance(target, ast.Name) else "")
+            if modified or escapes or not isinstance(target, ast.Name):
+                return [None]
+        return []
+
+    def _stored_profile_reached(self) -> bool:
+        """Some `<object>.qos_profile` in this module is more than read.
+
+        Publishers, subscriptions, clients and services keep the profile they
+        were created with, so `pub.qos_profile.reliability = ...` changes an
+        object some variable or shared name also refers to. Which one is not
+        tracked; the caller treats every profile reached through a name as
+        unknown. Reading an attribute of it, or passing it on as an endpoint's
+        QoS, changes nothing.
+        """
+        if self._stored_reached is None:
+            self._stored_reached = any(
+                isinstance(node, ast.Attribute) and node.attr == "qos_profile"
+                and isinstance(node.ctx, ast.Load)
+                and self._use(node)[0] in ("modified", "alias", "escapes")
+                for node in ast.walk(self.tree))
+        return self._stored_reached
+
+    def _applied_changes(self, name: str, owner: _Scope, scope: _Scope,
+                         call: Optional[ast.Call], fresh: bool) -> list:
+        """Attribute assignments that have certainly run before this use.
+
+        Returns [(attribute, value node)] in execution order, or raises
+        Unresolved when the object may differ from what its constructor says.
+        """
+        root = self.tree if isinstance(owner.node, ast.Module) else owner.node
+        modified, escapes = self._object_uses(root, name)
+        # An endpoint whose own options may rewrite its profile keeps its
+        # declared baseline; it is the other users of the object that cannot.
+        modified = [item for item in modified if item is not call]
+        if escapes:
+            raise Unresolved(f"'{name}' is aliased or passed to another call, "
+                             "so its QoS may have changed")
+        if not modified:
+            return []
+        changed = Unresolved(f"'{name}' is modified after construction")
+        body = getattr(owner.node, "body", None)
+        if not (fresh and call is not None and owner is scope and isinstance(body, list)
+                and isinstance(owner.node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            # A module object can be changed by any function before this one
+            # runs; a shared or aliased profile is not this function's alone.
+            raise changed
+
+        def position(node: ast.AST) -> Optional[int]:
+            """Index of the body statement holding *node*, if it runs in place."""
+            while True:
+                parent = self._parents.get(id(node))
+                if parent is None or isinstance(node, ast.GeneratorExp):
+                    return None  # a generator body runs when it is consumed
+                if parent is owner.node:
+                    break
+                node = parent
+            return next((i for i, stmt in enumerate(body) if stmt is node), None)
+
+        use = position(call)
+        bound = next((i for i, stmt in enumerate(body)
+                      if isinstance(stmt, (ast.Assign, ast.AnnAssign))
+                      and any(isinstance(target, ast.Name) and target.id == name
+                              for target in (stmt.targets if isinstance(stmt, ast.Assign)
+                                             else [stmt.target]))), None)
+        if use is None or bound is None:
+            raise changed
+        applied = []
+        for target in modified:
+            stmt = self._parents.get(id(target))
+            index = next((i for i, candidate in enumerate(body) if candidate is stmt), None)
+            # Only a plain `name.field = value` statement of this body is read.
+            # Inside a branch, a loop or a nested function it may or may not
+            # have run; an augmented assignment or a deletion is not a value,
+            # and neither is another endpoint call that may write to it.
+            if not (isinstance(target, ast.Attribute) and isinstance(stmt, ast.Assign)
+                    and stmt.targets == [target]
+                    and target.attr in _APPLIED_FIELDS and index is not None
+                    and bound < index != use):
+                raise changed
+            if index < use:
+                applied.append((index, target.attr, stmt.value))
+        return [(attribute, value) for _index, attribute, value in sorted(
+            applied, key=lambda item: item[0])]
 
     def _maybe_endpoint(self, call: ast.Call, scope: _Scope) -> None:
         if not isinstance(call.func, ast.Attribute):
@@ -561,7 +864,7 @@ class PythonExtractor:
             endpoint.reasons.append("QoS argument missing")
             return
         try:
-            endpoint.qos = self._qos(qos_node, scope, call.lineno)
+            endpoint.qos = self._qos(qos_node, scope, call.lineno, call)
         except Unresolved as exc:
             endpoint.reasons.append(f"QoS: {exc}")
 
@@ -583,8 +886,34 @@ class PythonExtractor:
             return f"{parts[0]}/msg/{parts[2]}"
         return None
 
-    def _qos(self, node: ast.AST, scope: _Scope, line: int) -> AuditProfile:
-        node = self._resolve(node, scope, line)
+    def _qos(self, node: ast.AST, scope: _Scope, line: int,
+             call: Optional[ast.Call] = None) -> AuditProfile:
+        chain: list = []
+        node = self._resolve(node, scope, line, chain=chain)
+        profile = self._profile(node, scope, line, call)
+        if isinstance(node, ast.Constant):
+            return profile  # an integer depth cannot be modified in place
+        if (chain or _dotted(node) is not None) and self._stored_profile_reached():
+            # A profile written in the call itself is shared with nothing else.
+            raise Unresolved("a profile kept by an endpoint, client or service is modified or "
+                             "passed on in this module (.qos_profile), so a profile reached "
+                             "through a name may have changed")
+        fresh = isinstance(node, ast.Call) and len(chain) == 1
+        for name, owner in chain:
+            for attribute, value in self._applied_changes(name, owner, scope, call, fresh):
+                if attribute == "depth":
+                    resolved = self._resolve(value, scope, line)
+                    if not (isinstance(resolved, ast.Constant) and isinstance(resolved.value, int)
+                            and not isinstance(resolved.value, bool)):
+                        raise Unresolved(f"'{name}.depth' is not assigned a literal integer")
+                    profile.depth = resolved.value
+                else:
+                    setattr(profile, attribute, self._policy(attribute, value, scope, line))
+        return profile
+
+    def _profile(self, node: ast.AST, scope: _Scope, line: int,
+                 call: Optional[ast.Call] = None) -> AuditProfile:
+        """The profile an already resolved expression constructs or names."""
         if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
             profile = _standard("default")
             profile.depth = node.value
@@ -592,6 +921,11 @@ class PythonExtractor:
             return profile
         dotted = _dotted(node)
         if dotted is not None:
+            if any(source is not call
+                   for _kind, key in self._shared_keys(node)
+                   for source in self._shared_taint().get(key, ())):
+                raise Unresolved(f"shared profile {dotted} is modified, aliased or passed to "
+                                 "another call in this module")
             dotted = self._expand(dotted, scope, line)
             last = dotted.split(".")[-1]
             if last in PY_STANDARD_PROFILES:
