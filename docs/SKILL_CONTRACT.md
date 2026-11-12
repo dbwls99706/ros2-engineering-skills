@@ -96,14 +96,26 @@ is let through.
   `$(...)`, a subshell, after `sudo` or `xargs` — is checked as program plus
   arguments, so `bash -c 'rm -rf /'` and `rm -rf --no-preserve-root /` are
   refused.
-- Echoed scripts: the text a literal `echo` or `printf` pipes into a shell,
-  saves with `tee`, or redirects to a file is checked as a script.
+- Echoed scripts: the output a literal `echo` or `printf` pipes into a shell,
+  saves with `tee`, or redirects to a file is rendered as bash writes it and
+  checked once, as a script. Rendering covers literal text, `%%`, `%s` with an
+  optional `-`, width and precision, `%b`, format reuse, and `echo` with `-n`,
+  `-e` and `-E` (the last of `-e` and `-E` decides). The three places read
+  escapes differently — `\123` is an octal value in a format and in a `%b`
+  argument but plain text to `echo -e`, and `\c` ends the output in the latter
+  two but is plain text in a format — and each is read by its own rule. Output
+  that cannot be rendered is not checked in pieces; the pattern verdict stands.
 
-If the command contains a group, an `eval`, or anything the scanner cannot read,
-nothing is treated as data and the pattern verdict stands. Not interpreted:
-`git -c alias.x='!...'` shell aliases, whatever a variable expands to, and a
-script that is written now and run later by other means. This remains a guard
-against obvious accidents, not a security boundary.
+The structural check runs on every POSIX command, whether or not its raw text
+names a destructive program, so `r''m -rf /` and
+`echo -e '\x72m -rf /' | sh` are refused. If the command contains a group, an
+`eval`, or anything the scanner cannot read, nothing is treated as data and the
+pattern verdict stands. Not interpreted: `git -c alias.x='!...'` shell aliases,
+whatever a variable expands to, `printf` conversions other than `%s` and `%b`,
+output joined from several commands (`{ printf 'rm '; printf '-rf /'; } | sh`),
+an `echo` that reads escapes without `-e` (dash, zsh, bash with `xpg_echo`),
+and a script that is written now and run later by other means. This remains a
+guard against obvious accidents, not a security boundary.
 
 ### Commands that can move hardware
 

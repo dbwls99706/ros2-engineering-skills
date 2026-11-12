@@ -20,8 +20,20 @@ A Python profile held in a variable is judged from its constructor only while
 the object cannot have changed. Attribute assignments made by plain statements
 of the same function body before the use are applied in statement order. Any
 other change, and any alias or call that could change the object, makes the
-endpoint unresolved. Only the module being read is inspected: another module
-that modifies a shared profile such as qos_profile_sensor_data is not seen.
+endpoint unresolved.
+
+A shared profile such as qos_profile_sensor_data is held to the same rule
+across the module, under every name it has there: an import alias, a module
+path, QoSPresetProfiles.SENSOR_DATA.value. The only uses that keep it trusted
+are reading an attribute and passing it as the QoS of create_publisher or
+create_subscription. rclpy endpoints, clients and services keep the profile
+object they are given, and qos_overriding_options writes to it, so an endpoint
+call with that option or with *args/**kwargs counts as a change for every
+other user of the object, and a module that assigns through, aliases or passes
+on some `.qos_profile` leaves every profile reached through a name unresolved.
+
+Only the module being read is inspected: a change made in another module, or
+through getattr, globals() or a decorator, is not seen.
 """
 
 import argparse

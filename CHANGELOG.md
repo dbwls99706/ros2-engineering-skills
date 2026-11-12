@@ -22,9 +22,23 @@ QoS audit (`scripts/qos_audit.py`):
   cannot have changed. An attribute assignment, augmented assignment or
   deletion, an alias, a call it is passed to, a method call, or storing it makes
   the endpoint unresolved, with the reason stated. A module-level profile is
-  checked across the whole module, and a shared profile such as
-  `qos_profile_sensor_data` that the module modifies, directly or through an
-  alias, is unresolved wherever that module uses it.
+  checked across the whole module.
+- A shared profile such as `qos_profile_sensor_data` is held to the same rule,
+  under every name the module has for it: an import alias, `rclpy.qos.<name>`,
+  a module alias, and `QoSPresetProfiles.<NAME>.value`, which is the same
+  object. Reading an attribute and passing it as the QoS of `create_publisher`
+  or `create_subscription` keep it trusted; `setattr`, a helper function, a
+  method call, storing it, and handing it to `create_client`,
+  `create_service` or a message filter make every endpoint of that module that
+  uses it unresolved.
+- rclpy publishers, subscriptions, clients and services keep the profile object
+  they are given, and `qos_overriding_options` writes to it. An endpoint call
+  with that option, or with `*args`/`**kwargs`, therefore counts as a change
+  for every other user of the same profile, while that endpoint keeps its
+  declared baseline. A module that assigns through, aliases or passes on some
+  `.qos_profile` (`pub.qos_profile.reliability = ...`) leaves every profile
+  reached through a name unresolved; a profile written in the call itself is
+  not affected, and neither is reading `pub.qos_profile.depth`.
 - Plain `name.reliability|durability|liveliness|depth = <literal>` statements of
   the same function body are applied when they certainly ran before the use.
   Order is the order of statements, not of line numbers, so
@@ -33,8 +47,8 @@ QoS audit (`scripts/qos_audit.py`):
   created. A use inside a generator expression runs when the generator is
   consumed and is unresolved. The reported example is now
   `confirmed_incompatible`.
-- Only the module being read is inspected: another module that modifies a
-  shared profile is not seen.
+- Only the module being read is inspected: a change made in another module, or
+  through `getattr`, `globals()` or a decorator, is not seen.
 
 Generated packages (`scripts/create_package.py`):
 
@@ -75,15 +89,29 @@ Hooks (`scripts/skill_validate_hook.py`):
   pattern expected a separator, not a closing quote or parenthesis, after the
   path, and only short options before it. Each program the scanner finds would
   run is now checked as program plus arguments, wherever it sits.
-- The text a literal `echo` or `printf` pipes into a shell, saves with `tee`, or
-  redirects to a file is checked as a script, so `echo 'rm -rf /' | bash` and
-  `echo 'rm -rf /' > wipe.sh` are refused.
-  `printf '%s\n' 'never run rm -rf / on the robot' >> NOTES.md` still passes,
-  by the same line-start rule as a here-document.
+- The output a literal `echo` or `printf` pipes into a shell, saves with `tee`,
+  or redirects to a file is rendered as bash writes it and checked once, as a
+  script, so `echo 'rm -rf /' | bash`, `echo 'rm -rf /' > wipe.sh` and
+  `printf '%s' 'rm ' '-rf /' | sh` are refused, and
+  `printf '%s' 'never run ' 'rm -rf /' >> NOTES.md` passes like
+  `printf '%s\n' 'never run rm -rf / on the robot' >> NOTES.md`, by the same
+  line-start rule as a here-document. Rendering covers literal text, `%%`,
+  `%s` with `-`, width and precision, `%b`, format reuse, and `echo` with
+  `-n`, `-e` and `-E`, each with its own escape rules: `\123` is an octal value
+  in a format and in a `%b` argument but plain text to `echo -e`; `\c` ends the
+  output in the latter two and is plain text in a format; the last of `-e` and
+  `-E` decides. Output that cannot be rendered is not checked in pieces.
+- The structural check now runs on every POSIX command instead of only those
+  whose raw text names a destructive program, so `r''m -rf /`,
+  `printf '%s%s' 'r' 'm -rf /' | sh` and `echo -e '\x72m -rf /' | sh` are
+  refused. `$'...'` words are decoded, or treated as unknown when they contain
+  an escape that is not modelled.
 - Not interpreted, and recorded as such: `git -c alias.x='!...'` shell aliases,
-  whatever a variable expands to, and a script written now and run later. This
-  is still a guard against obvious accidents, not a security boundary.
-  PowerShell and `cmd` keep the pattern verdict unchanged.
+  whatever a variable expands to, `printf` conversions other than `%s` and
+  `%b`, output joined from several commands, an `echo` that reads escapes
+  without `-e` (dash, zsh, bash with `xpg_echo`), and a script written now and
+  run later. This is still a guard against obvious accidents, not a security
+  boundary. PowerShell and `cmd` keep the pattern verdict unchanged.
 
 Documentation:
 
@@ -91,14 +119,23 @@ Documentation:
   a pilot pair with a prompt outside the suite, excluded from the results, and a
   record format for observing the `ask` prompt in a client. No session was run;
   the client-compatibility table is unchanged.
-- Three rclpy sources are registered for the generated example.
+- Nine rclpy sources are registered: three for the generated example and six
+  for what rclpy does with a profile object it is given.
 
-Tests: 2,327 Python tests pass locally on Python 3.13 (2,185 in 1.8.0, all
+Tests: 2,541 Python tests pass locally on Python 3.13 (2,185 in 1.8.0, all
 retained). One existing assertion changed: the generated node must no longer
 contain `QoSEventHandler`. Over a grid of 17,920 command shapes compared with
 1.8.0, the 450 that changed from refused to allowed are all a bare
 `grep`/`rg`/`echo`/`printf` with a literal argument and no shell, file, or
-substitution after it; 384 changed from allowed to refused.
+substitution after it; 384 changed from allowed to refused. The `printf` and
+`echo` renderers are compared with bash 5 itself on 372 harmless inputs, and
+whatever they return must equal what bash writes. For 7,986 `printf`/`echo`
+commands built from split and escaped destructive text, the output part alone
+was run in bash: no command whose real output is destructive was allowed, and
+the 36 refused although their output is harmless are `%b` arguments after `\c`
+piped into a shell, where the pattern verdict is kept. For the QoS audit, every
+combination of five spellings of a shared profile with ten ways to change it or
+pass it on is unresolved.
 
 ## 1.8.0 - 2026-11-10
 

@@ -594,11 +594,22 @@ def _match_dangerous(text):
 #   * Commands. Each program the scanner finds would run - inside `bash -c`,
 #     `ssh host '...'`, `$(...)`, a subshell, after sudo or xargs - is checked
 #     against the command-position patterns as program plus arguments.
-#   * Echoed scripts. The text a literal echo or printf writes to a file, or
-#     pipes into a shell, is checked as a script.
+#   * Echoed scripts. The output a literal echo or printf writes to a file,
+#     or pipes into a shell, is rendered as bash would write it and checked
+#     once, as a script: format reuse, %s, %b, `echo -e` and their different
+#     escape rules included. `printf '%s' 'rm ' '-rf /' | sh` is one command,
+#     and `printf '%s' 'never run ' 'rm -rf /' >> NOTES.md` is a sentence.
+#     Output that cannot be rendered is not checked in pieces; the pattern
+#     verdict stands.
 #
-# Not interpreted: `git -c alias.x='!...'` shell aliases, and anything a
-# variable expands to. Other tools (PowerShell, cmd) keep the pattern verdict.
+# The analysis runs on every POSIX command, not only on those whose raw text
+# names a destructive program: `r''m -rf /` and `echo -e '\x72m -rf /' | sh`
+# name it only after quoting and escapes are resolved.
+#
+# Not interpreted: `git -c alias.x='!...'` shell aliases, anything a variable
+# expands to, printf conversions other than %s and %b, output joined from
+# several commands, and an echo that reads escapes without -e (dash, zsh,
+# bash with xpg_echo). Other tools (PowerShell, cmd) keep the pattern verdict.
 _DATA_PROGRAMS = frozenset(('grep', 'egrep', 'fgrep', 'rg', 'echo', 'printf'))
 _PIPE_FILTERS = frozenset(('head', 'tail', 'wc', 'sort', 'uniq', 'less', 'cat',
                            'grep', 'egrep', 'fgrep', 'rg'))
