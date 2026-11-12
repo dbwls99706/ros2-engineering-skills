@@ -36,7 +36,8 @@ order; any other change, and any alias or call that could change the object,
 leaves the endpoint unresolved instead of confirmed. A shared profile such as
 `qos_profile_sensor_data` is held to the same rule across the module, under
 every name it has there (an import alias, a module path,
-`QoSPresetProfiles.SENSOR_DATA.value`): reading an attribute and passing it as
+`QoSPresetProfiles.SENSOR_DATA.value`), and an alias imported for more than one
+profile stands for all of them: reading an attribute and passing it as
 an endpoint's QoS keep it trusted, and anything else — `setattr`, a helper, a
 client, a service, a message filter — does not. rclpy endpoints keep the
 profile object they are given and `qos_overriding_options` writes to it, so

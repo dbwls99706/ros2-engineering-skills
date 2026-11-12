@@ -24,7 +24,8 @@ endpoint unresolved.
 
 A shared profile such as qos_profile_sensor_data is held to the same rule
 across the module, under every name it has there: an import alias, a module
-path, QoSPresetProfiles.SENSOR_DATA.value. The only uses that keep it trusted
+path, QoSPresetProfiles.SENSOR_DATA.value. A name imported more than once
+stands for every profile it is bound to. The only uses that keep it trusted
 are reading an attribute and passing it as the QoS of create_publisher or
 create_subscription. rclpy endpoints, clients and services keep the profile
 object they are given, and qos_overriding_options writes to it, so an endpoint
