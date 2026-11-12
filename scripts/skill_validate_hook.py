@@ -595,21 +595,26 @@ def _match_dangerous(text):
 #     `ssh host '...'`, `$(...)`, a subshell, after sudo or xargs - is checked
 #     against the command-position patterns as program plus arguments.
 #   * Echoed scripts. The output a literal echo or printf writes to a file,
-#     or pipes into a shell, is rendered as bash would write it and checked
-#     once, as a script: format reuse, %s, %b, `echo -e` and their different
-#     escape rules included. `printf '%s' 'rm ' '-rf /' | sh` is one command,
-#     and `printf '%s' 'never run ' 'rm -rf /' >> NOTES.md` is a sentence.
-#     Output that cannot be rendered is not checked in pieces; the pattern
-#     verdict stands.
+#     or pipes into a shell, is rendered and checked as a complete script:
+#     format reuse, %s, %b, echo options and escapes included.
+#     `printf '%s' 'rm ' '-rf /' | sh` is one command, and
+#     `printf '%s' 'never run ' 'rm -rf /' >> NOTES.md` is a sentence. bash,
+#     dash and zsh read the same echo or printf differently, and which one
+#     runs the command is not known, so each is rendered on its own and one
+#     destructive result is enough to refuse. Output that a shell's rules do
+#     not cover, or that would pass 64 KiB, is not rendered and not checked
+#     in pieces; the pattern verdict of those arguments then stands.
 #
 # The analysis runs on every POSIX command, not only on those whose raw text
 # names a destructive program: `r''m -rf /` and `echo -e '\x72m -rf /' | sh`
-# name it only after quoting and escapes are resolved.
+# name it only after quoting and escapes are resolved. If the analysis itself
+# fails, the unrefined pattern verdict and everything found up to that point
+# are returned, so a failure cannot turn a refusal into a pass.
 #
 # Not interpreted: `git -c alias.x='!...'` shell aliases, anything a variable
 # expands to, printf conversions other than %s and %b, output joined from
-# several commands, and an echo that reads escapes without -e (dash, zsh,
-# bash with xpg_echo). Other tools (PowerShell, cmd) keep the pattern verdict.
+# several commands, and shells other than bash, dash and zsh. Other tools
+# (PowerShell, cmd) keep the pattern verdict.
 _DATA_PROGRAMS = frozenset(('grep', 'egrep', 'fgrep', 'rg', 'echo', 'printf'))
 _PIPE_FILTERS = frozenset(('head', 'tail', 'wc', 'sort', 'uniq', 'less', 'cat',
                            'grep', 'egrep', 'fgrep', 'rg'))
@@ -696,10 +701,13 @@ def _mask_data_arguments(command, out):
             if (meta['redirect_out'] or any(
                     later['redirect_out'] or _plain_program(following) not in _PIPE_FILTERS
                     or _runs_a_program(_plain_program(following), following)
-                    for following, later in rest)) and not _written_output(pipeline, index):
-                # Kept, unless the output is rendered: then that string is
-                # what gets checked, and the separate arguments say nothing.
-                continue
+                    for following, later in rest)):
+                # Kept, unless every shell's output is rendered: then those
+                # strings are what gets checked, and the separate arguments
+                # say nothing. One unrendered candidate keeps the pattern.
+                candidates = _written_output(pipeline, index)
+                if candidates is None or None in candidates:
+                    continue
             for (text, dynamic), (start, end) in zip(words[1:], meta['spans'][1:]):
                 if not dynamic:
                     masked[start:end] = ' ' * (end - start)
@@ -742,31 +750,68 @@ def _executed_issues(out):
     return issues
 
 
-_SIMPLE_ESCAPES = {'a': '\a', 'b': '\b', 'e': '\x1b', 'E': '\x1b', 'f': '\f',
-                   'n': '\n', 'r': '\r', 't': '\t', 'v': '\v', '\\': '\\'}
+# How a backslash is read depends on the shell and on where the text stands.
+# The hook does not know which shell will run the command, so the output of
+# echo and printf is rendered once per shell and every result is checked.
+# Reading more escapes is not the safer guess: turning \x22 into a quote can
+# hide a command that dash, which leaves \x22 alone, would run.
+#
+# Measured with bash 5.2, dash 0.5.12 and zsh 5.9, harmless strings only:
+#
+#                      \123        \0123        \x41    \c            \" \' \?
+#   bash  format       octal       \012 + "3"   A       kept          character
+#         %b argument  octal       octal        A       output ends   kept
+#         echo -e      kept        octal        A       output ends   kept
+#   dash  format       octal       \012 + "3"   kept    kept          kept
+#         %b argument  octal       octal        kept    output ends   kept
+#         echo         octal       octal        kept    output ends   kept
+#   zsh   format       octal       \012 + "3"   A       output ends   kept
+#         %b argument  kept        octal        A       output ends   kept
+#         echo         kept        octal        A       output ends   kept
+#
+# bash reads \E as escape, dash and zsh do not. `ansi_c` is the inside of
+# bash's $'...'.
+_LETTERS = {'a': '\a', 'b': '\b', 'e': '\x1b', 'f': '\f',
+            'n': '\n', 'r': '\r', 't': '\t', 'v': '\v', '\\': '\\'}
 _OCTAL = '01234567'
 _HEX = '0123456789abcdefABCDEF'
+_RENDER_MAX_CHARS = 64 * 1024
+_DIALECTS = ('bash', 'dash', 'zsh')
 
 
-def _decode_escapes(text, mode):
-    r"""Backslash escapes as bash reads them: (text, stopped), or None.
+def _rule(octal, stop, hexadecimal=True, quotes=False, capital_e=False, unknown='keep'):
+    return {'octal': octal, 'stop': stop, 'hex': hexadecimal, 'quotes': quotes,
+            'capital_e': capital_e, 'unknown': unknown}
 
-    The rules differ by where the text stands, and the differences decide
-    what reaches a shell:
 
-        mode        \123       \0123        \c            \" \' \?
-        format      octal      \012 + "3"   kept          the character
-        percent_b   octal      octal        output ends   kept
-        echo        kept       octal        output ends   kept
-        ansi_c      octal      \012 + "3"   not modelled  the character
+# octal: 'any' is \NNN with one to three digits, 'zero' is \0 and up to three
+# more, 'both' accepts either. stop: \c ends the output (True), is two
+# characters (False), or is not modelled (None). unknown: what \x without a
+# digit, \u and \U are - kept as written ('keep'), kept unless a digit
+# follows ('digits'), or never modelled ('never').
+_ESCAPE_RULES = {
+    ('bash', 'format'): _rule('any', False, quotes=True, capital_e=True, unknown='digits'),
+    ('bash', 'percent_b'): _rule('both', True, capital_e=True, unknown='digits'),
+    ('bash', 'echo'): _rule('zero', True, capital_e=True, unknown='digits'),
+    ('bash', 'ansi_c'): _rule('any', None, quotes=True, capital_e=True, unknown='digits'),
+    ('dash', 'format'): _rule('any', False, hexadecimal=False),
+    ('dash', 'percent_b'): _rule('both', True, hexadecimal=False),
+    ('dash', 'echo'): _rule('both', True, hexadecimal=False),
+    ('zsh', 'format'): _rule('any', True, unknown='never'),
+    ('zsh', 'percent_b'): _rule('zero', True, unknown='never'),
+    ('zsh', 'echo'): _rule('zero', True, unknown='never'),
+}
 
-    `format` is a printf format string, `percent_b` an argument of %b,
-    `echo` the arguments of `echo -e`, `ansi_c` the inside of $'...'. \xHH
-    and the single-letter escapes are the same everywhere; an escape bash
-    does not know keeps its backslash. None means the result is not
-    modelled: \u and \U, a control character written \cX, a NUL, or a byte
-    above 0x7f, whose meaning depends on the locale.
+
+def _decode_escapes(text, mode, dialect='bash'):
+    r"""Backslash escapes as *dialect* reads them in *mode*: (text, stopped).
+
+    Returns None when the result is not modelled: \u and \U where the shell
+    reads them, a control character written \cX inside $'...', a NUL, or a
+    byte above 0x7f, whose meaning depends on the locale. An escape the
+    shell does not know keeps its backslash.
     """
+    rule = _ESCAPE_RULES[(dialect, mode)]
     out, i, n = [], 0, len(text)
     while i < n:
         char = text[i]
@@ -775,41 +820,45 @@ def _decode_escapes(text, mode):
             i += 1
             continue
         nxt = text[i + 1]
-        if nxt in _SIMPLE_ESCAPES:
-            out.append(_SIMPLE_ESCAPES[nxt])
+        if nxt in _LETTERS or (nxt == 'E' and rule['capital_e']):
+            out.append(_LETTERS.get(nxt, '\x1b'))
             i += 2
             continue
         if nxt in '\'"?':
-            out.append(nxt if mode in ('format', 'ansi_c') else '\\' + nxt)
+            out.append(nxt if rule['quotes'] else '\\' + nxt)
             i += 2
             continue
         if nxt == 'c':
-            if mode in ('percent_b', 'echo'):
-                return ''.join(out), True
-            if mode == 'ansi_c':
+            if rule['stop'] is None:
                 return None
+            if rule['stop']:
+                return ''.join(out), True
             out.append('\\c')
             i += 2
             continue
         digits = None
         if nxt in _OCTAL:
-            j = i + 1
-            if nxt == '0' and mode in ('percent_b', 'echo'):
-                j += 1  # \0 and then up to three digits
-            elif mode == 'echo':
-                j = -1  # echo reads an octal value only after \0
-            if j >= 0:
-                end = j
-                while end < n and end - j < 3 and text[end] in _OCTAL:
+            start = i + 1
+            if nxt == '0' and rule['octal'] in ('zero', 'both'):
+                start += 1  # \0 and then up to three digits
+            elif rule['octal'] == 'zero':
+                start = -1  # an octal value is read only after \0
+            if start >= 0:
+                end = start
+                while end < n and end - start < 3 and text[end] in _OCTAL:
                     end += 1
-                digits, base, i = text[j:end] or '0', 8, end
-        elif nxt == 'x':
+                digits, base, i = text[start:end] or '0', 8, end
+        elif nxt == 'x' and rule['hex']:
             end = i + 2
             while end < n and end - (i + 2) < 2 and text[end] in _HEX:
                 end += 1
             if end > i + 2:
                 digits, base, i = text[i + 2:end], 16, end
-        elif nxt in 'uU' and i + 2 < n and text[i + 2] in _HEX:
+            elif rule['unknown'] == 'never':
+                return None
+        elif nxt in 'uU' and rule['hex'] and (
+                rule['unknown'] == 'never'
+                or (rule['unknown'] == 'digits' and i + 2 < n and text[i + 2] in _HEX)):
             return None
         if digits is None:
             out.append('\\' + nxt)
@@ -822,17 +871,41 @@ def _decode_escapes(text, mode):
     return ''.join(out), False
 
 
-_CONVERSION = re.compile(r'%(?:(%)|(-?)([1-9]\d*)?(\.\d*)?([sb]))')
+class _Rendered:
+    """Output under construction, refused before it passes the size limit.
+
+    Every piece goes through add(): literal text, %%, converted arguments,
+    padding, and each pass of a reused format. The size is checked before
+    the piece is built, so a width of two thousand million costs nothing.
+    """
+
+    def __init__(self):
+        self.parts, self.size = [], 0
+
+    def add(self, text, width=0, left=False):
+        size = max(len(text), width)
+        if self.size + size > _RENDER_MAX_CHARS:
+            return False
+        self.size += size
+        self.parts.append(text.ljust(width) if left else text.rjust(width))
+        return True
+
+    def text(self):
+        return ''.join(self.parts)
 
 
-def _render_printf(args):
-    """What `printf` writes for these literal arguments, or None.
+_CONVERSION = re.compile(r'%(?:(%)|(-?)(\d*)(\.\d*)?([sb]))')
+
+
+def _render_printf(args, dialect='bash'):
+    """What `printf` writes for these literal arguments in *dialect*, or None.
 
     Modelled: literal text and its escapes, %%, %s with an optional `-`,
     width and precision, and %b with the escapes of its argument. The format
     is reused while arguments remain, the passes are joined with nothing in
     between, and a missing argument is empty. Anything else is None, never a
-    guess: options, other conversions and flags, `*`, a sized %b.
+    guess: options, other conversions and flags, `*`, a sized %b, a width or
+    precision of more than five digits, output past the size limit.
     """
     if args and args[0] == '--':
         args = args[1:]
@@ -843,10 +916,10 @@ def _render_printf(args):
         end = template.find('%', pos)
         if end != pos:
             end = len(template) if end < 0 else end
-            decoded = _decode_escapes(template[pos:end], 'format')
+            decoded = _decode_escapes(template[pos:end], 'format', dialect)
             if decoded is None:
                 return None
-            tokens.append(('text', decoded[0]))
+            tokens.append(('text', decoded))
             pos = end
             continue
         match = _CONVERSION.match(template, pos)
@@ -854,72 +927,94 @@ def _render_printf(args):
             return None
         percent, left, width, precision, kind = match.groups()
         if percent:
-            tokens.append(('text', '%'))
-        elif kind == 'b' and (left or width or precision):
-            return None
+            tokens.append(('text', ('%', False)))
+        elif (width.startswith('0') or len(width) > 5 or len(precision or '') > 6
+              or (kind == 'b' and (left or width or precision))):
+            return None  # a 0 flag, a number too long to be a size, a sized %b
         else:
             tokens.append((kind, (left, int(width or 0),
                                   None if precision is None else int(precision[1:] or 0))))
             conversions += 1
         pos = match.end()
-    values, out = list(args[1:]), []
+    values, out = list(args[1:]), _Rendered()
     while True:
         for kind, detail in tokens:
             if kind == 'text':
-                out.append(detail)
+                text, stopped = detail
+                if not out.add(text):
+                    return None
+                if stopped:
+                    return out.text()
                 continue
-            value = values.pop(0) if values else ''
+            value, stopped = (values.pop(0) if values else ''), False
+            left, width, precision = detail
             if kind == 'b':
-                decoded = _decode_escapes(value, 'percent_b')
+                decoded = _decode_escapes(value, 'percent_b', dialect)
                 if decoded is None:
                     return None
                 value, stopped = decoded
-                if stopped:
-                    return ''.join(out) + value
-            else:
-                left, width, precision = detail
-                if (width or precision is not None) and not value.isascii():
-                    return None  # padding counts bytes or characters by locale
-                if precision is not None:
-                    value = value[:precision]
-                value = value.ljust(width) if left else value.rjust(width)
-            out.append(value)
+            elif (width or precision is not None) and not value.isascii():
+                return None  # padding counts bytes or characters by locale
+            elif precision is not None:
+                value = value[:precision]
+            if not out.add(value, width, bool(left)):
+                return None
+            if stopped:
+                return out.text()
         if not conversions or not values:
-            return ''.join(out)
+            return out.text()
 
 
-def _render_echo(args):
-    """What bash's `echo` writes for these literal arguments, or None.
+def _render_echo(args, dialect='bash'):
+    """What `echo` writes for these literal arguments in *dialect*, or None.
 
-    Only leading arguments made of n, e and E are options, and the last of
-    -e and -E decides whether escapes are read. This is the bash builtin
-    with its defaults; a shell whose echo reads escapes without -e is not
-    modelled.
+    bash: leading arguments made of n, e and E are options, and the last of
+          -e and -E decides whether escapes are read.
+    dash: only a first argument that is exactly -n is an option; everything
+          else, -e included, is text, and escapes are always read.
+    zsh:  options as in bash, except that a lone `-` ends them without being
+          written; escapes are read unless -E is given without -e.
     """
-    args, interpret, newline = list(args), False, True
-    while args and re.fullmatch(r'-[neE]+', args[0]):
-        for flag in args.pop(0)[1:]:
-            if flag == 'n':
-                newline = False
-            else:
-                interpret = flag == 'e'
+    args, newline = list(args), True
+    if dialect == 'dash':
+        if args and args[0] == '-n':
+            newline = False
+            args.pop(0)
+        interpret = True
+    else:
+        enabled, disabled, last = False, False, None
+        while args:
+            if dialect == 'zsh' and args[0] == '-':
+                args.pop(0)  # a lone dash ends the options and is not written
+                break
+            if not re.fullmatch(r'-[neE]+', args[0]):
+                break
+            for flag in args.pop(0)[1:]:
+                if flag == 'n':
+                    newline = False
+                else:
+                    last = flag
+                    enabled, disabled = enabled or flag == 'e', disabled or flag == 'E'
+        interpret = last == 'e' if dialect == 'bash' else (enabled or not disabled)
     text = ' '.join(args)
+    out = _Rendered()
     if interpret:
-        decoded = _decode_escapes(text, 'echo')
+        decoded = _decode_escapes(text, 'echo', dialect)
         if decoded is None:
             return None
         text, stopped = decoded
         if stopped:
-            return text
-    return text + ('\n' if newline else '')
+            return text if out.add(text) else None
+    return out.text() if out.add(text + ('\n' if newline else '')) else None
 
 
 def _written_output(pipeline, index):
     """Output of the literal echo or printf at *index* that is run or saved.
 
     Returns None when the command is something else, has an argument that is
-    not literal, or its output only reaches the terminal or a filter. Returns
-    '' when the output goes to a shell or a file but cannot be rendered.
+    not literal, or its output only reaches the terminal or a filter.
+    Otherwise one entry per shell in _DIALECTS: the text that shell writes,
+    or None where it is not modelled.
     """
     words, meta = pipeline[index]
     name = _plain_program(words)
@@ -937,24 +1032,24 @@ def _written_output(pipeline, index):
     if not runnable:
         return None
     args = [text for text, _dynamic in words[1:]]
-    rendered = _render_echo(args) if name == 'echo' else _render_printf(args)
-    return rendered or ''
+    render = _render_echo if name == 'echo' else _render_printf
+    return [render(args, dialect) for dialect in _DIALECTS]
 
 
 def _echoed_scripts(out):
     """Text a literal echo or printf writes to a file or pipes into a shell.
 
-    Each command gives its complete output as one string, the way the
+    Yields each distinct output a shell could produce, complete, the way the
     reader of that output sees it. Output that cannot be rendered is left
     out rather than checked in pieces.
     """
-    scripts = []
     for pipeline in _top_level_pipelines(out):
         for index in range(len(pipeline)):
-            rendered = _written_output(pipeline, index)
-            if rendered:
-                scripts.append(rendered)
-    return scripts
+            seen = set()
+            for rendered in _written_output(pipeline, index) or ():
+                if rendered and rendered not in seen:
+                    seen.add(rendered)
+                    yield rendered
 
 
 def _command_shape(command):
@@ -976,25 +1071,34 @@ def _check_dangerous_commands(command, tool_name='bash'):
     scanner reads completely, text confirmed to be data is removed from that
     baseline and programs that would run are added to it.
     """
-    issues = _match_dangerous(command)
+    baseline = _match_dangerous(command)
     family = tool_name.lower().rstrip('_').split('__')[-1]
     if family not in _POSIX_TOOLS:
-        return issues
+        return baseline
     # No shortcut on the raw text: `printf '%s%s' r 'm -rf /' | sh` and
     # `r''m -rf /` name the program only once the words are put together.
     out = _command_shape(command)
     if out is None:
-        return issues
-    if issues:
-        masked = _mask_data_arguments(command, out)
-        if masked is not None:
-            issues = _match_dangerous(masked)
-    found = _executed_issues(out)
-    for script in _echoed_scripts(out):
-        found.extend(_match_dangerous(script))
-        inner = _command_shape(script)
-        if inner is not None:
-            found.extend(_executed_issues(inner))
+        return baseline
+    issues, found = baseline, []
+    try:
+        found.extend(_executed_issues(out))
+        for script in _echoed_scripts(out):
+            found.extend(_match_dangerous(script))
+            inner = _command_shape(script)
+            if inner is not None:
+                found.extend(_executed_issues(inner))
+        # Last, so that nothing is removed before everything else is known.
+        if baseline:
+            masked = _mask_data_arguments(command, out)
+            if masked is not None:
+                issues = _match_dangerous(masked)
+    except Exception:  # noqa: BLE001 - a failed refinement must not lift a refusal
+        # The adapter reports a validator that exits abnormally as skipped,
+        # which would let the command through. Keep the unrefined pattern
+        # verdict and whatever was established before the failure.
+        issues = baseline
+    issues = list(issues)
     for issue in found:
         if all(issue['message'] != known['message'] for known in issues):
             issues.append(issue)

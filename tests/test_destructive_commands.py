@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -263,20 +264,66 @@ RENDERED_FALSE_POSITIVES = [
     r"printf '%s %s\n' 'do not' 'rm -rf / here' >> NOTES.md",
 ]
 
-# Passed before and still passes: the output is not that command. bash's echo
-# leaves escapes alone unless -e is the last of -e and -E; \c in a format is
-# two characters, and in a %b argument it ends the output.
+# Passed before and still passes: the output is not that command in any of
+# the shells. \c in a format is two characters or the end of the output, and
+# in a %b argument it ends the output.
 RENDERED_ALLOWED = [
     r"printf '%d\n' 3 >> n.txt",
     r"printf '100%%\n' > p.txt",
     r"printf '%s\n' hello > out.txt",
-    r"echo -e -E '\x72\x6d -rf /' | sh",
-    r"echo '\x72\x6d -rf /' | sh",
     r"printf '\c%s' 'rm -rf /' | sh",
     r"printf '%b%s' '\c' 'rm -rf /' | sh",
     r"echo -e 'ok\c rm -rf /' | sh",
     r"printf '%.0s%s' 'rm -rf /' 'ls' | sh",
     "echo 'colcon build' | sh",
+]
+
+# The shell that will run the command is not known, and bash, dash and zsh
+# read the same echo or printf differently. Each is rendered on its own and a
+# command is refused when any of them would write a destructive script.
+MIXED = r'echo \x22; \162m -rf "/"; \x22'  # dash: only \162 is read, so rm stands alone
+SHELL_DEPENDENT_BLOCKED = [
+    "echo '" + MIXED + "' | sh",
+    "printf '%b' '" + MIXED + "' | sh",
+    "printf '" + MIXED + "' | sh",
+    "echo '" + MIXED + "' > run.sh",
+    r"echo '\0162m -rf /' | sh",            # dash, zsh
+    r"echo '\162m -rf /' > w.sh",           # dash
+    r"echo '\x72m -rf /' | sh",             # zsh
+    r"echo - '\x72m -rf /' | sh",           # zsh: a lone dash ends the options
+    r"echo -E '\n\162m -rf /' | sh",        # dash: "-E", a newline, then rm
+    r"echo 'ls\n\162m -rf /' | sh",         # dash
+    r"printf '%b' '\162m -rf /' | sh",      # bash, dash
+    # Allowed while only bash was modelled; zsh reads both.
+    r"echo '\x72\x6d -rf /' | sh",
+    r"echo -e -E '\x72\x6d -rf /' | sh",
+]
+
+SHELL_DEPENDENT_ALLOWED = [
+    r"echo 'C:\new\table' >> notes.md",
+    r"echo 'a\nb' | sh",
+    # dash writes "-E rm -rf /", a program named -E; bash and zsh write the
+    # backslash as it is.
+    r"echo -E '\162m -rf /' | sh",
+    r"echo -n 'colcon build' | sh",
+    r"echo -e 'colcon\tbuild' > b.sh",
+    r"printf 'done\c%s' 'rm -rf /' | sh",
+]
+
+# A candidate that cannot be rendered keeps the pattern verdict of the raw
+# text: zsh would read \u0041, which is not modelled.
+UNRENDERED_CANDIDATE_BLOCKED = [
+    r"echo '\u0041' 'rm -rf / here' >> NOTES.md",
+    r"printf '%s %s\u0041\n' 'do not' 'rm -rf / here' >> NOTES.md",
+]
+
+LONG_FORMAT = "printf '" + 'A' * 1024 + "%s' " + ' '.join(['x'] * 64) + ' > n.txt'
+OVERSIZED = [
+    "printf '%99999999999999999999s' x > notes.txt",
+    "printf '%" + '9' * 5000 + "s' x > notes.txt",
+    "printf '%2000000000s' x > n.txt",
+    "printf '%.99999999999999999999s' x > n.txt",
+    LONG_FORMAT,
 ]
 
 # Not rendered: other conversions, and the joined output of several commands.
@@ -312,7 +359,8 @@ def test_hook_refuses_rendered_commands(command):
     assert result.returncode == 2 and not result.stdout and result.stderr, command
 
 
-@pytest.mark.parametrize('command', RENDERED_FALSE_POSITIVES + RENDERED_ALLOWED[3:5])
+@pytest.mark.parametrize('command', RENDERED_FALSE_POSITIVES + RENDERED_ALLOWED[3:5]
+                         + SHELL_DEPENDENT_ALLOWED[:2])
 def test_hook_lets_rendered_text_through(command):
     result = _hook(command)
     assert result.returncode == 0 and json.loads(result.stdout) == {}, command
@@ -489,3 +537,241 @@ def test_renderers_agree_with_bash():
             assert _real(bash, "printf '%s' $'" + text + "'", []) == decoded[0].encode(), text
             compared += 1
     assert compared > 300
+
+
+# --- One rendering per shell, a size limit, and no lost refusals ------------
+
+@pytest.mark.parametrize('command', SHELL_DEPENDENT_BLOCKED + UNRENDERED_CANDIDATE_BLOCKED)
+def test_output_that_is_a_command_in_some_shell_is_blocked(command):
+    issues = _check_dangerous_commands(command)
+    assert issues and all(issue['severity'] == 'error' for issue in issues), command
+
+
+@pytest.mark.parametrize('command', SHELL_DEPENDENT_ALLOWED)
+def test_output_that_is_a_command_in_no_shell_passes(command):
+    assert not blocked(command), command
+
+
+def test_the_mixed_case_differs_by_shell():
+    # The three real outputs, as rendered: only dash leaves a separate rm.
+    by_shell = {dialect: hook._render_echo([MIXED], dialect) for dialect in hook._DIALECTS}
+    assert by_shell['bash'] == MIXED + '\n'
+    assert by_shell['dash'] == 'echo \\x22; rm -rf "/"; \\x22\n'
+    assert by_shell['zsh'] == 'echo "; \\162m -rf "/"; "\n'
+
+    def runs_rm(text):
+        return any(name == 'rm' for name, _rest in hook._command_shape(text).executed)
+    assert [runs_rm(text) for text in by_shell.values()] == [False, True, False]
+    # Reading every escape at once hides it again, which is why the readings
+    # are kept apart: the quotes it produces swallow the rm.
+    assert not runs_rm(hook._decode_escapes(MIXED, 'percent_b')[0])
+
+
+@pytest.mark.parametrize('command', OVERSIZED)
+def test_oversized_output_is_not_rendered_and_nothing_is_lost(command):
+    assert not blocked(command), command[:60]
+    assert blocked(command + '; rm -rf /'), command[:60]
+    assert blocked('rm -rf /; ' + command), command[:60]
+
+
+@pytest.mark.parametrize('command', OVERSIZED[:1] + OVERSIZED[2:3] + OVERSIZED[4:])
+def test_hook_still_refuses_after_an_oversized_printf(command):
+    result = _hook(command + '; rm -rf /')
+    assert result.returncode == 2 and not result.stdout and result.stderr, command[:60]
+
+
+class TestRenderLimits:
+    LIMIT = hook._RENDER_MAX_CHARS
+
+    @pytest.mark.parametrize('dialect', hook._DIALECTS)
+    def test_width_and_precision_are_bounded_before_use(self, dialect):
+        assert hook._render_printf(['%99999999999999999999s', 'x'], dialect) is None
+        assert hook._render_printf(['%' + '9' * 5000 + 's', 'x'], dialect) is None
+        assert hook._render_printf(['%.' + '9' * 5000 + 's', 'x'], dialect) is None
+        assert hook._render_printf(['%2000000000s', 'x'], dialect) is None
+        assert hook._render_printf(['%99999s', 'x'], dialect) is None
+        assert hook._render_printf(['%.99999s', 'x'], dialect) == 'x'
+        assert len(hook._render_printf(['%%%ds' % self.LIMIT, 'x'], dialect)) == self.LIMIT
+        assert hook._render_printf(['%%%ds' % (self.LIMIT + 1), 'x'], dialect) is None
+
+    @pytest.mark.parametrize('dialect', hook._DIALECTS)
+    def test_every_piece_counts_towards_the_limit(self, dialect):
+        # Literal text repeated by format reuse: 64 one-character values, 65,600 characters out.
+        assert hook._render_printf(['A' * 1024 + '%s'] + ['x'] * 64, dialect) is None
+        assert len(hook._render_printf(['A' * 1023 + '%s'] + ['x'] * 64, dialect)) == self.LIMIT
+        # %% alone, padding alone, values alone, %b alone.
+        assert hook._render_printf(['%%' * (self.LIMIT + 1)], dialect) is None
+        assert hook._render_printf(['%100s'] + ['x'] * 656, dialect) is None
+        assert len(hook._render_printf(['%100s'] + ['x'] * 655, dialect)) == 65500
+        assert hook._render_printf(['%s', 'y' * (self.LIMIT + 1)], dialect) is None
+        assert hook._render_printf(['%b', 'y' * (self.LIMIT + 1)], dialect) is None
+        assert len(hook._render_printf(['%s', 'y' * self.LIMIT], dialect)) == self.LIMIT
+
+    @pytest.mark.parametrize('dialect', hook._DIALECTS)
+    def test_echo_is_bounded_too(self, dialect):
+        assert hook._render_echo(['y' * self.LIMIT], dialect) is None  # the newline is one more
+        assert len(hook._render_echo(['-n', 'y' * self.LIMIT], dialect)) == self.LIMIT
+
+    def test_a_huge_width_returns_at_once(self):
+        started = time.monotonic()
+        for _ in range(200):
+            assert hook._render_printf(['%2000000000s', 'x']) is None
+        assert time.monotonic() - started < 2
+
+
+class TestFailedRefinementKeepsRefusals:
+    """An internal failure must never turn a refusal into a pass."""
+
+    def test_pattern_and_program_findings_survive(self, monkeypatch):
+        def explode(args, dialect='bash'):
+            raise OverflowError('cannot fit')
+        monkeypatch.setattr(hook, '_render_printf', explode)
+        assert blocked("printf '%s' x > notes.txt; rm -rf /")
+        assert blocked("printf '%s' x > notes.txt; bash -c 'rm -rf /'")
+        assert blocked("printf '%s' x > n.txt; r''m -rf /")
+        assert not blocked("printf '%s' x > notes.txt")
+
+    def test_findings_from_earlier_output_survive(self, monkeypatch):
+        real = hook._render_echo
+
+        def second_fails(args, dialect='bash'):
+            if 'second' in args:
+                raise ValueError('boom')
+            return real(args, dialect)
+        monkeypatch.setattr(hook, '_render_echo', second_fails)
+        # Only the rendered output of the first printf names the program.
+        command = "printf '%s%s' 'r' 'm -rf /' > a.sh; echo second > b.txt"
+        assert not hook._match_dangerous(command)
+        assert blocked(command)
+
+    def test_masking_is_not_applied_after_a_failure(self, monkeypatch):
+        def explode(command, out):
+            raise RuntimeError('boom')
+        command = "grep 'rm -rf / --no-preserve-root' README.md"
+        assert not blocked(command)
+        monkeypatch.setattr(hook, '_mask_data_arguments', explode)
+        assert blocked(command)  # the unrefined pattern verdict
+
+
+class TestShellRules:
+    """One row per escape, read in each shell and in each place."""
+
+    @pytest.mark.parametrize('text,expected', [
+        #            bash                dash                zsh
+        #            format %b    echo   format %b    echo   format %b     echo
+        (r'A\102C', ('ABC', 'ABC', None, 'ABC', 'ABC', 'ABC', 'ABC', None, None)),
+        (r'A\0102C', ('A\x082C', 'ABC', 'ABC', 'A\x082C', 'ABC', 'ABC', 'A\x082C', 'ABC', 'ABC')),
+        (r'A\x42C', ('ABC', 'ABC', 'ABC', None, None, None, 'ABC', 'ABC', 'ABC')),
+        (r'A\cB', (None, 'A', 'A', None, 'A', 'A', 'A', 'A', 'A')),
+        (r'A\"B', ('A"B', None, None, None, None, None, None, None, None)),
+        (r'A\EB', ('A\x1bB', 'A\x1bB', 'A\x1bB', None, None, None, None, None, None)),
+        (r'A\eB', ('A\x1bB',) * 9),
+        (r'A\qB', (None,) * 9),
+    ])
+    def test_escape(self, text, expected):
+        cells = [(dialect, place) for dialect in hook._DIALECTS
+                 for place in ('format', 'percent_b', 'echo')]
+        for (dialect, place), value in zip(cells, expected):
+            decoded = hook._decode_escapes(text, place, dialect)
+            # None in the table: the text is written as it stands.
+            assert decoded[0] == (text if value is None else value), (text, dialect, place)
+
+    def test_what_is_not_modelled(self):
+        for place in ('format', 'percent_b', 'echo'):
+            assert hook._decode_escapes(r'\u0041', place, 'bash') is None
+            assert hook._decode_escapes(r'\u0041', place, 'zsh') is None
+            assert hook._decode_escapes(r'\uZ', place, 'zsh') is None    # zsh writes a NUL
+            assert hook._decode_escapes(r'\xZ', place, 'zsh') is None
+            assert hook._decode_escapes(r'\u0041', place, 'dash') == (r'\u0041', False)
+            assert hook._decode_escapes(r'\uZ', place, 'bash') == (r'\uZ', False)
+            for dialect in hook._DIALECTS:
+                assert hook._decode_escapes(r'\0', place, dialect) is None
+
+    @pytest.mark.parametrize('args,bash,dash,zsh', [
+        (['-n', 'a'], 'a', 'a', 'a'),
+        (['-e', 'A\\tB'], 'A\tB\n', '-e A\tB\n', 'A\tB\n'),
+        (['-E', 'A\\tB'], 'A\\tB\n', '-E A\tB\n', 'A\\tB\n'),
+        (['-e', '-E', 'A\\tB'], 'A\\tB\n', '-e -E A\tB\n', 'A\tB\n'),
+        (['-E', '-e', 'A\\tB'], 'A\tB\n', '-E -e A\tB\n', 'A\tB\n'),
+        (['-ne', 'A\\tB'], 'A\tB', '-ne A\tB\n', 'A\tB'),
+        (['-nn', 'a'], 'a', '-nn a\n', 'a'),
+        (['-n', '-n', 'a'], 'a', '-n a', 'a'),
+        (['-', 'a'], '- a\n', '- a\n', 'a\n'),
+        (['-', '-n', 'a'], '- -n a\n', '- -n a\n', '-n a\n'),
+        (['-n', '-', 'a'], '- a', '- a', 'a'),
+        (['--', 'a'], '-- a\n', '-- a\n', '-- a\n'),
+        (['-x', 'A\\tB'], '-x A\\tB\n', '-x A\tB\n', '-x A\tB\n'),
+        (['A\\tB'], 'A\\tB\n', 'A\tB\n', 'A\tB\n'),
+        ([], '\n', '\n', '\n'),
+    ])
+    def test_echo_options(self, args, bash, dash, zsh):
+        assert hook._render_echo(args, 'bash') == bash
+        assert hook._render_echo(args, 'dash') == dash
+        assert hook._render_echo(args, 'zsh') == zsh
+
+    def test_a_format_can_end_the_output_only_in_zsh(self):
+        assert hook._render_printf(['A\\cZ%s', 'x'], 'bash') == 'A\\cZx'
+        assert hook._render_printf(['A\\cZ%s', 'x'], 'dash') == 'A\\cZx'
+        assert hook._render_printf(['A\\cZ%s', 'x'], 'zsh') == 'A'
+
+
+SHELLS = {'bash': ['--noprofile', '--norc'], 'dash': [], 'zsh': ['-f']}
+SHELL_ESCAPED = ESCAPED + [
+    r'A\102C', r'A\0102C', r'A\1024', r'A\01024', r'A\x42C', r'A\x4', r'A\x424', r'A\00101',
+    r'A\1B', r'A\u0042C', r'A\C-aB', r'A\M-aB', r'echo \x22; \162X -Y "/"; \x22', r'\n\162Z',
+    r'A\0', r'A\x7fB', r'A\177B', r'A\0177B']
+SHELL_PRINTF_CASES = (PRINTF_CASES
+                      + [[text] for text in SHELL_ESCAPED]
+                      + [['%b', text] for text in SHELL_ESCAPED]
+                      + [['[%b]%s', text, 'tail'] for text in SHELL_ESCAPED]
+                      + [['A\\cZ%s', 'x'], ['%s\\c%s', 'a', 'b', 'c'], ['%5s', ''],
+                         ['%-4s|%s', 'a']])
+SHELL_ECHO_CASES = (ECHO_CASES
+                    + [[flag, text] for flag in ('-e', '-E', '-n', '-') for text in SHELL_ESCAPED]
+                    + [[text] for text in SHELL_ESCAPED]
+                    + [['-', '-n', 'a'], ['-n', '-', 'a'], ['-', '-', 'a'], ['-nn', 'a'],
+                       ['-E', '-', 'A\\nB'], ['-e', '-E', 'A\\101'], ['-E', '-e', 'A\\0101'],
+                       ['-nE', 'A\\tB'], ['-n'], ['-e'], ['-E'], ['-'], ['--']])
+
+
+def _shell(dialect):
+    """The shell binary whose builtins *dialect* describes, or None."""
+    if sys.platform == 'win32':
+        return None
+    path = shutil.which(dialect)
+    if dialect == 'bash':
+        return _bash()
+    if dialect == 'dash' and path is None:
+        # On Debian and Ubuntu /bin/sh is dash.
+        target = os.path.realpath('/bin/sh')
+        path = target if os.path.basename(target) == 'dash' else None
+    return path
+
+
+@pytest.mark.parametrize('dialect', hook._DIALECTS)
+def test_each_shell_agrees_with_its_renderer(dialect):
+    """Whatever a renderer returns for a shell is exactly what that shell writes.
+
+    The zsh rules for octal values were measured with zsh 5.9 and differ
+    from its manual, which says a printf format reads the same escapes as
+    echo. Where zsh is not installed this comparison is skipped and the
+    unit table above is what holds the rules.
+    """
+    shell = _shell(dialect)
+    if shell is None:
+        pytest.skip('needs ' + dialect)
+    environ = {'PATH': os.environ.get('PATH', ''), 'LC_ALL': 'C'}
+
+    def real(script, args):
+        return subprocess.run([shell] + SHELLS[dialect] + ['-c', script, dialect] + args,
+                              capture_output=True, timeout=10, env=environ).stdout
+
+    compared = 0
+    for program, cases, render in (('printf', SHELL_PRINTF_CASES, hook._render_printf),
+                                   ('echo', SHELL_ECHO_CASES, hook._render_echo)):
+        for args in cases:
+            rendered = render(args, dialect)
+            if rendered is not None:
+                assert real(program + ' "$@"', args) == rendered.encode(), (dialect, program, args)
+                compared += 1
+    assert compared > 400
