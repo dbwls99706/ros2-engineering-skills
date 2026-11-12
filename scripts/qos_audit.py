@@ -15,6 +15,13 @@ parameters, runtime QoS overrides, RMW defaults, and delivery quality are not
 observed; confirm the running graph with `ros2 topic info -v` (L3+).
 Values that cannot be determined statically are reported as unresolved,
 never guessed.
+
+A Python profile held in a variable is judged from its constructor only while
+the object cannot have changed. Attribute assignments made by plain statements
+of the same function body before the use are applied in statement order. Any
+other change, and any alias or call that could change the object, makes the
+endpoint unresolved. Only the module being read is inspected: another module
+that modifies a shared profile such as qos_profile_sensor_data is not seen.
 """
 
 import argparse
@@ -39,7 +46,7 @@ from qos_checker import (  # noqa: E402
     check_compatibility,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 MAX_FILE_BYTES = 1024 * 1024
 EXCLUDED_DIRS = {"build", "install", "log", ".git", "__pycache__", "node_modules"}
@@ -416,6 +423,12 @@ class _Scope:
             return None
         return next(iter(targets))
 
+    def owner(self, name: str) -> "_Scope":
+        """The scope whose binding lookup() returns for *name*."""
+        if self.assign_counts.get(name, 0) == 0 and self.parent is not None:
+            return self.parent.owner(name)
+        return self
+
     def lookup(self, name: str, line: int) -> ast.AST:
         if name in self.params or name in self.declared:
             raise Unresolved(f"name '{name}' is a parameter or global/nonlocal")
@@ -477,11 +490,22 @@ def _bound_names(node: ast.AST):
         yield node.name
 
 
+# Position of the QoS argument in the endpoint factories.
+_ENDPOINT_QOS_INDEX = {"create_publisher": 2, "create_subscription": 3}
+# Profile attributes whose plain assignment is applied; anything else that
+# changes the object makes it unresolved.
+_APPLIED_FIELDS = ("reliability", "durability", "liveliness", "depth")
+
+
 class PythonExtractor:
     def __init__(self, path: str, source: str):
         self.path = path
         self.tree = ast.parse(source, filename=path)
         self.endpoints: list = []
+        self._parents = {id(child): parent for parent in ast.walk(self.tree)
+                         for child in ast.iter_child_nodes(parent)}
+        self._uses: dict = {}
+        self._shared: dict = {}
 
     def run(self) -> list:
         self._visit(self.tree, None)
@@ -511,12 +535,147 @@ class PythonExtractor:
             elif isinstance(child, ast.ClassDef):
                 self._visit_class(child, module_scope)
 
-    def _resolve(self, node: ast.AST, scope: _Scope, line: int, depth: int = 0) -> ast.AST:
+    def _resolve(self, node: ast.AST, scope: _Scope, line: int, depth: int = 0,
+                 chain: Optional[list] = None) -> ast.AST:
+        """Follow single assignments to a value; *chain* collects (name, owning scope)."""
         if isinstance(node, ast.Name) and scope.import_target(node.id, line) is None:
             if depth > 8:
                 raise Unresolved(f"name '{node.id}' resolution is too deep")
-            return self._resolve(scope.lookup(node.id, line), scope, line, depth + 1)
+            value = scope.lookup(node.id, line)
+            if chain is not None:
+                chain.append((node.id, scope.owner(node.id)))
+            return self._resolve(value, scope, line, depth + 1, chain)
         return node
+
+    # -- has the object changed since it was constructed? ---------------------
+
+    def _is_qos_argument(self, name: ast.Name) -> bool:
+        """The name is handed straight to an endpoint factory as its QoS."""
+        parent = self._parents.get(id(name))
+        call = self._parents.get(id(parent)) if isinstance(parent, ast.keyword) else parent
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                and call.func.attr in _ENDPOINT_QOS_INDEX):
+            return False
+        if isinstance(parent, ast.keyword):
+            return parent.arg == "qos_profile"
+        index = _ENDPOINT_QOS_INDEX[call.func.attr]
+        return len(call.args) > index and call.args[index] is name
+
+    def _object_uses(self, root: ast.AST, name: str) -> tuple:
+        """(attribute targets that modify the object, whether it escapes).
+
+        Every read of the name under *root* is classified, nested functions
+        included. Reading an attribute and passing the object to an endpoint
+        factory leave it alone. Assigning, augmenting or deleting an attribute
+        modifies it. Anything else - an alias, an argument to another call, a
+        method call, storing it - lets code this audit does not follow modify it.
+        """
+        key = (id(root), name)
+        if key not in self._uses:
+            modified, escapes = [], False
+            for node in ast.walk(root):
+                if not (isinstance(node, ast.Name) and node.id == name
+                        and isinstance(node.ctx, ast.Load)):
+                    continue
+                parent = self._parents.get(id(node))
+                if isinstance(parent, ast.Attribute) and parent.value is node:
+                    if isinstance(parent.ctx, (ast.Store, ast.Del)):
+                        modified.append(parent)
+                    else:
+                        user = self._parents.get(id(parent))
+                        escapes = escapes or (isinstance(user, ast.Call) and user.func is parent)
+                elif not self._is_qos_argument(node):
+                    escapes = True
+            self._uses[key] = (modified, escapes)
+        return self._uses[key]
+
+    def _enclosing_function(self, node: ast.AST) -> ast.AST:
+        current: Optional[ast.AST] = node
+        while current is not None and not isinstance(
+                current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)):
+            current = self._parents.get(id(current))
+        return current if current is not None else self.tree
+
+    def _shared_profile_changed(self, text: str) -> bool:
+        """A shared profile, spelled *text*, is modified somewhere in this module."""
+        if text not in self._shared:
+            changed = False
+            for node in ast.walk(self.tree):
+                if (isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
+                        and _dotted(node.value) == text):
+                    changed = True
+                    continue
+                target, value = None, None
+                if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                    target, value = node.targets[0], node.value
+                elif isinstance(node, ast.AnnAssign):
+                    target, value = node.target, node.value
+                if (isinstance(target, ast.Name) and value is not None
+                        and _dotted(value) == text):
+                    # `q = qos_profile_sensor_data` is the same object under
+                    # another name: follow that name through its function.
+                    modified, escapes = self._object_uses(
+                        self._enclosing_function(node), target.id)
+                    changed = changed or bool(modified) or escapes
+            self._shared[text] = changed
+        return self._shared[text]
+
+    def _applied_changes(self, name: str, owner: _Scope, scope: _Scope,
+                         call: Optional[ast.Call], fresh: bool) -> list:
+        """Attribute assignments that have certainly run before this use.
+
+        Returns [(attribute, value node)] in execution order, or raises
+        Unresolved when the object may differ from what its constructor says.
+        """
+        root = self.tree if isinstance(owner.node, ast.Module) else owner.node
+        modified, escapes = self._object_uses(root, name)
+        if escapes:
+            raise Unresolved(f"'{name}' is aliased or passed to another call, "
+                             "so its QoS may have changed")
+        if not modified:
+            return []
+        changed = Unresolved(f"'{name}' is modified after construction")
+        body = getattr(owner.node, "body", None)
+        if not (fresh and call is not None and owner is scope and isinstance(body, list)
+                and isinstance(owner.node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            # A module object can be changed by any function before this one
+            # runs; a shared or aliased profile is not this function's alone.
+            raise changed
+
+        def position(node: ast.AST) -> Optional[int]:
+            """Index of the body statement holding *node*, if it runs in place."""
+            while True:
+                parent = self._parents.get(id(node))
+                if parent is None or isinstance(node, ast.GeneratorExp):
+                    return None  # a generator body runs when it is consumed
+                if parent is owner.node:
+                    break
+                node = parent
+            return next((i for i, stmt in enumerate(body) if stmt is node), None)
+
+        use = position(call)
+        bound = next((i for i, stmt in enumerate(body)
+                      if isinstance(stmt, (ast.Assign, ast.AnnAssign))
+                      and any(isinstance(target, ast.Name) and target.id == name
+                              for target in (stmt.targets if isinstance(stmt, ast.Assign)
+                                             else [stmt.target]))), None)
+        if use is None or bound is None:
+            raise changed
+        applied = []
+        for target in modified:
+            stmt = self._parents.get(id(target))
+            index = next((i for i, candidate in enumerate(body) if candidate is stmt), None)
+            # Only a plain `name.field = value` statement of this body is read.
+            # Inside a branch, a loop or a nested function it may or may not
+            # have run; an augmented assignment or a deletion is not a value.
+            if not (isinstance(stmt, ast.Assign) and stmt.targets == [target]
+                    and target.attr in _APPLIED_FIELDS and index is not None
+                    and bound < index != use):
+                raise changed
+            if index < use:
+                applied.append((index, target.attr, stmt.value))
+        return [(attribute, value) for _index, attribute, value in sorted(
+            applied, key=lambda item: item[0])]
 
     def _maybe_endpoint(self, call: ast.Call, scope: _Scope) -> None:
         if not isinstance(call.func, ast.Attribute):
@@ -561,7 +720,7 @@ class PythonExtractor:
             endpoint.reasons.append("QoS argument missing")
             return
         try:
-            endpoint.qos = self._qos(qos_node, scope, call.lineno)
+            endpoint.qos = self._qos(qos_node, scope, call.lineno, call)
         except Unresolved as exc:
             endpoint.reasons.append(f"QoS: {exc}")
 
@@ -583,8 +742,28 @@ class PythonExtractor:
             return f"{parts[0]}/msg/{parts[2]}"
         return None
 
-    def _qos(self, node: ast.AST, scope: _Scope, line: int) -> AuditProfile:
-        node = self._resolve(node, scope, line)
+    def _qos(self, node: ast.AST, scope: _Scope, line: int,
+             call: Optional[ast.Call] = None) -> AuditProfile:
+        chain: list = []
+        node = self._resolve(node, scope, line, chain=chain)
+        profile = self._profile(node, scope, line)
+        if isinstance(node, ast.Constant):
+            return profile  # an integer depth cannot be modified in place
+        fresh = isinstance(node, ast.Call) and len(chain) == 1
+        for name, owner in chain:
+            for attribute, value in self._applied_changes(name, owner, scope, call, fresh):
+                if attribute == "depth":
+                    resolved = self._resolve(value, scope, line)
+                    if not (isinstance(resolved, ast.Constant) and isinstance(resolved.value, int)
+                            and not isinstance(resolved.value, bool)):
+                        raise Unresolved(f"'{name}.depth' is not assigned a literal integer")
+                    profile.depth = resolved.value
+                else:
+                    setattr(profile, attribute, self._policy(attribute, value, scope, line))
+        return profile
+
+    def _profile(self, node: ast.AST, scope: _Scope, line: int) -> AuditProfile:
+        """The profile an already resolved expression constructs or names."""
         if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
             profile = _standard("default")
             profile.depth = node.value
@@ -592,6 +771,8 @@ class PythonExtractor:
             return profile
         dotted = _dotted(node)
         if dotted is not None:
+            if self._shared_profile_changed(dotted):
+                raise Unresolved(f"shared profile {dotted} is modified in this module")
             dotted = self._expand(dotted, scope, line)
             last = dotted.split(".")[-1]
             if last in PY_STANDARD_PROFILES:
