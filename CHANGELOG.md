@@ -2,6 +2,104 @@
 
 All notable changes are documented here.
 
+## 1.8.1 - 2026-11-12
+
+Source bundle version 1.8.1. Three checks gave a wrong answer on inputs the test
+suite did not contain; each was reproduced before it was changed. No new
+capability. The hook-report contract stays at 1.5.0; `qos_audit.py` is 0.1.1.
+Not run for this release: the Docker ROS jobs locally (CI runs them), any model
+benchmark, and the `ask` confirmation prompt in a real client.
+
+QoS audit (`scripts/qos_audit.py`):
+
+- A Python profile modified after construction was judged from its constructor.
+  `q = QoSProfile(reliability=RELIABLE)` followed by
+  `q.reliability = BEST_EFFORT` was reported as `confirmed_compatible` with a
+  RELIABLE subscription, and `--strict` exited 0. The same held when the object
+  was changed through an alias, by a function it was passed to, by `setattr`,
+  inside a branch, or as a module object changed by another function.
+- A profile reached through a variable is now trusted only while the object
+  cannot have changed. An attribute assignment, augmented assignment or
+  deletion, an alias, a call it is passed to, a method call, or storing it makes
+  the endpoint unresolved, with the reason stated. A module-level profile is
+  checked across the whole module, and a shared profile such as
+  `qos_profile_sensor_data` that the module modifies, directly or through an
+  alias, is unresolved wherever that module uses it.
+- Plain `name.reliability|durability|liveliness|depth = <literal>` statements of
+  the same function body are applied when they certainly ran before the use.
+  Order is the order of statements, not of line numbers, so
+  `q.reliability = X; node.create_publisher(..., q)` on one line is read
+  correctly, and a later statement does not reach back to an endpoint already
+  created. A use inside a generator expression runs when the generator is
+  consumed and is unresolved. The reported example is now
+  `confirmed_incompatible`.
+- Only the module being read is inspected: another module that modifies a
+  shared profile is not seen.
+
+Generated packages (`scripts/create_package.py`):
+
+- The Python node carried the comment
+  `event_callbacks=QoSEventHandler(incompatible_qos_callback=...)`, which no
+  rclpy release accepts. It is replaced by a marked example using
+  `SubscriptionEventCallbacks(incompatible_qos=...)` and
+  `PublisherEventCallbacks(incompatible_qos=...)`, imported from
+  `rclpy.event_handler` with `rclpy.qos_event` as the Humble fallback. Checked
+  against the rclpy sources: the classes live in `rclpy.qos_event` on Humble and
+  in `rclpy.event_handler` from Jazzy on; `rclpy.qos_event` is a deprecated
+  re-export on Jazzy and Kilted and is absent on Lyrical and Rolling.
+- `tests/check_qos_event_callbacks.py` reads that example out of a generated
+  package, removes the comment markers and executes it, so the check follows the
+  generator instead of a copy. In the ROS containers it verifies the imports,
+  the callback containers and the `event_callbacks` parameter on all five
+  distributions without calling `rclpy.init()`, and creates a real subscription
+  and publisher on Humble, Jazzy, Kilted and Lyrical. Rolling keeps its existing
+  exclusion for node creation. A test that asserted the old class name now
+  asserts the corrected example.
+
+Hooks (`scripts/skill_validate_hook.py`):
+
+- The destructive-command check refused text that was only data:
+  `grep 'rm -rf / --no-preserve-root' README.md`,
+  `printf "%s\n" "rm -rf / is dangerous"`, `echo 'mkfs.ext4 /dev/sda1'`. For a
+  POSIX shell command, the literal arguments of `grep`/`egrep`/`fgrep`, `rg`,
+  `echo` and `printf` are now treated as data when the command stands at the top
+  level with nothing in front of it, writes to no file, and is followed in its
+  pipeline only by plain filters. An argument containing a substitution or a
+  variable is never data, because that part runs first; `printf -v`, `rg --pre`,
+  and a path such as `./grep` do not qualify; and if the command contains a
+  group, an `eval`, or anything the scanner cannot read, the pattern verdict
+  stands.
+- The same check let commands that would run pass: `bash -c 'rm -rf /'`,
+  `sh -c "rm -rf /"`, `ssh host 'rm -rf /'`, `(rm -rf /)`, `x=$(rm -rf /)`,
+  `rm -rf --no-preserve-root /`, `rm -rf -- /`, and `rm -rf /tmp/x /`. The
+  pattern expected a separator, not a closing quote or parenthesis, after the
+  path, and only short options before it. Each program the scanner finds would
+  run is now checked as program plus arguments, wherever it sits.
+- The text a literal `echo` or `printf` pipes into a shell, saves with `tee`, or
+  redirects to a file is checked as a script, so `echo 'rm -rf /' | bash` and
+  `echo 'rm -rf /' > wipe.sh` are refused.
+  `printf '%s\n' 'never run rm -rf / on the robot' >> NOTES.md` still passes,
+  by the same line-start rule as a here-document.
+- Not interpreted, and recorded as such: `git -c alias.x='!...'` shell aliases,
+  whatever a variable expands to, and a script written now and run later. This
+  is still a guard against obvious accidents, not a security boundary.
+  PowerShell and `cmd` keep the pattern verdict unchanged.
+
+Documentation:
+
+- `docs/BENCHMARK_RUNBOOK.md` adds the steps that precede the paired experiment:
+  a pilot pair with a prompt outside the suite, excluded from the results, and a
+  record format for observing the `ask` prompt in a client. No session was run;
+  the client-compatibility table is unchanged.
+- Three rclpy sources are registered for the generated example.
+
+Tests: 2,327 Python tests pass locally on Python 3.13 (2,185 in 1.8.0, all
+retained). One existing assertion changed: the generated node must no longer
+contain `QoSEventHandler`. Over a grid of 17,920 command shapes compared with
+1.8.0, the 450 that changed from refused to allowed are all a bare
+`grep`/`rg`/`echo`/`printf` with a literal argument and no shell, file, or
+substitution after it; 384 changed from allowed to refused.
+
 ## 1.8.0 - 2026-11-10
 
 Source bundle version 1.8.0. Two hook defects found by running the hooks on real
