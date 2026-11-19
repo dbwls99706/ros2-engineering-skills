@@ -46,7 +46,7 @@ does not have. Key differences:
 
 | Feature                   | Humble (LTS)       | Jazzy (LTS)        | Kilted (non-LTS)   | Lyrical (LTS)      | Rolling            |
 |---------------------------|--------------------|--------------------|--------------------|--------------------|--------------------|
-| EOL                       | May 2027           | May 2029           | Nov 30, 2026 (planned) | May 2031 | Rolling            |
+| EOL                       | May 2027           | May 2029           | Nov 30, 2026 (planned); Dec 2026 (release list) | May 2031 | Rolling            |
 | Ubuntu                    | 22.04              | 24.04              | 24.04              | 26.04              | Latest             |
 | Default DDS               | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           |
 | Zenoh support             | —                  | —                  | Tier 1             | Tier 1             | Tier 1             |
@@ -59,8 +59,8 @@ does not have. Key differences:
 
 **Kilted end of life:** the [ROS PMC minutes](https://discourse.openrobotics.org/t/ros-pmc-minutes-for-november-03-2026/59490)
 give November 30, 2026, as the planned date. The [Kilted release lead](https://discourse.openrobotics.org/t/preparing-for-penultimate-kilted-sync-2026-11-18/59865)
-also announced the final planned sync for that date. REP 2000 lists November,
-while the distribution list still shows December. Confirm the final announcement
+also announced the final planned sync for that date. The release list gives December 2026,
+while REP 2000 gives "May 2025 - November 2026". Confirm the final announcement
 before marking Kilted unsupported. Do not start new work on Kilted; after EOL it
 remains a legacy regression target, not a supported distribution.
 
