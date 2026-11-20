@@ -3,9 +3,10 @@
 
 This adapter never executes the command being inspected, never grants a tool
 permission, and never blocks Stop. At SessionStart it passes the workspace
-check to the model as context and decides nothing. With ROS2_SKILL_ACTUATION=ask it may request
-the user's confirmation for a command that can move hardware; it never answers
-"allow". The legacy CLIs keep their JSON contracts.
+check to the model as context and decides nothing. With
+ROS2_SKILL_ACTUATION=ask it may request the user's confirmation for a command
+that can move hardware; it never answers "allow". The legacy CLIs keep their
+JSON contracts.
 Malformed input and internal failures are reported as skipped, not as passes.
 """
 
@@ -44,6 +45,10 @@ START_PREFACE = (
 # see and puts the list second; the closing line says it again.
 START_CLOSING = (
     '\nThese findings are a floor, not the result of your work.')
+# The check is for a conversation that has not started. A resumed, compacted
+# or forked session is already at work and its transcript carries the earlier
+# list, so the workspace is not read again and no second list is added.
+START_SOURCES_IN_PROGRESS = ('resume', 'compact', 'fork')
 # Comma-separated event names, or "all": those events do nothing.
 DISABLE_ENV = 'ROS2_SKILL_DISABLE_HOOKS'
 # How a command that can move hardware is surfaced: "advise" (default) adds
@@ -231,6 +236,8 @@ def run_hook(event, payload):
         payload = normalize_payload(payload, event)
     except ValueError as exc:
         return notice('skipped: ' + str(exc)), '', 0
+    if event == 'SessionStart' and payload.get('source') in START_SOURCES_IN_PROGRESS:
+        return {}, '', 0
     if event == 'Stop' and payload.get('stop_hook_active') is True:
         return notice('repeated Stop skipped; use the manual validator for '
                       'remaining findings.'), '', 0

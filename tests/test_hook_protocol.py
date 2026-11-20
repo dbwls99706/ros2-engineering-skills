@@ -434,6 +434,22 @@ def test_session_start_feedback_is_bounded(monkeypatch):
     assert fewer.count('[error]') == hook.START_FINDINGS and 'Additional findings omitted' in fewer
 
 
+@pytest.mark.parametrize('source', ['resume', 'compact', 'fork'])
+def test_session_already_in_progress_is_not_checked_again(monkeypatch, source):
+    run = Mock(side_effect=AssertionError('a session in progress must not be scanned'))
+    monkeypatch.setattr(hook.subprocess, 'run', run)
+    assert hook.run_hook('SessionStart', start_payload(source=source)) == ({}, '', 0)
+
+
+@pytest.mark.parametrize('extra', [{'source': 'startup'}, {'source': 'clear'}, {'source': 'later-addition'}])
+def test_new_conversation_is_checked(monkeypatch, extra):
+    run = Mock(return_value=completed(status='fail', packages=1, issues=[START_ISSUE]))
+    monkeypatch.setattr(hook.subprocess, 'run', run)
+    assert 'additionalContext' in hook.run_hook('SessionStart', start_payload(**extra))[0]['hookSpecificOutput']
+    payload_without_source = {'hook_event_name': 'SessionStart', 'cwd': '/workspace'}
+    assert 'hookSpecificOutput' in hook.run_hook('SessionStart', payload_without_source)[0]
+
+
 @pytest.mark.parametrize('value', ['SessionStart', 'sessionstart', 'all', 'stop, sessionstart'])
 def test_session_start_can_be_disabled(monkeypatch, value):
     monkeypatch.setenv(hook.DISABLE_ENV, value)
