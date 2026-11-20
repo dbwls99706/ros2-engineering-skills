@@ -64,31 +64,42 @@ The adapter validates the JSON envelope, bounds UTF-8 input bytes and feedback,
 rejects duplicate keys, nonstandard JSON numbers, malformed working directories,
 and non-Boolean Stop flags, and invokes
 only fixed bundled validators with a timeout. It neither executes the inspected
-shell command nor grants permission with `permissionDecision: allow`.
+shell command nor grants permission with `permissionDecision: allow`. It
+continues a turn in one case only: once per session, to hand the model the
+findings of the workspace check when it is about to finish.
 
 | Event / result | Transport behavior |
 |---|---|
-| SessionStart, findings in a ROS 2 workspace | `hookSpecificOutput.additionalContext`, exit 0; no decision and no permission field |
-| SessionStart, no package found or nothing to report | Empty JSON object, exit 0 |
-| SessionStart for a resumed, compacted or forked session | Empty JSON object; the workspace is not read again |
+| SessionStart, new conversation | Empty JSON object, exit 0; the workspace report is recorded for the session and nothing is said |
+| SessionStart for a resumed, compacted or forked session | Empty JSON object; the record the session has is kept |
 | PreToolUse, clean | JSON object, exit 0; ordinary host permission checks remain |
 | PreToolUse, warning | `hookSpecificOutput.additionalContext`, exit 0 |
 | PreToolUse, dangerous literal command | Exit 2, explanation on stderr, no stdout JSON |
 | PreToolUse, command that can move hardware | Warning in `additionalContext`, exit 0; never a block |
 | The same, with `ROS2_SKILL_ACTUATION=ask` | `permissionDecision: "ask"` with the reason, plus the same context; never `allow` |
 | PreToolUse, `ros2` command the analysis cannot read | `Skipped:` line in the context; in `ask` mode, a confirmation request |
-| Stop, findings | User-facing `systemMessage`, exit 0; never a stop block |
-| Repeated Stop | Advisory skip; does not rescan indefinitely |
+| Stop, workspace findings not yet handed over, files changed in the session | `decision: "block"` with the findings as the reason, once; the model continues the turn |
+| Stop, workspace findings, nothing changed in the session, or `ROS2_SKILL_WORKSPACE=advise`, or no usable session record | User-facing `systemMessage`, exit 0; the turn ends |
+| Stop, findings of the changed-file check | User-facing `systemMessage`, exit 0; never a stop block |
+| Repeated Stop (`stop_hook_active`) | Advisory skip; never continues the turn and does not rescan |
 | Invalid payload, timeout, malformed child output | Explicit skipped advisory, not a pass |
 
-### Workspace check at session start
+### Workspace check
 
-PreToolUse sees what is about to be written and Stop sees what was changed.
-Neither reads what was already there. When a new conversation starts, the
-plugin runs `scripts/workspace_checks.py` and the launch validator once over
-the session's working directory and gives the findings to the model as context.
-Nothing is built, imported or run. The hook has no permission output and cannot
-block anything.
+PreToolUse sees what is about to be written, and the changed-file check at
+Stop sees which launch and package files were touched. Neither reads the
+workspace as a whole. `scripts/workspace_checks.py` does, together with the
+errors of the launch validator. Nothing is built, imported or run.
+
+The plugin runs it twice. When a new conversation starts it records what is
+reported and says nothing. When the model is about to finish it runs again and
+hands over what is still reported and has not been shown in this session: the
+turn continues once, with the findings and the instruction to fix those within
+the task and mention the others. A finding that was not there when the
+conversation started is marked as such, so a package the session has just made
+is checked like any other. If no file changed during the session, the findings
+go to the user as a message and the turn ends. A repeated Stop never continues
+the turn, and the same finding is not handed over twice in a session.
 
 The check compares declarations between files of `ament_python` packages and
 their Python launch files:
@@ -130,26 +141,30 @@ so neither is a finding. A near-miss name is not reported when the name is
 written in any other file of the workspace, because a C++ node, a parameter
 file or a remapping may be its counterpart.
 
-Known cost. A model that is handed a list of findings tends to treat the list
-as the whole job. In informal trials, a bare list made a small model fix what
-was listed and stop reading the code, so it found none of the defects the check
-cannot see. The text delivered around the list therefore says that it is a
-mechanical check and not a review, names what the check cannot see, asks for
-the code to be read as it would be without the list, and calls the findings a
-floor. This reduces the effect and does not remove it: with the list, defects
-outside it were still found less often than without it. These were informal
-trials with one model, not a benchmark, and no figure is published. If a
-complete reading of the code matters more than the listed defects, turn the
-check off with `ROS2_SKILL_DISABLE_HOOKS=SessionStart`.
+Why at the end. Given the findings when the conversation starts, a model fixes
+what is listed and stops reading the rest of the workspace. In informal trials
+with a small model at low effort this held for every wording tried, including
+text that said what the check cannot see and asked for the code to be read
+first: defects outside the list were found far less often than with no check at
+all, and the sessions ended at a third of the cost. Handed over at the end, the
+findings follow the model's own work instead of replacing it. These were
+informal trials with one model, not a benchmark, and no figure is published.
+
+Modes. `ROS2_SKILL_WORKSPACE=advise` shows the findings to the user and never
+continues a turn; `off` does not run the check; anything else is the default.
+`ROS2_SKILL_DISABLE_HOOKS=Stop` turns off this and the changed-file check. A
+check that cannot run is reported as skipped, never as a clean workspace.
+The record of what a session has been shown lives under
+`$XDG_CACHE_HOME/ros2-engineering-skills/workspace/` (`~/.cache` by default).
+Without a usable session id or a writable cache the turn is never continued,
+because the same list would otherwise come back at every turn end.
 
 Limits. At most 200 packages, 300 files per package and 512 KiB per file are
 read, within 8 seconds. The report holds at most 40 findings, of which 24 and
 7000 characters reach the model. A run that stops at a limit says so in a
 `Skipped:` line; a partial result is labelled as partial. A home directory and
-the filesystem root are not searched. A directory with no `package.xml` under
-it produces no context, so other projects are not given ROS text. The check
-runs for a new conversation (`startup`, `clear`) and not when a session is
-resumed, compacted or forked.
+the filesystem root are not searched. In a directory with no `package.xml`
+under it the check does nothing, so other projects are left alone.
 
 The same checks run by hand, in any client:
 
@@ -160,8 +175,9 @@ python3 scripts/workspace_checks.py path/to/workspace --json
 
 The exit status is 1 when a finding has severity `error`, 2 when the path is
 not a directory, and 0 otherwise. The start report uses the hook-report
-contract (version 1.7.0): it adds `packages` and `packages_without_findings`,
-and each finding carries the `check` identifier from the table above.
+contract (version 1.7.0): it adds `packages` and `tree`, a signature of the
+package files that changes when one is added, removed or rewritten, and each
+finding carries the `check` identifier from the table above.
 
 ### Destructive commands
 

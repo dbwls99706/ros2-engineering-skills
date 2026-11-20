@@ -134,22 +134,24 @@ Inside Claude Code the equivalent commands are:
 ```
 
 The plugin uses `.claude-plugin/plugin.json`, root `SKILL.md`, and
-`hooks/hooks.json`. It provides a workspace check at session start, PreToolUse
-checks and advisory Stop reports. The hook command requires `python3`; it does
-not grant tool permissions.
+`hooks/hooks.json`. It provides a workspace check, PreToolUse checks and
+advisory Stop reports. The hook command requires `python3`; it does not grant
+tool permissions.
 
-When a new conversation starts in a ROS 2 workspace, the plugin reads it once
-and tells the model where its files disagree: a launch file that starts an
-executable `setup.py` does not define, a parameter file with no section for the
-node it is given to, a directory that is never installed, an undeclared
-dependency, a callback rclpy cannot call, a keyword `create_timer` does not
-have, a service name one character from the one that is offered, and similar
-defects that build cleanly and fail at bring-up. It is
-a mechanical check of declarations, not a review, and a model given a list may
-read less of the code that is not on it. What it compares, what it cannot see
-and that cost are described in the
-[skill contract](docs/SKILL_CONTRACT.md#workspace-check-at-session-start). Set
-`ROS2_SKILL_DISABLE_HOOKS=SessionStart` to turn it off.
+In a ROS 2 workspace the plugin checks where the files disagree: a launch file
+that starts an executable `setup.py` does not define, a parameter file with no
+section for the node it is given to, a directory that is never installed, an
+undeclared dependency, a callback rclpy cannot call, a keyword `create_timer`
+does not have, a service name one character from the one that is offered, and
+similar defects that build cleanly and fail at bring-up. It records what it
+finds when a conversation starts and says nothing. When the model is about to
+finish, it hands over what is still reported, including what the session itself
+broke, and the model continues once to deal with it. It is a mechanical check
+of declarations, not a review. What it compares, what it cannot see and why the
+findings come at the end are described in the
+[skill contract](docs/SKILL_CONTRACT.md#workspace-check). Set
+`ROS2_SKILL_WORKSPACE=advise` to have the findings shown to you instead, or
+`off` to turn the check off.
 
 The PreToolUse hook also reports `ros2` commands that can move hardware, such as
 `ros2 topic pub /cmd_vel ...`, a navigation goal, a controller switch, or an
@@ -254,9 +256,9 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `workspace_checks.py` | Compare declarations between files of Python packages: console scripts, install rules, parameter files, `package.xml`, remappings, QoS, rclpy keywords and callback signatures, endpoint names, interface fields | Static; reads literals only, never guesses, reports only what fails on every supported distribution, and no finding is not a pass |
 | `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
 | `skill_validate_hook.py` | Inspect source and command strings, including `ros2` commands that can move hardware | Best-effort guard, not a security or safety boundary; automatic source advice only with confirmed ROS context |
-| `skill_start_hook.py` | Run the workspace check and launch errors once for a new session | Context for the model, never a gate; bounded in size and time, and a partial run says so |
+| `skill_workspace_hook.py` | Report the workspace check and launch errors for the whole workspace, with a signature of its files | A report, never a gate; bounded in size and time, and a partial run says so |
 | `skill_stop_hook.py` | Check changed launch/package/Nav2 files | Advisory, not a complete build; automatic runs skip launch-named files without ROS context |
-| `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions or blocks Stop; passes the session-start findings as context only; may ask for confirmation when `ROS2_SKILL_ACTUATION=ask` |
+| `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions; continues a turn once per session to hand over the workspace findings and otherwise never blocks Stop; may ask for confirmation when `ROS2_SKILL_ACTUATION=ask` |
 | `validate_skill.py` | Validate metadata, local paths, packaging, source dates | Static checks, not client activation |
 | `install_skill.py` | Stage and validate knowledge-only installations | No settings changes or hook registration |
 | `eval_runner.py` | Check fixtures or lexically score supplied text | Does not invoke a model or prove semantics |
