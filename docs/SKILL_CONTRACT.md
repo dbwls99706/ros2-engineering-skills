@@ -104,21 +104,31 @@ their Python launch files:
 | `missing-qos` | `create_publisher` or `create_subscription` is called without the QoS argument |
 | `timer-period` | A literal `create_timer` period contradicts the rate written in the comment on that call |
 | `blocking-call` | A synchronous service call or `rclpy.spin*` is inside a subscription, timer or service callback |
+| `keyword-argument` | `create_timer`, `create_publisher`, `create_subscription`, `create_service`, `create_client` or `declare_parameter` is given a keyword that the method has in no supported distribution |
+| `callback-signature` | A callback defined in the same module cannot be called with what rclpy passes in any supported distribution |
+| `name-mismatch` | A topic, service or action is used under a name nothing in the workspace offers, one or two characters from a name offered with the same type |
+| `interface-field` | A callback reads or writes a field its message or service does not have, when the `.msg` or `.srv` file is in the workspace or under `AMENT_PREFIX_PATH` |
 | `remapping` | A launch file remaps a name the node's source never creates |
 | `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
 | `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect, or a VOLATILE subscription faces a TRANSIENT_LOCAL publisher |
 | `launch` | An error from `launch_validator.py`; its style warnings are left out |
 
-What it cannot see: field names of messages and services, names that must agree
-across packages, callback signatures, keyword arguments, logic, timing, C++
+What it cannot see: logic, units, timing, conditions, what a value means, C++
 nodes (only their QoS declarations are read), XML and YAML launch files, and
 anything computed at run time. No finding is not a pass.
 
 Input the check cannot decide is left alone, never guessed: a computed name or
 namespace, `*args` or `**kwargs`, a node class with a base other than `Node` or
-`LifecycleNode`, a callback group or `MultiThreadedExecutor` in the module,
-`entry_points` that is not a literal, a parameter file name that matches more
-than one file, a node that also receives inline parameters, and test code.
+`LifecycleNode` (rclpy's experimental `AsyncNode` has methods of the same names
+with other parameters), a callback group or `MultiThreadedExecutor` in the
+module, `entry_points` that is not a literal, a parameter file name that
+matches more than one file, a node that also receives inline parameters, and
+test code. Where distributions differ, only what fails in all of them is
+reported: a subscription callback with two parameters works from Jazzy on, and
+a timer callback with a parameter annotated `TimerInfo` works from Kilted on,
+so neither is a finding. A near-miss name is not reported when the name is
+written in any other file of the workspace, because a C++ node, a parameter
+file or a remapping may be its counterpart.
 
 Known cost. A model that is handed a list of findings tends to treat the list
 as the whole job. In informal trials, a bare list made a small model fix what
@@ -150,8 +160,8 @@ python3 scripts/workspace_checks.py path/to/workspace --json
 
 The exit status is 1 when a finding has severity `error`, 2 when the path is
 not a directory, and 0 otherwise. The start report uses the hook-report
-contract (version 1.6.0): it adds `packages`, and each finding carries the
-`check` identifier from the table above.
+contract (version 1.7.0): it adds `packages` and `packages_without_findings`,
+and each finding carries the `check` identifier from the table above.
 
 ### Destructive commands
 

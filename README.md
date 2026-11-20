@@ -142,7 +142,9 @@ When a new conversation starts in a ROS 2 workspace, the plugin reads it once
 and tells the model where its files disagree: a launch file that starts an
 executable `setup.py` does not define, a parameter file with no section for the
 node it is given to, a directory that is never installed, an undeclared
-dependency, and similar defects that build cleanly and fail at bring-up. It is
+dependency, a callback rclpy cannot call, a keyword `create_timer` does not
+have, a service name one character from the one that is offered, and similar
+defects that build cleanly and fail at bring-up. It is
 a mechanical check of declarations, not a review, and a model given a list may
 read less of the code that is not on it. What it compares, what it cannot see
 and that cost are described in the
@@ -249,7 +251,7 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `qos_audit.py` | Pair QoS declarations across a package by topic and type | Static; unresolved values are never guessed, and a Python profile modified after construction is not judged from its constructor |
 | `rosbag2_qos_checker.py` | Inspect bag metadata QoS | Static metadata analysis |
 | `launch_validator.py` | Detect selected Python launch defects | Does not start a graph |
-| `workspace_checks.py` | Compare declarations between files of Python packages: console scripts, install rules, parameter files, `package.xml`, remappings, QoS | Static; reads literals only, never guesses, and no finding is not a pass |
+| `workspace_checks.py` | Compare declarations between files of Python packages: console scripts, install rules, parameter files, `package.xml`, remappings, QoS, rclpy keywords and callback signatures, endpoint names, interface fields | Static; reads literals only, never guesses, reports only what fails on every supported distribution, and no finding is not a pass |
 | `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
 | `skill_validate_hook.py` | Inspect source and command strings, including `ros2` commands that can move hardware | Best-effort guard, not a security or safety boundary; automatic source advice only with confirmed ROS context |
 | `skill_start_hook.py` | Run the workspace check and launch errors once for a new session | Context for the model, never a gate; bounded in size and time, and a partial run says so |
