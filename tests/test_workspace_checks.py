@@ -288,6 +288,24 @@ class TestParameterFiles:
             "config/params.yaml": f'"{section}":\n  ros__parameters:\n    rate: 20.0\n'})
         assert found(tmp_path) == []
 
+    def test_section_under_a_namespace_key_is_read(self, tmp_path):
+        nested = "robot1:\n  driver:\n    ros__parameters:\n      rate: 20.0\n"
+        other = "camera:\n  ros__parameters:\n    fps: 30\n"
+        make_package(tmp_path, files={"launch/demo.launch.py": with_parameters(),
+                                      "config/params.yaml": other + nested})
+        assert found(tmp_path) == []
+        wrong = nested.replace("driver:", "driver_node:")
+        make_package(tmp_path / "second", files={"launch/demo.launch.py": with_parameters(),
+                                                 "config/params.yaml": other + wrong})
+        issue, = found(tmp_path / "second", "parameter-section")
+        assert "sections: camera, robot1/driver_node" in issue["message"]
+
+    def test_parameters_of_a_namespaced_section_are_compared(self, tmp_path):
+        text = "robot1:\n  driver:\n    ros__parameters:\n      rate: 20.0\n      rate_hz: 50.0\n"
+        make_package(tmp_path, files={"launch/demo.launch.py": with_parameters(), "config/params.yaml": text})
+        issue, = found(tmp_path, "parameter-name")
+        assert "section 'robot1/driver' sets 'rate_hz'" in issue["message"] and issue["line"] == 5
+
     def test_name_is_taken_from_the_source_when_the_launch_gives_none(self, tmp_path):
         make_package(tmp_path, files={
             "launch/demo.launch.py": with_parameters(name=""),

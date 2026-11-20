@@ -42,7 +42,7 @@ __version__ = "0.1.0"
 
 SKIP_DIRS = {"build", "install", "log", ".git", "__pycache__", "node_modules", ".venv", "venv",
              ".tox", ".pytest_cache", ".mypy_cache"}
-MAX_PACKAGES = 40
+MAX_PACKAGES = 200
 MAX_FILES_PER_PACKAGE = 300
 MAX_FILE_BYTES = 512 * 1024
 # Directories a launch file commonly loads from the installed share directory.
@@ -487,8 +487,7 @@ def check_parameter_files(package: Package, nodes: list) -> tuple:
                 text, data = loaded[path]
                 if not isinstance(data, dict):
                     continue
-                sections = {str(key): value for key, value in data.items()
-                            if isinstance(value, dict) and "ros__parameters" in value}
+                sections = _sections(data)
                 if not sections:
                     continue
                 matching = [key for key in sections if _section_matches(key, name)]
@@ -518,6 +517,23 @@ def check_parameter_files(package: Package, nodes: list) -> tuple:
                             f"declares: {', '.join(sorted(declared)) or 'nothing'}); the value "
                             "is ignored."))
     return issues, sorted(set(skipped))
+
+
+def _sections(data: dict, prefix: str = "", depth: int = 4) -> dict:
+    """Node sections of a parameter file: {"namespace/name": {"ros__parameters": ...}}.
+
+    A section may sit under a namespace key instead of at the top level.
+    """
+    found = {}
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        name = f"{prefix}/{str(key).strip('/')}" if prefix else str(key)
+        if "ros__parameters" in value:
+            found[name] = value
+        elif depth:
+            found.update(_sections(value, name, depth - 1))
+    return found
 
 
 def _section_matches(key: str, name: str) -> bool:

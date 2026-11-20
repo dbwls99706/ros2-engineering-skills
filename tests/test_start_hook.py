@@ -169,6 +169,29 @@ class TestLaunchFindings:
         assert direct and all(issue.severity != 'error' for issue in direct)
         assert hook.collect(str(tmp_path)) == ([], [], 1)
 
+    @pytest.mark.parametrize('relative', [
+        'launch/__init__.py', 'launch/helpers.py', 'launch/test_motions.py', 'demo/launch/rewritten_yaml.py'])
+    def test_other_python_files_in_a_launch_directory_are_not_launch_files(self, tmp_path, relative):
+        # A helper module, a node script or a Python package called launch
+        # has no generate_launch_description, and that is not a defect.
+        make_package(tmp_path, installed=('launch',), files={
+            'launch/demo.launch.py': LAUNCH, relative: 'import os\n\n\ndef main():\n    return os.getcwd()\n'})
+        assert hook.collect(str(tmp_path)) == ([], [], 1)
+
+    @pytest.mark.parametrize('relative,text', [
+        ('launch/demo.launch.py', 'import os\n'),
+        ('launch/bringup.py', 'def generate_launch_description(:\n'),
+    ])
+    def test_a_launch_description_that_is_broken_is_reported(self, tmp_path, relative, text):
+        make_package(tmp_path, installed=('launch',), files={relative: text})
+        issues, _skipped, _count = hook.collect(str(tmp_path))
+        assert [(issue['check'], issue['severity']) for issue in issues] == [('launch', 'error')]
+
+    def test_unreadable_file_in_a_launch_directory_is_left_alone(self, tmp_path):
+        package = make_package(tmp_path, installed=('launch',), files={'launch/demo.launch.py': LAUNCH})
+        (package / 'launch' / 'blob.py').write_bytes(b'\xff\xfe\x00')
+        assert hook.collect(str(tmp_path)) == ([], [], 1)
+
     def test_errors_come_first(self, workspace):
         issues, _skipped, _count = hook.collect(str(workspace))
         assert [issue['severity'] for issue in issues] == ['error', 'warning']
@@ -222,3 +245,17 @@ class TestLimits:
         client = config['hooks']['SessionStart'][0]['hooks'][0]['timeout']
         assert hook.TIME_LIMIT < 12 < client
         assert 'timeout=8 if event == \'PreToolUse\' else 12' in Path(claude_hook.__file__).read_text()
+
+
+class TestGeneratedPackages:
+    @pytest.mark.parametrize('arguments', [
+        ('--type', 'python'), ('--type', 'python', '--lifecycle'),
+        ('--type', 'python', '--lifecycle', '--robots', '2', '--sros2'),
+        ('--type', 'cpp'), ('--type', 'cpp', '--component', '--robots', '2'),
+        ('--type', 'interfaces'), ('--type', 'hardware_interface')])
+    def test_a_package_from_the_generator_has_no_findings(self, tmp_path, arguments):
+        done = subprocess.run(
+            [sys.executable, '-B', str(ROOT / 'scripts' / 'create_package.py'), 'generated', *arguments,
+             '--dest', str(tmp_path / 'src')], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, done.stderr
+        assert hook.collect(str(tmp_path)) == ([], [], 1)

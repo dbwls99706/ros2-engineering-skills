@@ -60,6 +60,21 @@ def _too_broad(workspace):
     return real in (os.path.realpath(os.path.expanduser('~')), os.path.abspath(os.sep))
 
 
+def _is_launch_description(path):
+    """A file named *.launch.py, or one that mentions generate_launch_description.
+
+    A directory called launch also holds helper modules, node scripts and
+    Python packages of that name. Those are not launch descriptions, and
+    "generate_launch_description is missing" would be a guess about them.
+    """
+    if path.name.endswith('.launch.py'):
+        return True
+    try:
+        return 'generate_launch_description' in path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def _launch_issues(packages, workspace_checks, launch_validator, deadline=None):
     """(issues, complete). *complete* is False when the time limit cut the loop short."""
     issues = []
@@ -67,6 +82,8 @@ def _launch_issues(packages, workspace_checks, launch_validator, deadline=None):
         for path in workspace_checks.launch_files(package):
             if deadline is not None and time.monotonic() >= deadline:
                 return issues, False
+            if not _is_launch_description(path):
+                continue
             for issue in launch_validator.validate_file(str(path)):
                 if issue.severity not in LAUNCH_SEVERITIES:
                     continue
