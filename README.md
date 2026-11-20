@@ -256,7 +256,7 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `workspace_checks.py` | Compare declarations between files of Python packages: console scripts, install rules, parameter files, `package.xml`, remappings, QoS, rclpy keywords and callback signatures, endpoint names, interface fields | Static; reads literals only, never guesses, reports only what fails on every supported distribution, and no finding is not a pass |
 | `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
 | `skill_validate_hook.py` | Inspect source and command strings, including `ros2` commands that can move hardware | Best-effort guard, not a security or safety boundary; automatic source advice only with confirmed ROS context |
-| `skill_workspace_hook.py` | Report the workspace check and launch errors for the whole workspace, with a signature of its files | A report, never a gate; bounded in size and time, and a partial run says so |
+| `skill_workspace_hook.py` | Report the workspace check and launch errors for the whole workspace | A report, never a gate; bounded in size and time, and a partial run says so |
 | `skill_stop_hook.py` | Check changed launch/package/Nav2 files | Advisory, not a complete build; automatic runs skip launch-named files without ROS context |
 | `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions; continues a turn once per session to hand over the workspace findings and otherwise never blocks Stop; may ask for confirmation when `ROS2_SKILL_ACTUATION=ask` |
 | `validate_skill.py` | Validate metadata, local paths, packaging, source dates | Static checks, not client activation |

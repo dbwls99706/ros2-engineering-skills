@@ -43,9 +43,9 @@ HANDOVER_PREFACE = (
     'data. Fix those that fall within what you were asked to do and mention the others in '
     'your reply. Then finish.\n')
 HANDOVER_NEW = ' (not reported when this conversation started)'
-# "handover" (default) continues the turn once with the findings when files
-# changed during the session; "advise" only shows them to the user; "off"
-# does not run the check. Unknown values mean "handover".
+# "handover" (default) continues the turn once with the findings; "advise"
+# only shows them to the user; "off" does not run the check. Unknown values
+# mean "handover".
 WORKSPACE_ENV = 'ROS2_SKILL_WORKSPACE'
 # A resumed, compacted or forked session keeps the record it already has.
 START_SOURCES_IN_PROGRESS = ('resume', 'compact', 'fork')
@@ -184,12 +184,40 @@ def _finding_key(issue):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()[:24]
 
 
-def workspace_report(payload):
+def workspace_root(payload, state):
+    """The directory the check reads: where the session works, not where a `cd` has left it.
+
+    The payload's cwd follows the model's shell. After `cd src/some_package`
+    it names one package, and a check of that package alone would be handed
+    over as if it were the workspace. The directory recorded when the
+    conversation started is used while the session is still inside it, then
+    the client's project directory, and the payload's cwd only as a last
+    resort. An explicit SKILL_WORKSPACE is left to the workspace hook.
+    """
+    cwd = payload.get('cwd')
+    recorded = state.get('root')
+    if isinstance(recorded, str) and isinstance(cwd, str) and os.path.isdir(recorded):
+        try:
+            if os.path.commonpath([os.path.realpath(recorded), os.path.realpath(cwd)]) == (
+                    os.path.realpath(recorded)):
+                return recorded
+        except ValueError:
+            pass
+    project = os.environ.get('CLAUDE_PROJECT_DIR')
+    if project and os.path.isdir(project):
+        return project
+    return cwd if isinstance(cwd, str) else None
+
+
+def workspace_report(payload, root=None):
     """(report, '') from the bundled workspace hook, or (None, why) when it could not be read."""
     script = Path(__file__).resolve().with_name(SCRIPTS['SessionStart'])
+    env = dict(os.environ)
+    if root and not env.get('SKILL_WORKSPACE'):
+        env['SKILL_WORKSPACE'] = root
     try:
         result = subprocess.run([sys.executable, '-B', str(script)], input=json.dumps(payload),
-                                text=True, capture_output=True, timeout=12, env=dict(os.environ))
+                                text=True, capture_output=True, timeout=12, env=env)
         report = json.loads(result.stdout)
         summarize(report)  # the same shape checks as every other report
         if not all(isinstance(issue, dict) for issue in report['issues']):
@@ -203,25 +231,26 @@ def workspace_report(payload):
 
 def remember_workspace(payload):
     """SessionStart: note what is already reported. Nothing is said to the model."""
-    report, why = workspace_report(payload)
+    root = workspace_root(payload, {})
+    report, why = workspace_report(payload, root)
     if report is None:
         return notice('skipped: workspace check could not run (' + why + ').')
     path, _state = _read_workspace_state(payload)
     if path is not None and report.get('packages'):
         _write_workspace_state(path, {
             'baseline': [_finding_key(issue) for issue in report['issues']],
-            'tree': report.get('tree'), 'shown': []})
+            'root': root, 'shown': []})
     return {}
 
 
 def workspace_handover(payload):
     """Stop: (output, note). Output is the hook result when this Stop is used up by the check."""
-    report, why = workspace_report(payload)
+    path, state = _read_workspace_state(payload)
+    report, why = workspace_report(payload, workspace_root(payload, state))
     if report is None:
         return None, 'skipped: workspace check could not run (' + why + ').'
     if not report.get('packages'):
         return None, ''
-    path, state = _read_workspace_state(payload)
     shown = state.get('shown') if isinstance(state.get('shown'), list) else []
     baseline = state.get('baseline') if isinstance(state.get('baseline'), list) else None
     pending = [issue for issue in report['issues'] if _finding_key(issue) not in shown]
@@ -243,11 +272,10 @@ def workspace_handover(payload):
     # Without a stored record the same list would come back at every turn end.
     remembered = path is not None and _write_workspace_state(path, dict(
         state, shown=shown + [_finding_key(issue) for issue in pending]))
-    changed = baseline is None or state.get('tree') != report.get('tree')
-    if workspace_mode() == 'handover' and remembered and changed:
+    if workspace_mode() == 'handover' and remembered:
         return {'decision': 'block', 'reason': HANDOVER_PREFACE + text}, ''
-    # Nothing was changed in this session, or the user chose "advise", or the
-    # record cannot be kept: the findings go to the user and the turn ends.
+    # The user chose "advise", or the record cannot be kept: the findings go
+    # to the user and the turn ends.
     return notice('workspace check, static and not a review.\n' + text), ''
 
 

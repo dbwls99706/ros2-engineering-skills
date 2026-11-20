@@ -78,8 +78,8 @@ findings of the workspace check when it is about to finish.
 | PreToolUse, command that can move hardware | Warning in `additionalContext`, exit 0; never a block |
 | The same, with `ROS2_SKILL_ACTUATION=ask` | `permissionDecision: "ask"` with the reason, plus the same context; never `allow` |
 | PreToolUse, `ros2` command the analysis cannot read | `Skipped:` line in the context; in `ask` mode, a confirmation request |
-| Stop, workspace findings not yet handed over, files changed in the session | `decision: "block"` with the findings as the reason, once; the model continues the turn |
-| Stop, workspace findings, nothing changed in the session, or `ROS2_SKILL_WORKSPACE=advise`, or no usable session record | User-facing `systemMessage`, exit 0; the turn ends |
+| Stop, workspace findings not yet handed over in this session | `decision: "block"` with the findings as the reason, once; the model continues the turn |
+| Stop, workspace findings with `ROS2_SKILL_WORKSPACE=advise`, or no usable session record | User-facing `systemMessage`, exit 0; the turn ends |
 | Stop, findings of the changed-file check | User-facing `systemMessage`, exit 0; never a stop block |
 | Repeated Stop (`stop_hook_active`) | Advisory skip; never continues the turn and does not rescan |
 | Invalid payload, timeout, malformed child output | Explicit skipped advisory, not a pass |
@@ -97,9 +97,15 @@ hands over what is still reported and has not been shown in this session: the
 turn continues once, with the findings and the instruction to fix those within
 the task and mention the others. A finding that was not there when the
 conversation started is marked as such, so a package the session has just made
-is checked like any other. If no file changed during the session, the findings
-go to the user as a message and the turn ends. A repeated Stop never continues
-the turn, and the same finding is not handed over twice in a session.
+is checked like any other. A repeated Stop never continues the turn, and the
+same finding is not handed over twice in a session.
+
+The check reads the directory the conversation started in, not the directory a
+`cd` has left the shell in: after `cd src/one_package` the client reports that
+package as the working directory, and a check of it alone would otherwise be
+handed over as if it were the workspace. The recorded directory is used while
+the session is still inside it, then the client's project directory, then the
+reported working directory.
 
 The check compares declarations between files of `ament_python` packages and
 their Python launch files:
@@ -175,9 +181,8 @@ python3 scripts/workspace_checks.py path/to/workspace --json
 
 The exit status is 1 when a finding has severity `error`, 2 when the path is
 not a directory, and 0 otherwise. The start report uses the hook-report
-contract (version 1.7.0): it adds `packages` and `tree`, a signature of the
-package files that changes when one is added, removed or rewritten, and each
-finding carries the `check` identifier from the table above.
+contract (version 1.7.0): it adds `packages`, and each finding carries the
+`check` identifier from the table above.
 
 ### Destructive commands
 

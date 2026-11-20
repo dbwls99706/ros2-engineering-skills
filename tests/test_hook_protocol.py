@@ -373,10 +373,10 @@ SECOND = {'file': 'demo/setup.py', 'line': 1, 'severity': 'warning', 'check': 'i
           'message': 'launch/ is not installed'}
 
 
-def workspace(issues=(), tree='t0', packages=1, **changes):
+def workspace(issues=(), packages=1, **changes):
     """What the workspace hook prints."""
     return completed(status='fail' if any(i['severity'] == 'error' for i in issues) else 'pass',
-                     packages=packages, tree=tree, issues=list(issues), **changes)
+                     packages=packages, issues=list(issues), **changes)
 
 
 @pytest.fixture
@@ -416,9 +416,9 @@ def test_session_start_failure_is_reported_as_skipped(state):
     assert 'skipped: workspace check could not run' in result[0]['systemMessage']
 
 
-def test_findings_are_handed_over_once_when_files_changed(state):
-    state('SessionStart', start_payload(), workspace([ISSUE], tree='t0'))
-    (output, error, status), calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND], tree='t1'))
+def test_findings_are_handed_over_once(state):
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    (output, error, status), calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND]))
     assert status == 0 and not error and set(output) == {'decision', 'reason'}
     assert output['decision'] == 'block'
     reason = output['reason']
@@ -432,49 +432,95 @@ def test_findings_are_handed_over_once_when_files_changed(state):
     assert calls.call_count == 1  # the changed-file check is left for the next Stop
 
     # The same findings are not handed over again; the ordinary Stop check runs instead.
-    (output, _error, _status), calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND], tree='t1'),
+    (output, _error, _status), calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND]),
                                              completed())
     assert output == {} and calls.call_count == 2
     assert calls.call_args[0][0][-1].endswith('/scripts/skill_stop_hook.py')
 
 
 def test_only_new_findings_are_handed_over_later(state):
-    state('SessionStart', start_payload(), workspace([ISSUE], tree='t0'))
-    state('Stop', stop_payload(), workspace([ISSUE], tree='t1'))
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND], tree='t2'))
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    state('Stop', stop_payload(), workspace([ISSUE]))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND]))
     assert output['decision'] == 'block'
     assert 'demo/setup.py:1' in output['reason'] and 'demo.launch.py' not in output['reason']
 
 
 def test_a_moved_line_is_the_same_finding(state):
-    state('SessionStart', start_payload(), workspace([ISSUE], tree='t0'))
-    state('Stop', stop_payload(), workspace([ISSUE], tree='t1'))
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([dict(ISSUE, line=9)], tree='t2'),
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    state('Stop', stop_payload(), workspace([ISSUE]))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([dict(ISSUE, line=9)]),
                                               completed())
     assert output == {}
 
 
 def test_repeated_stop_never_continues_the_turn(state):
-    state('SessionStart', start_payload(), workspace([ISSUE], tree='t0'))
+    state('SessionStart', start_payload(), workspace([ISSUE]))
     (output, _error, _status), calls = state('Stop', stop_payload(stop_hook_active=True))
     assert 'repeated Stop skipped' in output['systemMessage'] and 'decision' not in output
     calls.assert_not_called()
 
 
-def test_nothing_changed_in_the_session_goes_to_the_user_only(state):
-    state('SessionStart', start_payload(), workspace([ISSUE], tree='t0'))
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], tree='t0'))
-    assert set(output) == {'systemMessage'}
-    assert 'workspace check, static and not a review' in output['systemMessage']
-    assert "executable 'other' is not a console script" in output['systemMessage']
-    # ... and once only.
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], tree='t0'), completed())
-    assert output == {}
+def test_a_session_that_changed_nothing_is_handed_the_findings_too(state):
+    # "I could not tell which code you mean" is where a beginner needs them most.
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE]))
+    assert output['decision'] == 'block' and 'not a console script' in output['reason']
+    assert 'not reported when this conversation started' not in output['reason']
+
+
+def test_the_check_reads_where_the_session_started_not_where_cd_left_it(state, tmp_path, monkeypatch):
+    monkeypatch.delenv('SKILL_WORKSPACE', raising=False)
+    monkeypatch.delenv('CLAUDE_PROJECT_DIR', raising=False)
+    root = tmp_path / 'ws'
+    inside = root / 'src' / 'one_package'
+    inside.mkdir(parents=True)
+    _result, calls = state('SessionStart', start_payload(cwd=str(root)), workspace([ISSUE]))
+    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(root)
+    # The model has changed directory into one package. A check of that
+    # package alone would be handed over as if it were the workspace.
+    _result, calls = state('Stop', stop_payload(cwd=str(inside)), workspace([ISSUE]))
+    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(root)
+    assert json.loads(calls.call_args[1]['input'])['cwd'] == str(inside)
+
+
+def test_project_directory_is_used_when_there_is_no_record(state, tmp_path, monkeypatch):
+    monkeypatch.delenv('SKILL_WORKSPACE', raising=False)
+    project = tmp_path / 'project'
+    (project / 'src' / 'pkg').mkdir(parents=True)
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(project))
+    _result, calls = state('Stop', stop_payload(cwd=str(project / 'src' / 'pkg')), workspace([ISSUE]))
+    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(project)
+
+
+@pytest.mark.parametrize('case', ['session left the recorded directory', 'recorded directory is gone',
+                                  'record names no directory'])
+def test_a_record_that_does_not_fit_is_not_used(state, tmp_path, monkeypatch, case):
+    monkeypatch.delenv('SKILL_WORKSPACE', raising=False)
+    monkeypatch.delenv('CLAUDE_PROJECT_DIR', raising=False)
+    root, other = tmp_path / 'ws', tmp_path / 'other'
+    root.mkdir()
+    other.mkdir()
+    state('SessionStart', start_payload(cwd=str(root)), workspace([ISSUE]))
+    if case == 'recorded directory is gone':
+        root.rmdir()
+    elif case == 'record names no directory':
+        path = hook._workspace_state_path('session-1')
+        path.write_text(json.dumps({'baseline': [], 'root': 5, 'shown': []}))
+    _result, calls = state('Stop', stop_payload(cwd=str(other)), workspace([ISSUE]))
+    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(other)
+
+
+def test_an_explicit_workspace_is_left_alone(state, tmp_path, monkeypatch):
+    monkeypatch.setenv('SKILL_WORKSPACE', str(tmp_path / 'chosen'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    _result, calls = state('Stop', stop_payload(cwd=str(tmp_path)), workspace([ISSUE]))
+    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(tmp_path / 'chosen')
 
 
 def test_session_without_a_record_is_handed_the_findings(state):
     # The plugin was enabled mid-session, or the session was resumed: no baseline.
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], tree='t5'))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE]))
     assert output['decision'] == 'block'
     assert 'not reported when this conversation started' not in output['reason']
 
@@ -487,7 +533,7 @@ def test_without_a_usable_session_id_the_turn_is_never_continued(state, session_
     else:
         payload['session_id'] = session_id
     for _ in range(2):  # shown every time, because it cannot be remembered, but never a block
-        (output, _error, _status), _calls = state('Stop', payload, workspace([ISSUE], tree='t1'))
+        (output, _error, _status), _calls = state('Stop', payload, workspace([ISSUE]))
         assert set(output) == {'systemMessage'} and 'not a console script' in output['systemMessage']
 
 
@@ -495,33 +541,33 @@ def test_unwritable_cache_never_continues_the_turn(state, monkeypatch, tmp_path)
     blocked = tmp_path / 'file'
     blocked.write_text('not a directory')
     monkeypatch.setenv('XDG_CACHE_HOME', str(blocked))
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], tree='t1'))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE]))
     assert set(output) == {'systemMessage'}
 
 
 def test_symlinked_state_is_not_trusted(state, tmp_path):
-    state('SessionStart', start_payload(), workspace([ISSUE], tree='t0'))
+    state('SessionStart', start_payload(), workspace([ISSUE]))
     path = hook._workspace_state_path('session-1')
     real = tmp_path / 'elsewhere.json'
     real.write_text(json.dumps({'baseline': [], 'tree': 't0', 'shown': [hook._finding_key(ISSUE)]}))
     path.unlink()
     path.symlink_to(real)
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], tree='t1'))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE]))
     assert 'not a console script' in output['systemMessage']  # shown, not hidden, and no block
 
 
 @pytest.mark.parametrize('content', ['{broken', '[]', '{"shown": "all", "baseline": 5}'])
 def test_corrupt_state_shows_the_findings(state, content):
-    state('SessionStart', start_payload(), workspace([ISSUE], tree='t0'))
+    state('SessionStart', start_payload(), workspace([ISSUE]))
     hook._workspace_state_path('session-1').write_text(content)
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], tree='t1'))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE]))
     assert output['decision'] == 'block' and 'not a console script' in output['reason']
 
 
 def test_advise_mode_shows_the_user_and_never_continues(state, monkeypatch):
     monkeypatch.setenv(hook.WORKSPACE_ENV, 'Advise')
-    state('SessionStart', start_payload(), workspace([ISSUE], tree='t0'))
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND], tree='t1'))
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND]))
     assert set(output) == {'systemMessage'} and 'launch/ is not installed' in output['systemMessage']
 
 
@@ -563,7 +609,7 @@ def test_directory_without_packages_is_left_to_the_ordinary_stop_check(state):
 
 
 def test_clean_workspace_is_left_to_the_ordinary_stop_check(state):
-    (output, _error, _status), calls = state('Stop', stop_payload(), workspace([], tree='t1'), completed(
+    (output, _error, _status), calls = state('Stop', stop_payload(), workspace([]), completed(
         issues=[{'file': 'a.launch.py', 'line': 1, 'severity': 'warning', 'message': 'changed file'}]))
     assert 'changed file' in output['systemMessage'] and calls.call_count == 2
 
@@ -592,18 +638,18 @@ def test_a_failed_check_does_not_hide_the_changed_file_advisory(state):
 
 def test_partial_check_is_said_in_the_handover(state):
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(
-        [ISSUE], tree='t1', checks_skipped=['time limit reached: 1 of 2 packages were checked']))
+        [ISSUE], checks_skipped=['time limit reached: 1 of 2 packages were checked']))
     assert 'Skipped: time limit reached: 1 of 2 packages were checked' in output['reason']
 
 
 def test_handover_is_bounded(state):
     issues = [dict(ISSUE, message='finding %03d ' % number + 'x' * 600) for number in range(40)]
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(issues, tree='t1'))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(issues))
     reason = output['reason']
     assert len(reason) <= len(hook.HANDOVER_PREFACE) + hook.HANDOVER_FEEDBACK
     assert reason.count('[error]') <= hook.HANDOVER_FINDINGS
     many = [dict(ISSUE, message='finding %03d' % number) for number in range(40)]
-    (output, _error, _status), _calls = state('Stop', stop_payload(session_id='session-2'), workspace(many, tree='t1'))
+    (output, _error, _status), _calls = state('Stop', stop_payload(session_id='session-2'), workspace(many))
     assert output['reason'].count('[error]') == hook.HANDOVER_FINDINGS
     assert 'Additional findings omitted' in output['reason']
 
@@ -624,16 +670,18 @@ def test_handover_end_to_end(tmp_path, monkeypatch):
            if key not in (hook.DISABLE_ENV, hook.WORKSPACE_ENV, 'SKILL_WORKSPACE', 'CLAUDE_PROJECT_DIR')}
     env['XDG_CACHE_HOME'] = str(tmp_path / 'cache')
 
-    def run(event, **extra):
-        payload = {'hook_event_name': event, 'cwd': str(tmp_path), 'session_id': 'end-to-end', **extra}
+    def run(event, cwd=package / 'demo', **extra):
+        # From the second event on the shell sits inside the package, as after `cd`.
+        payload = {'hook_event_name': event, 'cwd': str(cwd), 'session_id': 'end-to-end', **extra}
         done = subprocess.run([hook.sys.executable, '-B', script, event], capture_output=True, text=True,
                               env=env, input=json.dumps(payload), timeout=60)
         assert done.returncode == 0 and done.stderr == ''
         return json.loads(done.stdout)
 
-    assert run('SessionStart', source='startup') == {}
-    # Nothing was changed yet: the user is told, the turn is not continued.
-    assert set(run('Stop')) == {'systemMessage'}
+    assert run('SessionStart', cwd=tmp_path, source='startup') == {}
+    first = run('Stop')
+    assert first['decision'] == 'block' and "executable 'other'" in first['reason']
+    assert 'not reported when this conversation started' not in first['reason']
     # The session breaks something new, as a session that makes a package can.
     (package / 'demo' / 'driver.py').write_text(
         (package / 'demo' / 'driver.py').read_text().replace("'status', 10)", "'status')"))
@@ -641,5 +689,5 @@ def test_handover_end_to_end(tmp_path, monkeypatch):
     assert output['decision'] == 'block'
     assert 'create_publisher() is called without a QoS profile' in output['reason']
     assert 'not reported when this conversation started' in output['reason']
-    assert "executable 'other'" not in output['reason']  # already shown to the user
+    assert "executable 'other'" not in output['reason']  # handed over at the first Stop
     assert 'decision' not in run('Stop', stop_hook_active=True)

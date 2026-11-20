@@ -42,10 +42,9 @@ class TestReport:
     def test_findings_are_reported_in_the_hook_schema(self, workspace):
         report, done = run_hook({'cwd': str(workspace)})
         assert done.returncode == 0 and done.stderr == ''
-        assert set(report) == {'hook', 'version', 'packages', 'tree', 'issues_count', 'issues',
+        assert set(report) == {'hook', 'version', 'packages', 'issues_count', 'issues',
                                'checks_skipped', 'status'}
         assert report['hook'] == 'ros2-engineering-skills:workspace'
-        assert len(report['tree']) == 64
         assert report['packages'] == 1 and report['status'] == 'fail'
         assert report['issues_count'] == len(report['issues']) == 2
         assert [issue['check'] for issue in report['issues']] == ['launch-executable', 'install-rules']
@@ -74,43 +73,17 @@ class TestReport:
         assert sorted(str(path) for path in workspace.rglob('*')) == before
 
 
-class TestTreeSignature:
-    def signature(self, root):
-        return hook.survey(str(root))[3]
+class TestPackageNames:
+    def test_the_directory_name_is_what_a_finding_carries(self, tmp_path):
+        package = make_package(tmp_path / 'src', installed=(), files={'launch/demo.launch.py': BROKEN_LAUNCH})
+        package.rename(package.with_name('demo_checkout'))
+        make_package(tmp_path / 'src', name='arm')
+        issues, _skipped, names = hook.survey(str(tmp_path))
+        assert names == ['arm', 'demo_checkout']
+        assert {issue['file'].split('/')[0] for issue in issues} == {'demo_checkout'}
 
-    def test_unchanged_workspace_has_the_same_signature(self, workspace):
-        assert self.signature(workspace) == self.signature(workspace) != ''
-
-    def test_rewriting_adding_or_removing_a_file_changes_it(self, workspace):
-        package = workspace / 'src' / 'demo'
-        seen = {self.signature(workspace)}
-        (package / 'demo' / 'driver.py').write_text((package / 'demo' / 'driver.py').read_text() + '\n# edited\n')
-        seen.add(self.signature(workspace))
-        (package / 'demo' / 'extra.py').write_text('VALUE = 1\n')
-        seen.add(self.signature(workspace))
-        (package / 'demo' / 'extra.py').unlink()
-        (package / 'config').mkdir()
-        (package / 'config' / 'p.yaml').write_text('a: 1\n')
-        seen.add(self.signature(workspace))
-        assert len(seen) == 4
-
-    def test_files_outside_the_packages_do_not_count(self, workspace):
-        before = self.signature(workspace)
-        (workspace / 'notes.txt').write_text('scratch')
-        (workspace / 'build').mkdir()
-        (workspace / 'build' / 'out.py').write_text('x = 1\n')
-        assert self.signature(workspace) == before
-
-    def test_directory_without_packages_has_no_signature(self, tmp_path):
-        assert hook.survey(str(tmp_path)) == ([], [], [], '')
-        report, _done = run_hook(SKILL_WORKSPACE=str(tmp_path))
-        assert report['tree'] == '' and report['packages'] == 0
-
-    def test_a_file_that_disappears_while_it_is_read_is_skipped(self, workspace, monkeypatch):
-        import workspace_checks
-        packages = workspace_checks.find_packages(workspace)
-        packages[0].files.append(workspace / 'src' / 'demo' / 'gone.py')
-        assert len(hook._tree(packages)) == 64
+    def test_directory_without_packages(self, tmp_path):
+        assert hook.survey(str(tmp_path)) == ([], [], [])
 
 
 class TestTooBroad:
@@ -269,7 +242,7 @@ class TestLimits:
 
         def survey(path, deadline=None):
             seen.append(deadline - time.monotonic())
-            return [], ['time limit reached: 1 of 2 packages were checked'], ['arm', 'base'], 'sig'
+            return [], ['time limit reached: 1 of 2 packages were checked'], ['arm', 'base']
 
         monkeypatch.setattr(hook, 'survey', survey)
         monkeypatch.setenv('SKILL_WORKSPACE', str(workspace))
