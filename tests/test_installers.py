@@ -222,7 +222,7 @@ def test_link_install_explains_possible_hook_registration(tmp_path):
     target = tmp_path / 'skill'
     result = _run('--target', target, '--link')
     assert result.returncode == 0, result.stderr
-    assert 'may register its PreToolUse and Stop' in result.stdout
+    assert 'may register its SessionStart, PreToolUse and Stop' in result.stdout
     assert 'does not configure hooks' in result.stdout
     assert 'may register' not in _run('--target', tmp_path / 'copy').stdout
 

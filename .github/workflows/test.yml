@@ -67,6 +67,7 @@ jobs:
           claude --plugin-dir . plugin details ros2-engineering@inline \
             | tee /tmp/plugin-details.txt
           grep -F 'ros2-engineering-skills' /tmp/plugin-details.txt
+          grep -F 'SessionStart' /tmp/plugin-details.txt
           grep -F 'PreToolUse' /tmp/plugin-details.txt
           grep -F 'Stop' /tmp/plugin-details.txt
 

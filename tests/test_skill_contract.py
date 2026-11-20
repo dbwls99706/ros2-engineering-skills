@@ -34,7 +34,8 @@ Read `references/test.md` and [a reference](references/test.md#example).
 ''', encoding='utf-8')
     (root / 'LICENSE').write_text('Synthetic license fixture', encoding='utf-8')
     (root / 'references/test.md').write_text('# Example\n', encoding='utf-8')
-    for name in ('claude_hook.py', 'skill_validate_hook.py', 'skill_stop_hook.py'):
+    for name in ('claude_hook.py', 'skill_start_hook.py', 'workspace_checks.py',
+                 'skill_validate_hook.py', 'skill_stop_hook.py'):
         (root / 'scripts' / name).write_text('pass\n', encoding='utf-8')
     save(root / '.claude-plugin/plugin.json', {'name': 'ros2-engineering', 'version': '1.3.0'})
     save(root / '.claude-plugin/marketplace.json', {'plugins': [{
@@ -42,7 +43,7 @@ Read `references/test.md` and [a reference](references/test.md#example).
     save(root / 'hooks/hooks.json', {'hooks': {event: [{'hooks': [{
         'type': 'command', 'timeout': 10,
         'command': 'python3 -B "${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py" ' + event,
-    }]}] for event in ('PreToolUse', 'Stop')}})
+    }]}] for event in ('SessionStart', 'PreToolUse', 'Stop')}})
     (root / 'agents/openai.yaml').write_text('''interface:
   display_name: "ROS 2 Engineering"
   short_description: "ROS 2 development"
@@ -179,6 +180,33 @@ def test_bad_marketplace(bundle, plugins):
 def test_bad_hook_groups(bundle, groups):
     change(bundle, 'hooks/hooks.json', lambda d: d['hooks'].update(PreToolUse=groups))
     assert contract.validate(bundle)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('event', ['SessionStart', 'PreToolUse', 'Stop'])
+def test_every_hook_event_is_required(bundle, event):
+    change(bundle, 'hooks/hooks.json', lambda d: d['hooks'].pop(event))
+    report = contract.validate(bundle)
+    assert report['status'] == 'fail'
+    assert report['errors'] == ['Expected SessionStart, PreToolUse and Stop hook groups']
+
+
+def test_unknown_hook_event_is_rejected(bundle):
+    change(bundle, 'hooks/hooks.json', lambda d: d['hooks'].update(
+        UserPromptSubmit=d['hooks']['Stop']))
+    assert contract.validate(bundle)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('script', ['skill_start_hook.py', 'workspace_checks.py'])
+def test_session_start_scripts_must_be_bundled(bundle, script):
+    (bundle / 'scripts' / script).unlink()
+    assert contract.validate(bundle)['status'] == 'fail'
+
+
+def test_this_checkout_passes_its_own_validator():
+    # The synthetic bundle above cannot notice that the real hooks.json, the
+    # manifests and the validator have drifted apart.
+    report = contract.validate(ROOT)
+    assert report['errors'] == [] and report['status'] == 'pass'
 
 
 @pytest.mark.parametrize('value', [0, 601, True, '10'])
