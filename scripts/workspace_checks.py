@@ -86,11 +86,12 @@ RCLPY_KEYWORDS = {
 }
 # How many positional arguments rclpy passes to a callback, as (fewest, most)
 # over the supported distributions. A subscription callback may take the
-# message info from Jazzy on, a timer callback the timer info from Kilted on;
-# a signature that only some distributions accept is not judged.
+# message info from Jazzy on; a signature that only some distributions accept
+# is not judged. A timer callback is called without arguments, except that
+# from Kilted on a parameter annotated TimerInfo is filled in by keyword.
 CALLBACK_ARGUMENTS = {
     "create_subscription": (2, "callback", 1, 2, "the message"),
-    "create_timer": (1, "callback", 0, 1, "no argument"),
+    "create_timer": (1, "callback", 0, 0, "no argument"),
     "create_service": (2, "callback", 2, 2, "the request and the response"),
 }
 # Endpoint constructors: (index of the name, keyword of the name, index of the
@@ -822,6 +823,8 @@ def _callback_signatures(package: Package, path: Path, tree: ast.AST) -> list:
             arity = _arity(found[0], method) if len(found) == 1 else None
             if arity is None:
                 continue
+            if _call_name(call) == "create_timer" and "TimerInfo" in ast.dump(found[0].args):
+                continue  # filled in by keyword from Kilted on: depends on the distribution
             required, accepted = arity
             if required <= most and accepted >= fewest:
                 continue

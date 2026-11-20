@@ -941,6 +941,8 @@ class TestCallbackSignatures:
          "takes 3 required arguments besides self"),
         ("self.create_timer(1.0, self.cb)", "def cb(self, first, second):\n    pass",
          "takes 2 required arguments besides self; rclpy calls it with no argument"),
+        ("self.create_timer(1.0, self.cb)", "def cb(self, event):\n    pass",
+         "takes 1 required argument besides self; rclpy calls it with no argument"),
         ("self.create_subscription(String, 'a', self.cb, 10)", "async def cb(self):\n    pass",
          "takes no argument besides self"),
     ])
@@ -966,7 +968,8 @@ class TestCallbackSignatures:
         ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, *args):\n    pass"),
         ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, msg, /):\n    pass"),
         ("self.create_timer(1.0, self.cb)", "def cb(self):\n    pass"),
-        ("self.create_timer(1.0, self.cb)", "def cb(self, info):\n    pass"),
+        ("self.create_timer(1.0, self.cb)", "def cb(self, info: TimerInfo):\n    pass"),
+        ("self.create_timer(1.0, self.cb)", "def cb(self, info: 'rclpy.timer.TimerInfo'):\n    pass"),
         ("self.create_timer(1.0, self.cb)", "def cb(self, info=None):\n    pass"),
         ("self.create_service(String, 'a', self.cb)", "def cb(self, request, response):\n    return response"),
         ("self.create_service(String, 'a', self.cb)", "def cb(self, request, response, extra=0):\n    return response"),
