@@ -68,6 +68,9 @@ shell command nor grants permission with `permissionDecision: allow`.
 
 | Event / result | Transport behavior |
 |---|---|
+| SessionStart, findings in a ROS 2 workspace | `hookSpecificOutput.additionalContext`, exit 0; no decision and no permission field |
+| SessionStart, no package found or nothing to report | Empty JSON object, exit 0 |
+| SessionStart for a resumed, compacted or forked session | Empty JSON object; the workspace is not read again |
 | PreToolUse, clean | JSON object, exit 0; ordinary host permission checks remain |
 | PreToolUse, warning | `hookSpecificOutput.additionalContext`, exit 0 |
 | PreToolUse, dangerous literal command | Exit 2, explanation on stderr, no stdout JSON |
@@ -77,6 +80,78 @@ shell command nor grants permission with `permissionDecision: allow`.
 | Stop, findings | User-facing `systemMessage`, exit 0; never a stop block |
 | Repeated Stop | Advisory skip; does not rescan indefinitely |
 | Invalid payload, timeout, malformed child output | Explicit skipped advisory, not a pass |
+
+### Workspace check at session start
+
+PreToolUse sees what is about to be written and Stop sees what was changed.
+Neither reads what was already there. When a new conversation starts, the
+plugin runs `scripts/workspace_checks.py` and the launch validator once over
+the session's working directory and gives the findings to the model as context.
+Nothing is built, imported or run. The hook has no permission output and cannot
+block anything.
+
+The check compares declarations between files of `ament_python` packages and
+their Python launch files:
+
+| Check | Reported when |
+|---|---|
+| `install-rules` | A `launch/`, `config/` or similar directory that a launch file needs has no entry in `setup.py` or `CMakeLists.txt` |
+| `launch-executable` | A launch `Node` of the package names an executable that is not one of its console scripts |
+| `entry-point` | A console script points at a module or function the package does not contain |
+| `parameter-section` | A parameter file given to a node has no section for that node's name |
+| `parameter-name` | A section sets a parameter the node's source does not declare |
+| `dependencies` | The code imports a ROS package that `package.xml` does not declare |
+| `missing-qos` | `create_publisher` or `create_subscription` is called without the QoS argument |
+| `timer-period` | A literal `create_timer` period contradicts the rate written in the comment on that call |
+| `blocking-call` | A synchronous service call or `rclpy.spin*` is inside a subscription, timer or service callback |
+| `remapping` | A launch file remaps a name the node's source never creates |
+| `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
+| `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect, or a VOLATILE subscription faces a TRANSIENT_LOCAL publisher |
+| `launch` | An error from `launch_validator.py`; its style warnings are left out |
+
+What it cannot see: field names of messages and services, names that must agree
+across packages, callback signatures, keyword arguments, logic, timing, C++
+nodes (only their QoS declarations are read), XML and YAML launch files, and
+anything computed at run time. No finding is not a pass.
+
+Input the check cannot decide is left alone, never guessed: a computed name or
+namespace, `*args` or `**kwargs`, a node class with a base other than `Node` or
+`LifecycleNode`, a callback group or `MultiThreadedExecutor` in the module,
+`entry_points` that is not a literal, a parameter file name that matches more
+than one file, a node that also receives inline parameters, and test code.
+
+Known cost. A model that is handed a list of findings tends to treat the list
+as the whole job. In informal trials, a bare list made a small model fix what
+was listed and stop reading the code, so it found none of the defects the check
+cannot see. The text delivered around the list therefore says that it is a
+mechanical check and not a review, names what the check cannot see, asks for
+the code to be read as it would be without the list, and calls the findings a
+floor. This reduces the effect and does not remove it: with the list, defects
+outside it were still found less often than without it. These were informal
+trials with one model, not a benchmark, and no figure is published. If a
+complete reading of the code matters more than the listed defects, turn the
+check off with `ROS2_SKILL_DISABLE_HOOKS=SessionStart`.
+
+Limits. At most 200 packages, 300 files per package and 512 KiB per file are
+read, within 8 seconds. The report holds at most 40 findings, of which 24 and
+7000 characters reach the model. A run that stops at a limit says so in a
+`Skipped:` line; a partial result is labelled as partial. A home directory and
+the filesystem root are not searched. A directory with no `package.xml` under
+it produces no context, so other projects are not given ROS text. The check
+runs for a new conversation (`startup`, `clear`) and not when a session is
+resumed, compacted or forked.
+
+The same checks run by hand, in any client:
+
+```bash
+python3 scripts/workspace_checks.py path/to/workspace
+python3 scripts/workspace_checks.py path/to/workspace --json
+```
+
+The exit status is 1 when a finding has severity `error`, 2 when the path is
+not a directory, and 0 otherwise. The start report uses the hook-report
+contract (version 1.6.0): it adds `packages`, and each finding carries the
+`check` identifier from the table above.
 
 ### Destructive commands
 
