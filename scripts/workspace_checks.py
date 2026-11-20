@@ -20,6 +20,7 @@ base, a callback group) is left alone, never guessed: silence is not a pass.
 
 import argparse
 import ast
+import functools
 import io
 import json
 import os
@@ -67,6 +68,45 @@ IMPLICIT_PARAMETERS = {"use_sim_time", "qos_overrides", "start_type_description_
 LIFECYCLE_MARKERS = ("LifecycleNode", "lifecycle_manager", "ChangeState", "lifecycle_msgs",
                      "change_state", "EmitEvent", "autostart")
 SPIN_CALLS = {"spin", "spin_once", "spin_until_future_complete"}
+# Parameter names of rclpy.node.Node methods: the union over Humble, Jazzy,
+# Kilted, Lyrical and Rolling. A keyword outside the set exists in none of them.
+RCLPY_KEYWORDS = {
+    "create_timer": {"timer_period_sec", "callback", "callback_group", "clock", "autostart",
+                     "timer_class"},
+    "create_publisher": {"msg_type", "topic", "qos_profile", "callback_group", "event_callbacks",
+                         "qos_overriding_options", "publisher_class"},
+    "create_subscription": {"msg_type", "topic", "callback", "qos_profile", "callback_group",
+                            "event_callbacks", "qos_overriding_options", "raw",
+                            "content_filter_options", "subscription_class",
+                            "acceptable_buffer_backends"},
+    "create_service": {"srv_type", "srv_name", "callback", "qos_profile", "callback_group",
+                       "service_class"},
+    "create_client": {"srv_type", "srv_name", "qos_profile", "callback_group", "client_class"},
+    "declare_parameter": {"name", "value", "descriptor", "ignore_override"},
+}
+# How many positional arguments rclpy passes to a callback, as (fewest, most)
+# over the supported distributions. A subscription callback may take the
+# message info from Jazzy on, a timer callback the timer info from Kilted on;
+# a signature that only some distributions accept is not judged.
+CALLBACK_ARGUMENTS = {
+    "create_subscription": (2, "callback", 1, 2, "the message"),
+    "create_timer": (1, "callback", 0, 1, "no argument"),
+    "create_service": (2, "callback", 2, 2, "the request and the response"),
+}
+# Endpoint constructors: (index of the name, keyword of the name, index of the
+# type, keyword of the type, kind, role).
+ENDPOINTS = {
+    "create_publisher": (1, "topic", 0, "msg_type", "topic", "offer"),
+    "create_subscription": (1, "topic", 0, "msg_type", "topic", "use"),
+    "create_service": (1, "srv_name", 0, "srv_type", "service", "offer"),
+    "create_client": (1, "srv_name", 0, "srv_type", "service", "use"),
+    "ActionServer": (2, "action_name", 1, "action_type", "action", "offer"),
+    "ActionClient": (2, "action_name", 1, "action_type", "action", "use"),
+}
+# Members every generated interface class has besides its fields.
+INTERFACE_MEMBERS = {"get_fields_and_field_types", "SLOT_TYPES", "Request", "Response", "Goal",
+                     "Result", "Feedback", "Impl", "Event"}
+TEXT_SUFFIXES = {".py", ".cpp", ".cc", ".cxx", ".hpp", ".h", ".yaml", ".yml", ".xml", ".json"}
 
 
 @dataclass
@@ -104,13 +144,21 @@ def _read(path: Path) -> Optional[str]:
         return None
 
 
+@functools.lru_cache(maxsize=4096)
 def _parse(source: Optional[str]) -> Optional[ast.AST]:
+    """The syntax tree of *source*. Cached by content: several checks read the same file."""
     if source is None:
         return None
     try:
         return ast.parse(source)
     except (SyntaxError, ValueError, RecursionError):
         return None
+
+
+@functools.lru_cache(maxsize=4096)
+def _nodes(tree: ast.AST) -> tuple:
+    """Every node of *tree*, walked once however many checks ask."""
+    return tuple(ast.walk(tree))
 
 
 def _text(value: ast.AST) -> Optional[str]:
@@ -208,7 +256,7 @@ def _console_scripts(setup_text: str) -> tuple:
     tree = _parse(setup_text)
     if tree is None:
         return None, 1
-    for call in ast.walk(tree):
+    for call in _nodes(tree):
         if not (isinstance(call, ast.Call) and _call_name(call) == "setup"):
             continue
         entry = _keyword(call, "entry_points")
@@ -239,7 +287,7 @@ def launch_files(package: Package) -> list:
 def _assignments(tree: ast.AST) -> dict:
     """name -> value for names assigned exactly once anywhere in the file."""
     seen: dict = {}
-    for node in ast.walk(tree):
+    for node in _nodes(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(
                 node.targets[0], ast.Name):
             seen.setdefault(node.targets[0].id, []).append(node.value)
@@ -268,7 +316,7 @@ def launch_nodes(package: Package) -> list:
         if tree is None:
             continue
         names = _assignments(tree)
-        for call in ast.walk(tree):
+        for call in _nodes(tree):
             if not isinstance(call, ast.Call) or _call_name(call) not in ("Node", "LifecycleNode"):
                 continue
             if _opaque(call):
@@ -332,8 +380,8 @@ def check_install_rules(package: Package) -> list:
     sources = [(path, _read(path) or "") for path in launch_files(package)]
     issues = []
     for directory in RESOURCE_DIRS:
-        folder = package.root / directory
-        members = [path for path in package.files if folder in path.parents]
+        prefix = str(package.root / directory) + os.sep
+        members = [path for path in package.files if str(path).startswith(prefix)]
         if not members or re.search(r"\b%s\b" % directory, text):
             continue
         if directory == "launch":
@@ -401,7 +449,7 @@ def _defines(tree: ast.AST, name: str) -> bool:
 def _own_name(tree: ast.AST) -> Optional[str]:
     """The name a node gives itself: the literal passed to super().__init__."""
     names = set()
-    for call in ast.walk(tree):
+    for call in _nodes(tree):
         if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
                 and call.func.attr == "__init__" and call.args):
             text = _text(call.args[0])
@@ -415,13 +463,13 @@ def _declared_parameters(source: str, tree: ast.AST) -> Optional[set]:
     if "automatically_declare_parameters_from_overrides" in source or (
             "allow_undeclared_parameters" in source):
         return None
-    for node in ast.walk(tree):
+    for node in _nodes(tree):
         if isinstance(node, ast.ClassDef):
             bases = {getattr(base, "attr", getattr(base, "id", "?")) for base in node.bases}
             if bases - {"Node", "LifecycleNode", "object"}:
                 return None  # parameters may be declared by a base class elsewhere
     declared = set()
-    for call in ast.walk(tree):
+    for call in _nodes(tree):
         if not isinstance(call, ast.Call):
             continue
         if _call_name(call) in ("declare_parameter", "declare_parameters") and _opaque(call):
@@ -558,7 +606,7 @@ def check_dependencies(package: Package) -> list:
         tree = _parse(_read(path))
         if tree is None:
             continue
-        for node in ast.walk(tree):
+        for node in _nodes(tree):
             if isinstance(node, ast.Import):
                 imported.update(alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
@@ -611,7 +659,17 @@ def check_node_source(package: Package, path: Path) -> list:
     def add(node, severity, check, message):
         issues.append(_issue(package, path, node.lineno, severity, check, message))
 
-    for call in ast.walk(tree):
+    for call in _node_calls(tree):
+        allowed = RCLPY_KEYWORDS.get(_call_name(call))
+        if allowed is None:
+            continue
+        for keyword in call.keywords:
+            if keyword.arg not in allowed:
+                add(call, "error", "keyword-argument",
+                    f"{_call_name(call)}() has no parameter '{keyword.arg}' (its parameters "
+                    f"are: {', '.join(sorted(allowed))}); rclpy raises TypeError when this "
+                    "line runs.")
+    for call in _nodes(tree):
         if not isinstance(call, ast.Call) or _opaque(call):
             continue
         name = _call_name(call)
@@ -631,11 +689,12 @@ def check_node_source(package: Package, path: Path) -> list:
                 if issue:
                     add(call, "warning", "timer-period", issue)
 
+    issues.extend(_callback_signatures(package, path, tree))
     # Whether a blocking call inside a callback deadlocks depends on the
     # executor and the callback groups. With either in play it is not decided.
     if re.search(r"MultiThreadedExecutor|CallbackGroup|callback_group", source):
         return issues
-    for cls in ast.walk(tree):
+    for cls in _nodes(tree):
         if not isinstance(cls, ast.ClassDef):
             continue
         callbacks: set = set()
@@ -675,6 +734,110 @@ def check_node_source(package: Package, path: Path) -> list:
     return issues
 
 
+def _node_classes(tree: ast.AST) -> list:
+    """Classes whose only bases are rclpy's Node or LifecycleNode, by name.
+
+    Another base may define methods with the same names and other parameters
+    (rclpy's experimental AsyncNode does), so such a class is not judged.
+    """
+    found = []
+    for cls in _nodes(tree):
+        if isinstance(cls, ast.ClassDef) and cls.bases and all(
+                getattr(base, "attr", getattr(base, "id", "")) in ("Node", "LifecycleNode")
+                for base in cls.bases):
+            found.append(cls)
+    return found
+
+
+def _node_calls(tree: ast.AST) -> list:
+    """Method calls whose receiver is known to be an rclpy node.
+
+    Either self inside a class that derives only from Node or LifecycleNode and
+    does not define the method itself, or a name bound exactly once in the
+    file to rclpy.create_node(...), Node(...) or LifecycleNode(...).
+    """
+    calls = []
+    for cls in _node_classes(tree):
+        overridden = {node.name for node in cls.body
+                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        for call in ast.walk(cls):
+            if (isinstance(call, ast.Call) and not _opaque(call)
+                    and _self_attribute(call.func) is not None
+                    and _call_name(call) not in overridden):
+                calls.append(call)
+    nodes = {name for name, value in _assignments(tree).items()
+             if isinstance(value, ast.Call) and _call_name(value) in (
+                 "create_node", "Node", "LifecycleNode")}
+    for call in _nodes(tree):
+        if (isinstance(call, ast.Call) and not _opaque(call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name) and call.func.value.id in nodes):
+            calls.append(call)
+    return calls
+
+
+def _arity(function: ast.AST, method: bool) -> Optional[tuple]:
+    """(required, accepted) positional arguments, or None when it cannot be read."""
+    if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) or function.decorator_list:
+        return None
+    spec = function.args
+    if any(default is None for default in spec.kw_defaults):
+        return None  # a keyword-only parameter without a default: not a plain callback
+    positional = spec.posonlyargs + spec.args
+    if method:
+        if not positional:
+            return None
+        positional = positional[1:]
+    required = len(positional) - len(spec.defaults)
+    return max(required, 0), (float("inf") if spec.vararg else len(positional))
+
+
+def _callback_signatures(package: Package, path: Path, tree: ast.AST) -> list:
+    """A callback whose signature no supported distribution can call."""
+    issues = []
+    module_functions: dict = {}
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            module_functions.setdefault(node.name, []).append(node)
+    for cls in _node_classes(tree):
+        methods: dict = {}
+        for node in cls.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                methods.setdefault(node.name, []).append(node)
+        for call in ast.walk(cls):
+            if not isinstance(call, ast.Call) or _opaque(call) or _self_attribute(call.func) is None:
+                continue
+            spec = CALLBACK_ARGUMENTS.get(_call_name(call))
+            if spec is None:
+                continue
+            index, keyword, fewest, most, given = spec
+            callback = _argument(call, index, keyword)
+            attribute = _self_attribute(callback)
+            if attribute is not None:
+                found, method, shown = methods.get(attribute, []), True, f"self.{attribute}"
+            elif isinstance(callback, ast.Name):
+                found, method, shown = module_functions.get(callback.id, []), False, callback.id
+            else:
+                continue
+            arity = _arity(found[0], method) if len(found) == 1 else None
+            if arity is None:
+                continue
+            required, accepted = arity
+            if required <= most and accepted >= fewest:
+                continue
+            takes = "no argument" if accepted == 0 else (
+                f"{required} required argument{'s' if required != 1 else ''}")
+            issues.append(_issue(
+                package, path, found[0].lineno, "error", "callback-signature",
+                f"{shown} is the callback of {_call_name(call)}() at line {call.lineno} and "
+                f"takes {takes} besides self; rclpy calls it with {given}, so it raises "
+                "TypeError."
+                if method else
+                f"{shown} is the callback of {_call_name(call)}() at line {call.lineno} and "
+                f"takes {takes}; rclpy calls it with {given}, so it raises TypeError."))
+    return issues
+
+
 def _timer_period(call: ast.Call, period: float, source: str) -> Optional[str]:
     """A period that contradicts the rate written next to it."""
     comment = _comment(source, call.lineno, getattr(call, "end_lineno", call.lineno) or call.lineno)
@@ -698,7 +861,7 @@ def _names_used(tree: ast.AST) -> Optional[set]:
     positions = {"create_subscription": (1, "topic"), "create_publisher": (1, "topic"),
                  "create_client": (1, "srv_name"), "create_service": (1, "srv_name"),
                  "ActionClient": (2, "action_name"), "ActionServer": (2, "action_name")}
-    for call in ast.walk(tree):
+    for call in _nodes(tree):
         if not isinstance(call, ast.Call) or _call_name(call) not in positions:
             continue
         if _opaque(call):
@@ -740,7 +903,7 @@ def check_launch_against_source(package: Package, nodes: list) -> list:
         lifecycle = any(
             isinstance(cls, ast.ClassDef) and any(
                 getattr(base, "attr", getattr(base, "id", "")) == "LifecycleNode" for base in cls.bases)
-            for cls in ast.walk(tree))
+            for cls in _nodes(tree))
         if (lifecycle and not node.lifecycle_action
                 and not re.search(r"trigger_configure|trigger_activate", source)
                 and not any(marker in launch_text[node.file] for marker in LIFECYCLE_MARKERS)):
@@ -800,6 +963,204 @@ def check_qos(root: Path) -> tuple:
     return issues, []
 
 
+def _type_name(node: Optional[ast.AST]) -> Optional[str]:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _node_modules(package: Package) -> list:
+    """Python files of the package that are neither launch files, setup.py nor tests."""
+    launch = set(launch_files(package))
+    return [path for path in package.files
+            if path.suffix == ".py" and path not in launch and path.name != "setup.py"
+            and not _is_test(path.relative_to(package.root))]
+
+
+def _distance(first: str, second: str, limit: int = 2) -> int:
+    """Edit distance, or limit + 1 once it is known to be larger."""
+    if abs(len(first) - len(second)) > limit:
+        return limit + 1
+    row = list(range(len(second) + 1))
+    for i, a in enumerate(first, 1):
+        previous, row[0] = row[0], i
+        for j, b in enumerate(second, 1):
+            previous, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, previous + (a != b))
+        if min(row) > limit:
+            return limit + 1
+    return row[-1]
+
+
+def check_names(packages: list) -> list:
+    """An endpoint with no counterpart whose name is one or two characters from one that has none.
+
+    A client of 'add_two_int' next to a server of 'add_two_ints' is two halves
+    of one connection with a typing error between them. Both sides must be
+    without a counterpart anywhere in the workspace, have the same interface
+    type, and the lone name must not be written in any other file: a C++ node,
+    a parameter file or a remapping may be the real counterpart.
+    """
+    endpoints = []
+    texts: dict = {}
+    for package in packages:
+        for path in package.files:
+            if path.suffix in TEXT_SUFFIXES:
+                texts[path] = None
+        for path in _node_modules(package):
+            source = _read(path)
+            tree = _parse(source)
+            if tree is None or source is None or "rclpy" not in source:
+                continue
+            for call in _nodes(tree):
+                if not isinstance(call, ast.Call) or _call_name(call) not in ENDPOINTS:
+                    continue
+                name_at, name_key, type_at, type_key, kind, role = ENDPOINTS[_call_name(call)]
+                if _opaque(call):
+                    continue
+                name = _argument(call, name_at, name_key)
+                text = _text(name) if name is not None else None
+                kind_of = _type_name(_argument(call, type_at, type_key))
+                if text is None or kind_of is None:
+                    continue
+                endpoints.append((kind, role, _plain(text), text, kind_of, package, path, call.lineno))
+    issues = []
+    for kind in ("topic", "service", "action"):
+        offered = {entry[2] for entry in endpoints if entry[0] == kind and entry[1] == "offer"}
+        lone_uses = [e for e in endpoints if e[0] == kind and e[1] == "use" and e[2] not in offered]
+        offers = [e for e in endpoints if e[0] == kind and e[1] == "offer"]
+        for use in lone_uses:
+            near = [offer for offer in offers
+                    if offer[4] == use[4] and 1 <= _distance(use[2], offer[2]) <= 2
+                    and min(len(use[2]), len(offer[2])) >= 5
+                    and re.sub(r"\d", "", use[2]) != re.sub(r"\d", "", offer[2])]
+            if len({offer[2] for offer in near}) != 1:
+                continue  # none, or more than one candidate: not decided
+            offer = near[0]
+            if _written_elsewhere(use, endpoints, texts):
+                continue
+            verb = {"topic": ("subscribes to", "publishes"), "service": ("calls", "offers"),
+                    "action": ("sends goals to", "serves")}[kind]
+            where = f"{offer[6].relative_to(offer[5].root.parent)}:{offer[7]}"
+            issues.append(_issue(
+                use[5], use[6], use[7], "warning", "name-mismatch",
+                f"this node {verb[0]} the {kind} '{use[3]}', which nothing in the workspace "
+                f"{verb[1]}, while {where} {verb[1]} '{offer[3]}' with the same type "
+                f"({use[4]}). If they are meant to be the same {kind}, the names differ and "
+                "the two never connect."))
+    return issues
+
+
+def _written_elsewhere(entry: tuple, endpoints: list, texts: dict) -> bool:
+    """The name is a quoted literal in a file other than the ones that create it."""
+    kind, role, plain = entry[0], entry[1], entry[2]
+    own = {e[6] for e in endpoints if e[0] == kind and e[1] == role and e[2] == plain}
+    pattern = re.compile(r"""['"]~?/?%s['"]""" % re.escape(plain))
+    for path in texts:
+        if path in own:
+            continue
+        if texts[path] is None:
+            texts[path] = _read(path) or ""
+        if pattern.search(texts[path]):
+            return True
+    return False
+
+
+def _interface_fields(definition: str) -> list:
+    """Field and constant names of each section of a .msg, .srv or .action file."""
+    sections: list = [set()]
+    for line in definition.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line.startswith("---"):
+            sections.append(set())
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            sections[-1].add(parts[1].split("=", 1)[0])
+    return sections
+
+
+def _find_interface(packages: list, package_name: str, kind: str, name: str) -> Optional[list]:
+    """Sections of the interface definition, from the workspace or an installed ROS."""
+    candidates = [package.root / kind / f"{name}.{kind}" for package in packages
+                  if package.name == package_name]
+    for prefix in os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep):
+        if prefix:
+            candidates.append(Path(prefix) / "share" / package_name / kind / f"{name}.{kind}")
+    for candidate in candidates:
+        if candidate.is_file():
+            text = _read(candidate)
+            return _interface_fields(text) if text is not None else None
+    return None
+
+
+def _field_uses(function: ast.AST, parameter: str) -> Optional[list]:
+    """(attribute, line) for parameter.attribute in the function; None if the name is rebound."""
+    uses = []
+    for node in ast.walk(function):
+        if isinstance(node, ast.Name) and node.id == parameter and isinstance(
+                node.ctx, (ast.Store, ast.Del)):
+            return None
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                and node.value.id == parameter):
+            uses.append((node.attr, node.lineno))
+    return uses
+
+
+def check_interface_fields(packages: list, package: Package, path: Path) -> list:
+    """A field a callback reads or writes that the interface definition does not have."""
+    source = _read(path)
+    tree = _parse(source)
+    if tree is None or source is None or "rclpy" not in source:
+        return []
+    imported: dict = {}
+    for node in _nodes(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            parts = node.module.split(".")
+            if len(parts) == 2 and parts[1] in ("msg", "srv"):
+                for alias in node.names:
+                    imported.setdefault(alias.asname or alias.name, []).append(
+                        (parts[0], parts[1], alias.name))
+    issues = []
+    for cls in _nodes(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        methods: dict = {}
+        for node in cls.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                methods.setdefault(node.name, []).append(node)
+        for call in ast.walk(cls):
+            if not isinstance(call, ast.Call) or _opaque(call) or _call_name(call) not in (
+                    "create_subscription", "create_service"):
+                continue
+            kind = "msg" if _call_name(call) == "create_subscription" else "srv"
+            type_node = _argument(call, 0, "msg_type" if kind == "msg" else "srv_type")
+            known = imported.get(type_node.id, []) if isinstance(type_node, ast.Name) else []
+            if len(known) != 1 or known[0][1] != kind:
+                continue
+            found = methods.get(_self_attribute(_argument(call, 2, "callback")) or "", [])
+            if len(found) != 1 or found[0].decorator_list or found[0].args.vararg:
+                continue
+            sections = _find_interface(packages, known[0][0], kind, known[0][2])
+            parameters = [arg.arg for arg in found[0].args.posonlyargs + found[0].args.args][1:]
+            if sections is None or len(sections) != (1 if kind == "msg" else 2) or len(
+                    parameters) < len(sections):
+                continue
+            for parameter, fields, part in zip(parameters, sections, ("request", "response")):
+                uses = _field_uses(found[0], parameter)
+                for attribute, line in uses or []:
+                    if attribute in fields or attribute.startswith("_") or (
+                            attribute in INTERFACE_MEMBERS):
+                        continue
+                    what = (f"{known[0][0]}/{kind}/{known[0][2]}" if kind == "msg"
+                            else f"the {part} of {known[0][0]}/{kind}/{known[0][2]}")
+                    issues.append(_issue(
+                        package, path, line, "error", "interface-field",
+                        f"'{parameter}.{attribute}': {what} has no field '{attribute}' "
+                        f"(it has: {', '.join(sorted(fields)) or 'none'}); this line raises "
+                        "AttributeError."))
+    return issues
+
+
 def check_workspace(root, deadline: Optional[float] = None) -> tuple:
     """(issues, skipped, packages) for every ROS package found under *root*.
 
@@ -827,8 +1188,11 @@ def check_workspace(root, deadline: Optional[float] = None) -> tuple:
         for path in package.files:
             if path.suffix == ".py" and path not in launch and path.name != "setup.py":
                 issues.extend(check_node_source(package, path))
+                issues.extend(check_interface_fields(packages, package, path))
     if checked < len(packages):
         skipped.append(f"time limit reached: {checked} of {len(packages)} packages were checked")
+    elif packages and not _expired(deadline):
+        issues.extend(check_names(packages))
     if packages and _expired(deadline):
         skipped.append("time limit reached: QoS declarations were not compared")
     elif packages:

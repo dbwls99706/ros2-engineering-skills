@@ -865,3 +865,361 @@ class TestCommandLine:
             checks.main(["--version"])
         assert exit_info.value.code == 0
         assert capsys.readouterr().out.strip() == checks.__version__
+
+
+class TestKeywordArguments:
+    def test_keyword_that_no_distribution_has(self, tmp_path):
+        make_package(tmp_path, files={"demo/driver.py": node_source(
+            "self.timer = self.create_timer(period=2, callback=self.tick)")})
+        issue, = found(tmp_path, "keyword-argument")
+        assert issue["severity"] == "error" and issue["line"] == 9
+        assert "create_timer() has no parameter 'period'" in issue["message"]
+        assert "timer_period_sec" in issue["message"] and "TypeError" in issue["message"]
+
+    def test_node_held_in_a_variable(self, tmp_path):
+        source = ("import rclpy\nfrom std_msgs.msg import String\n\n\ndef main():\n    rclpy.init()\n"
+                  "    node = rclpy.create_node('driver')\n"
+                  "    node.create_publisher(String, topic_name='status', qos_profile=10)\n")
+        make_package(tmp_path, files={"demo/driver.py": source})
+        issue, = found(tmp_path, "keyword-argument")
+        assert "create_publisher() has no parameter 'topic_name'" in issue["message"]
+
+    @pytest.mark.parametrize("call", [
+        "self.create_timer(timer_period_sec=2, callback=self.tick, callback_group=None, clock=None)",
+        "self.create_timer(2.0, self.tick, autostart=False)",
+        "self.create_subscription(String, 'a', self.on_message, 10, content_filter_options=None, raw=False)",
+        "self.create_publisher(msg_type=String, topic='a', qos_profile=10, publisher_class=Custom)",
+        "self.create_service(srv_type=String, srv_name='a', callback=self.on_message, service_class=Custom)",
+        "self.create_client(String, srv_name='a', client_class=Custom)",
+        "self.declare_parameter(name='rate', value=1.0, descriptor=None, ignore_override=False)",
+    ])
+    def test_keywords_some_distribution_has_are_silent(self, tmp_path, call):
+        make_package(tmp_path, files={"demo/driver.py": node_source(f"self.endpoint = {call}")})
+        assert found(tmp_path, "keyword-argument") == []
+
+    @pytest.mark.parametrize("case", [
+        "other base", "mixed bases", "method defined by the class", "attribute receiver", "bound twice",
+        "kwargs", "not a node"])
+    def test_receiver_that_is_not_known_to_be_a_node_is_silent(self, tmp_path, case):
+        source = node_source("self.timer = self.create_timer(period=2, callback=self.tick)")
+        if case == "other base":
+            source = source.replace("class Driver(Node):", "class Driver(AsyncNode):")
+        elif case == "mixed bases":
+            source = source.replace("class Driver(Node):", "class Driver(Node, TimerMixin):")
+        elif case == "method defined by the class":
+            source = source.replace("    def tick(self):", "    def create_timer(self, period, callback):\n"
+                                    "        return None\n\n    def tick(self):")
+        elif case == "attribute receiver":
+            source = source.replace("self.create_timer(period", "self.node.create_timer(period")
+        elif case == "bound twice":
+            source = ("import rclpy\n\n\ndef main():\n    node = rclpy.create_node('a')\n    node = wrap(node)\n"
+                      "    node.create_timer(period=2, callback=print)\n")
+        elif case == "kwargs":
+            source = source.replace("period=2, callback=self.tick", "**settings")
+        elif case == "not a node":
+            source = ("import rclpy\n\n\ndef main():\n    pool = make_pool()\n"
+                      "    pool.create_timer(period=2, callback=print)\n")
+        make_package(tmp_path, files={"demo/driver.py": source})
+        assert found(tmp_path, "keyword-argument") == []
+
+
+def with_callbacks(body, methods):
+    source = node_source(body)
+    return source.replace("    def tick(self):", textwrap.dedent(methods).strip("\n").replace(
+        "\n", "\n    ").join(("    ", "\n\n    def tick(self):")))
+
+
+class TestCallbackSignatures:
+    @pytest.mark.parametrize("call,method,expected", [
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self):\n    pass",
+         "takes no argument besides self; rclpy calls it with the message"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, a, b, c):\n    pass",
+         "takes 3 required arguments besides self"),
+        ("self.create_service(String, 'a', self.cb)", "def cb(self, request):\n    return request",
+         "takes 1 required argument besides self; rclpy calls it with the request and the response"),
+        ("self.create_service(String, 'a', callback=self.cb)", "def cb(self, a, b, c):\n    return b",
+         "takes 3 required arguments besides self"),
+        ("self.create_timer(1.0, self.cb)", "def cb(self, first, second):\n    pass",
+         "takes 2 required arguments besides self; rclpy calls it with no argument"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "async def cb(self):\n    pass",
+         "takes no argument besides self"),
+    ])
+    def test_signature_no_distribution_can_call(self, tmp_path, call, method, expected):
+        make_package(tmp_path, files={"demo/driver.py": with_callbacks(f"self.endpoint = {call}", method)})
+        issue, = found(tmp_path, "callback-signature")
+        assert issue["severity"] == "error" and issue["line"] == 11
+        assert "self.cb is the callback of" in issue["message"] and "at line 9" in issue["message"]
+        assert expected in issue["message"] and "TypeError" in issue["message"]
+
+    def test_module_level_function_as_callback(self, tmp_path):
+        source = node_source("self.sub = self.create_subscription(String, 'a', on_text, 10)") + (
+            "\n\ndef on_text():\n    pass\n")
+        make_package(tmp_path, files={"demo/driver.py": source})
+        issue, = found(tmp_path, "callback-signature")
+        assert "on_text is the callback of create_subscription()" in issue["message"]
+        assert "takes no argument; rclpy calls it with the message" in issue["message"]
+
+    @pytest.mark.parametrize("call,method", [
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, msg):\n    pass"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, msg, info):\n    pass"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, msg, info=None, extra=1):\n    pass"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, *args):\n    pass"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, msg, /):\n    pass"),
+        ("self.create_timer(1.0, self.cb)", "def cb(self):\n    pass"),
+        ("self.create_timer(1.0, self.cb)", "def cb(self, info):\n    pass"),
+        ("self.create_timer(1.0, self.cb)", "def cb(self, info=None):\n    pass"),
+        ("self.create_service(String, 'a', self.cb)", "def cb(self, request, response):\n    return response"),
+        ("self.create_service(String, 'a', self.cb)", "def cb(self, request, response, extra=0):\n    return response"),
+    ])
+    def test_signature_some_distribution_accepts_is_silent(self, tmp_path, call, method):
+        make_package(tmp_path, files={"demo/driver.py": with_callbacks(f"self.endpoint = {call}", method)})
+        assert found(tmp_path) == []
+
+    @pytest.mark.parametrize("call,method", [
+        ("self.create_subscription(String, 'a', self.cb, 10)", "@staticmethod\ndef cb():\n    pass"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "@throttled\ndef cb(self):\n    pass"),
+        ("self.create_subscription(String, 'a', self.cb, 10)",
+         "def cb(self):\n    pass\n\ndef cb(self, msg):  # noqa: F811\n    pass"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb(self, *, key):\n    pass"),
+        ("self.create_subscription(String, 'a', self.cb, 10)", "def cb():\n    pass"),
+        ("self.create_subscription(String, 'a', lambda: None, 10)", "def cb(self):\n    pass"),
+        ("self.create_subscription(String, 'a', partial(self.cb, 1), 10)", "def cb(self):\n    pass"),
+        ("self.create_subscription(String, 'a', self.helper.cb, 10)", "def cb(self):\n    pass"),
+        ("self.create_subscription(String, 'a', self.inherited, 10)", "def cb(self):\n    pass"),
+        ("self.create_subscription(String, 'a', imported_callback, 10)", "def cb(self):\n    pass"),
+        ("self.create_subscription(*arguments)", "def cb(self):\n    pass"),
+        ("self.node.create_subscription(String, 'a', self.cb, 10)", "def cb(self):\n    pass"),
+        ("make(String, 'a', self.cb, 10)", "def cb(self):\n    pass"),
+    ])
+    def test_callback_that_cannot_be_read_is_silent(self, tmp_path, call, method):
+        make_package(tmp_path, files={"demo/driver.py": with_callbacks(f"self.endpoint = {call}", method)})
+        assert found(tmp_path, "callback-signature") == []
+
+    def test_class_with_another_base_is_not_judged(self, tmp_path):
+        source = with_callbacks("self.s = self.create_subscription(String, 'a', self.cb, 10)",
+                                "def cb(self):\n    pass").replace("class Driver(Node):", "class Driver(Base):")
+        make_package(tmp_path, files={"demo/driver.py": source})
+        assert found(tmp_path, "callback-signature") == []
+
+
+ENDPOINT_NODE = """\
+import rclpy
+from rclpy.action import ActionClient, ActionServer
+from rclpy.node import Node
+from example_interfaces.srv import AddTwoInts
+from example_interfaces.action import Fibonacci
+from std_msgs.msg import String, Int32
+
+
+class {name}(Node):
+    def __init__(self):
+        super().__init__('{node}')
+        self.endpoint = {call}
+
+    def on_message(self, msg):
+        pass
+
+    def on_request(self, request, response):
+        return response
+"""
+
+
+def endpoint_package(root, name, call, extra=None):
+    files = {f"{name}/driver.py": ENDPOINT_NODE.format(name=name.title(), node=name, call=call)}
+    files.update(extra or {})
+    return make_package(root, name=name, depends=("rclpy", "std_msgs", "example_interfaces"), files=files)
+
+
+CLIENT = "self.create_client(AddTwoInts, 'add_two_int')"
+SERVER = "self.create_service(AddTwoInts, 'add_two_ints', self.on_request)"
+
+
+class TestNameMismatch:
+    def test_client_and_server_one_character_apart(self, tmp_path):
+        endpoint_package(tmp_path, "asker", CLIENT)
+        endpoint_package(tmp_path, "adder", SERVER)
+        issue, = found(tmp_path, "name-mismatch")
+        assert issue["severity"] == "warning"
+        assert (issue["file"], issue["line"]) == ("asker/asker/driver.py", 12)
+        assert "calls the service 'add_two_int', which nothing in the workspace offers" in issue["message"]
+        assert "adder/adder/driver.py:12 offers 'add_two_ints' with the same type (AddTwoInts)" in issue["message"]
+
+    def test_counterpart_with_other_users_is_still_a_candidate(self, tmp_path):
+        endpoint_package(tmp_path, "asker", CLIENT)
+        endpoint_package(tmp_path, "adder", SERVER)
+        endpoint_package(tmp_path, "second", "self.create_client(AddTwoInts, 'add_two_ints')")
+        assert len(found(tmp_path, "name-mismatch")) == 1
+
+    @pytest.mark.parametrize("use,offer,words", [
+        ("self.create_subscription(String, 'chater', self.on_message, 10)",
+         "self.create_publisher(String, '/chatter', 10)", "subscribes to the topic 'chater'"),
+        ("ActionClient(self, Fibonacci, 'fibonaci')",
+         "ActionServer(self, Fibonacci, 'fibonacci', self.on_message)", "sends goals to the action 'fibonaci'"),
+    ])
+    def test_topics_and_actions(self, tmp_path, use, offer, words):
+        endpoint_package(tmp_path, "asker", use)
+        endpoint_package(tmp_path, "adder", offer)
+        issue, = found(tmp_path, "name-mismatch")
+        assert words in issue["message"]
+
+    @pytest.mark.parametrize("use,offer", [
+        ("self.create_client(AddTwoInts, 'add_two_ints')", SERVER),
+        ("self.create_client(AddTwoInts, '/add_two_ints')", SERVER),
+        ("self.create_client(String, 'add_two_int')", SERVER),
+        ("self.create_client(AddTwoInts, 'add_ints')", SERVER),
+        ("self.create_client(AddTwoInts, self.service_name)", SERVER),
+        ("self.create_client(*arguments)", SERVER),
+        ("self.create_client(AddTwoInts, 'add1')", "self.create_service(AddTwoInts, 'add2', self.on_request)"),
+        ("self.create_client(AddTwoInts, 'adder_1')", "self.create_service(AddTwoInts, 'adder_2', self.on_request)"),
+        ("self.create_client(AddTwoInts, 'sum')", "self.create_service(AddTwoInts, 'sums', self.on_request)"),
+        ("self.create_subscription(String, 'chater', self.on_message, 10)",
+         "self.create_publisher(Int32, 'chatter', 10)"),
+    ])
+    def test_what_is_not_a_near_miss_is_silent(self, tmp_path, use, offer):
+        endpoint_package(tmp_path, "asker", use)
+        endpoint_package(tmp_path, "adder", offer)
+        assert found(tmp_path, "name-mismatch") == []
+
+    @pytest.mark.parametrize("relative,text", [
+        ("config/names.yaml", "service: 'add_two_int'\n"),
+        ("src/server.cpp", 'auto s = node->create_service<AddTwoInts>("add_two_int", cb);\n'),
+        ("launch/remap.launch.py", "REMAP = [('add_two_ints', '/add_two_int')]\n"),
+    ])
+    def test_name_written_in_another_file_is_silent(self, tmp_path, relative, text):
+        endpoint_package(tmp_path, "asker", CLIENT)
+        endpoint_package(tmp_path, "adder", SERVER, extra={relative: text})
+        assert found(tmp_path, "name-mismatch") == []
+
+    def test_two_candidates_are_not_decided(self, tmp_path):
+        endpoint_package(tmp_path, "asker", "self.create_client(AddTwoInts, 'add_two_int')")
+        endpoint_package(tmp_path, "adder", SERVER)
+        endpoint_package(tmp_path, "other", "self.create_service(AddTwoInts, 'add_two_inx', self.on_request)")
+        assert found(tmp_path, "name-mismatch") == []
+
+    def test_test_code_and_launch_files_are_not_endpoints(self, tmp_path):
+        client = ENDPOINT_NODE.format(name="Asker", node="asker", call=CLIENT)
+        endpoint_package(tmp_path, "adder", SERVER, extra={
+            "test/test_adder.py": client, "launch/helper.py": client})
+        assert found(tmp_path, "name-mismatch") == []
+
+    def test_edit_distance(self):
+        assert checks._distance("add_two_int", "add_two_ints") == 1
+        assert checks._distance("chater", "chatter") == 1
+        assert checks._distance("scan", "scna") == 2
+        assert checks._distance("abcdef", "uvwxyz") == 3  # reported as "more than the limit"
+        assert checks._distance("a", "abcdef") == 3
+
+
+SERVICE_NODE = """\
+import rclpy
+from rclpy.node import Node
+from demo_interfaces.srv import AddTwo
+from demo_interfaces.msg import Status
+
+
+class Driver(Node):
+    def __init__(self):
+        super().__init__('driver')
+        self.srv = self.create_service(AddTwo, 'add', self.on_add)
+        self.sub = self.create_subscription(Status, 'status', self.on_status, 10)
+
+    def on_add(self, request, response):
+        {service_body}
+        return response
+
+    def on_status(self, msg):
+        {message_body}
+"""
+INTERFACES = {"srv/AddTwo.srv": "# two addends\nint64 a\nint64 b\n---\nint64 sum  # the result\n",
+              "msg/Status.msg": "uint8 OK=0\nuint8 FAILED = 1\nstring text\nstd_msgs/Header header\n"}
+
+
+def service_workspace(root, service_body="response.sum = request.a + request.b",
+                      message_body="self.get_logger().info(msg.text)", interfaces=INTERFACES):
+    make_package(root, name="demo_interfaces", setup=False, files=interfaces)
+    make_package(root, depends=("rclpy", "std_msgs", "demo_interfaces"), files={
+        "demo/driver.py": SERVICE_NODE.format(service_body=service_body, message_body=message_body)})
+    return found(root, "interface-field")
+
+
+class TestInterfaceFields:
+    def test_response_field_that_does_not_exist(self, tmp_path):
+        issue, = service_workspace(tmp_path, "response.total = request.a + request.b")
+        assert issue["severity"] == "error" and (issue["file"], issue["line"]) == ("demo/demo/driver.py", 14)
+        assert "'response.total': the response of demo_interfaces/srv/AddTwo has no field 'total'" in (
+            issue["message"])
+        assert "it has: sum" in issue["message"] and "AttributeError" in issue["message"]
+
+    def test_request_field_that_does_not_exist(self, tmp_path):
+        issue, = service_workspace(tmp_path, "response.sum = request.a + request.c")
+        assert "'request.c': the request of demo_interfaces/srv/AddTwo" in issue["message"]
+        assert "it has: a, b" in issue["message"]
+
+    def test_message_field_that_does_not_exist(self, tmp_path):
+        issue, = service_workspace(tmp_path, message_body="self.get_logger().info(msg.data)")
+        assert "'msg.data': demo_interfaces/msg/Status has no field 'data'" in issue["message"]
+        assert "it has: FAILED, OK, header, text" in issue["message"]
+
+    @pytest.mark.parametrize("message_body", [
+        "self.last = (msg.text, msg.header.stamp, msg.OK, msg.FAILED)",
+        "self.last = msg.get_fields_and_field_types()",
+        "self.last = msg._text",
+        "self.last = msg.SLOT_TYPES",
+    ])
+    def test_fields_constants_and_generated_members_are_silent(self, tmp_path, message_body):
+        assert service_workspace(tmp_path, message_body=message_body) == []
+
+    def test_definition_from_an_installed_distribution(self, tmp_path, monkeypatch):
+        share = tmp_path / "opt" / "share" / "demo_interfaces"
+        (share / "srv").mkdir(parents=True)
+        (share / "srv" / "AddTwo.srv").write_text(INTERFACES["srv/AddTwo.srv"])
+        monkeypatch.setenv("AMENT_PREFIX_PATH", f"{tmp_path / 'missing'}:{tmp_path / 'opt'}:")
+        make_package(tmp_path / "ws", depends=("rclpy", "std_msgs", "demo_interfaces"), files={
+            "demo/driver.py": SERVICE_NODE.format(
+                service_body="response.total = request.a", message_body="pass")})
+        issue, = found(tmp_path / "ws", "interface-field")
+        assert "has no field 'total'" in issue["message"]
+
+    def test_definition_that_cannot_be_found_is_silent(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AMENT_PREFIX_PATH", raising=False)
+        make_package(tmp_path, depends=("rclpy", "std_msgs", "demo_interfaces"), files={
+            "demo/driver.py": SERVICE_NODE.format(
+                service_body="response.total = request.a", message_body="print(msg.nothing)")})
+        assert found(tmp_path, "interface-field") == []
+
+    @pytest.mark.parametrize("old,new", [
+        ("def on_add(self, request, response):", "def on_add(self, request, response):\n        response = make()"),
+        ("def on_add(self, request, response):", "def on_add(self, *pair):"),
+        ("def on_add(self, request, response):", "@traced\n    def on_add(self, request, response):"),
+        ("def on_add(self, request, response):", "def on_add(self, request):"),
+        ("self.create_service(AddTwo, 'add', self.on_add)", "self.create_service(AddTwo, 'add', self.helper.on_add)"),
+        ("self.create_service(AddTwo, 'add', self.on_add)", "self.create_service(self.kind, 'add', self.on_add)"),
+        ("self.create_service(AddTwo, 'add', self.on_add)", "self.create_service(*arguments)"),
+        ("from demo_interfaces.srv import AddTwo",
+         "from demo_interfaces.srv import AddTwo\nfrom other.srv import AddTwo"),
+        ("from demo_interfaces.srv import AddTwo", "from demo_interfaces import AddTwo"),
+        ("from demo_interfaces.srv import AddTwo", "from .srv import AddTwo"),
+        ("from demo_interfaces.srv import AddTwo", "from demo_interfaces.msg import AddTwo"),
+    ])
+    def test_what_cannot_be_read_is_silent(self, tmp_path, old, new):
+        source = SERVICE_NODE.format(service_body="response.total = request.a", message_body="pass")
+        assert old in source
+        make_package(tmp_path, name="demo_interfaces", setup=False, files=INTERFACES)
+        make_package(tmp_path, depends=("rclpy", "std_msgs", "demo_interfaces"),
+                     files={"demo/driver.py": source.replace(old, new)})
+        assert found(tmp_path, "interface-field") == []
+
+    def test_import_under_another_name(self, tmp_path):
+        source = SERVICE_NODE.format(service_body="response.total = request.a", message_body="pass").replace(
+            "import AddTwo", "import AddTwo as Add").replace("create_service(AddTwo", "create_service(Add")
+        make_package(tmp_path, name="demo_interfaces", setup=False, files=INTERFACES)
+        make_package(tmp_path, depends=("rclpy", "std_msgs", "demo_interfaces"), files={"demo/driver.py": source})
+        assert len(found(tmp_path, "interface-field")) == 1
+
+    def test_definition_with_the_wrong_number_of_sections_is_silent(self, tmp_path):
+        broken = dict(INTERFACES, **{"srv/AddTwo.srv": "int64 a\nint64 b\n"})
+        assert service_workspace(tmp_path, "response.total = request.a", interfaces=broken) == []
+
+    def test_definition_file_is_parsed_by_section(self):
+        assert checks._interface_fields("int64 a  # first\n# note\n\nint64 B=2\n---\nbool ok\n---\n") == [
+            {"a", "B"}, {"ok"}, set()]
