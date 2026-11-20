@@ -1,32 +1,31 @@
 #!/usr/bin/env python3
-"""SessionStart check: read the ROS 2 workspace before any work begins.
+"""Workspace report: where the files of a ROS 2 workspace disagree, and a signature of its files.
 
-The PreToolUse hook sees what is about to be written and the Stop hook sees
-what was changed. Neither looks at what is already there, and a defect that
-predates the session reaches the robot unless the model happens to open the
-right two files. This hook reads the workspace once, when the session starts,
-and reports where its files disagree, so the same list is available whatever
-the model's effort level and whether or not it loads the skill.
+The PreToolUse hook sees what is about to be written and the changed-file Stop
+check sees what was changed. Neither looks at the workspace as a whole. This
+script reads it and reports where its files disagree. The adapter runs it
+twice: when a conversation starts, to remember what was already there, and
+when the model is about to finish, to hand over what is still reported.
 
 Input: the hook payload on stdin (`cwd`), or SKILL_WORKSPACE.
 Output: one JSON report on stdout, in the schema of the other hooks. The exit
-status is always 0: this is context, never a gate.
+status is always 0: this is a report, never a gate.
 
 Nothing is built, imported or run. A workspace without a package.xml, a home
 directory and the filesystem root produce an empty report.
 """
 
+import hashlib
 import json
 import os
 import sys
 import time
 
-HOOK = 'ros2-engineering-skills:start'
+HOOK = 'ros2-engineering-skills:workspace'
 VERSION = '1.7.0'
 MAX_ISSUES = 40
 # The launch validator's warnings are mostly style advice (a missing argument
-# description, a missing output= setting). At session start only what fails
-# is worth the model's attention.
+# description, a missing output= setting). Only what fails is reported here.
 LAUNCH_SEVERITIES = ('error',)
 # The client gives this hook 15 seconds and the adapter 12. Past this limit the
 # checks that have not started are skipped and the report says so.
@@ -98,14 +97,14 @@ def collect(workspace, deadline=None):
 
     *deadline* is a time.monotonic() value; None means no limit.
     """
-    issues, skipped, names = survey(workspace, deadline)
+    issues, skipped, names, _tree = survey(workspace, deadline)
     return issues, skipped, len(names)
 
 
 def survey(workspace, deadline=None):
-    """(issues, checks_skipped, package directory names) for *workspace*."""
+    """(issues, checks_skipped, package directory names, tree signature) for *workspace*."""
     if _too_broad(workspace):
-        return [], [], []
+        return [], [], [], ''
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
         import launch_validator
@@ -116,33 +115,35 @@ def survey(workspace, deadline=None):
     if not packages:
         # Nothing is claimed about a directory with no package in it, but a
         # search that was cut short is still recorded as cut short.
-        return [], skipped, []
+        return [], skipped, [], ''
     found, complete = _launch_issues(packages, workspace_checks, launch_validator, deadline)
     issues = issues + found
     if not complete:
         skipped = skipped + ['time limit reached: not every launch file was validated']
     order = {'error': 0, 'warning': 1, 'info': 2}
     issues.sort(key=lambda issue: (order.get(issue['severity'], 3), issue['file'], issue['line']))
-    return issues, skipped, [package.root.name for package in packages]
+    return issues, skipped, [package.root.name for package in packages], _tree(packages)
 
 
-def _without_findings(issues, skipped, names):
-    """Packages no finding names, or [] when the run was partial or found nothing.
+def _tree(packages):
+    """A signature of the package files: it changes when a file is added, removed or rewritten.
 
-    A package without a finding was compared and nothing disagreed as written.
-    That is not a result for the package, and the report says which ones they
-    are so that silence is not read as one. After a partial run the list would
-    include packages that were never read, so it is left out.
+    The adapter compares the signature taken when the conversation started
+    with the one at its end to tell whether anything was changed in between.
     """
-    if not issues or skipped:
-        return []
-    named = {issue['file'].split('/', 1)[0] for issue in issues}
-    return sorted(name for name in names if name not in named)
+    digest = hashlib.sha256()
+    for package in packages:
+        for path in package.files:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            digest.update(repr((str(path), stat.st_size, stat.st_mtime_ns)).encode('utf-8'))
+    return digest.hexdigest()
 
 
 def main():
-    issues, skipped, names = survey(_resolve_workspace(), time.monotonic() + TIME_LIMIT)
-    quiet = _without_findings(issues, skipped, names)
+    issues, skipped, names, tree = survey(_resolve_workspace(), time.monotonic() + TIME_LIMIT)
     if len(issues) > MAX_ISSUES:
         skipped = skipped + [f'{len(issues) - MAX_ISSUES} further findings are not listed']
         issues = issues[:MAX_ISSUES]
@@ -150,7 +151,7 @@ def main():
         'hook': HOOK,
         'version': VERSION,
         'packages': len(names),
-        'packages_without_findings': quiet,
+        'tree': tree,
         'issues_count': len(issues),
         'issues': issues,
         'checks_skipped': skipped,

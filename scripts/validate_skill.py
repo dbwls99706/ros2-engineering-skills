@@ -229,7 +229,7 @@ def validate(root, installed=False, sources=False, today=None, portable=False,
                         timeout = hook.get('timeout')
                         if type(timeout) not in (int, float) or not 0 < timeout <= 600:
                             raise ValueError('Invalid hook timeout: ' + event)
-            for script in ('claude_hook.py', 'skill_start_hook.py', 'workspace_checks.py',
+            for script in ('claude_hook.py', 'skill_workspace_hook.py', 'workspace_checks.py',
                            'skill_validate_hook.py', 'skill_stop_hook.py'):
                 bundled_file(root, 'scripts/' + script)
         config = yaml_object(bundled_file(root, 'agents/openai.yaml').read_text(encoding='utf-8'))

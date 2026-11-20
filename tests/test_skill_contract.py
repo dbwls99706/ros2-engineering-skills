@@ -34,7 +34,7 @@ Read `references/test.md` and [a reference](references/test.md#example).
 ''', encoding='utf-8')
     (root / 'LICENSE').write_text('Synthetic license fixture', encoding='utf-8')
     (root / 'references/test.md').write_text('# Example\n', encoding='utf-8')
-    for name in ('claude_hook.py', 'skill_start_hook.py', 'workspace_checks.py',
+    for name in ('claude_hook.py', 'skill_workspace_hook.py', 'workspace_checks.py',
                  'skill_validate_hook.py', 'skill_stop_hook.py'):
         (root / 'scripts' / name).write_text('pass\n', encoding='utf-8')
     save(root / '.claude-plugin/plugin.json', {'name': 'ros2-engineering', 'version': '1.3.0'})
@@ -196,7 +196,7 @@ def test_unknown_hook_event_is_rejected(bundle):
     assert contract.validate(bundle)['status'] == 'fail'
 
 
-@pytest.mark.parametrize('script', ['skill_start_hook.py', 'workspace_checks.py'])
+@pytest.mark.parametrize('script', ['skill_workspace_hook.py', 'workspace_checks.py'])
 def test_session_start_scripts_must_be_bundled(bundle, script):
     (bundle / 'scripts' / script).unlink()
     assert contract.validate(bundle)['status'] == 'fail'

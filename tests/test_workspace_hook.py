@@ -1,4 +1,4 @@
-"""Tests for skill_start_hook.py - the workspace report produced at session start."""
+"""Tests for skill_workspace_hook.py - the report on a whole ROS 2 workspace."""
 
 import io
 import json
@@ -11,11 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts import skill_start_hook as hook
+from scripts import skill_workspace_hook as hook
 from tests.test_workspace_checks import LAUNCH, make_package
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / 'scripts' / 'skill_start_hook.py'
+SCRIPT = ROOT / 'scripts' / 'skill_workspace_hook.py'
 BROKEN_LAUNCH = LAUNCH.replace("executable='driver'", "executable='other'")
 
 
@@ -42,9 +42,10 @@ class TestReport:
     def test_findings_are_reported_in_the_hook_schema(self, workspace):
         report, done = run_hook({'cwd': str(workspace)})
         assert done.returncode == 0 and done.stderr == ''
-        assert set(report) == {'hook', 'version', 'packages', 'packages_without_findings',
-                               'issues_count', 'issues', 'checks_skipped', 'status'}
-        assert report['hook'] == 'ros2-engineering-skills:start'
+        assert set(report) == {'hook', 'version', 'packages', 'tree', 'issues_count', 'issues',
+                               'checks_skipped', 'status'}
+        assert report['hook'] == 'ros2-engineering-skills:workspace'
+        assert len(report['tree']) == 64
         assert report['packages'] == 1 and report['status'] == 'fail'
         assert report['issues_count'] == len(report['issues']) == 2
         assert [issue['check'] for issue in report['issues']] == ['launch-executable', 'install-rules']
@@ -73,34 +74,43 @@ class TestReport:
         assert sorted(str(path) for path in workspace.rglob('*')) == before
 
 
-class TestPackagesWithoutFindings:
-    def test_packages_no_finding_names_are_listed(self, tmp_path):
-        make_package(tmp_path / 'src', installed=(), files={'launch/demo.launch.py': BROKEN_LAUNCH})
-        make_package(tmp_path / 'src', name='arm')
-        make_package(tmp_path / 'src', name='base')
+class TestTreeSignature:
+    def signature(self, root):
+        return hook.survey(str(root))[3]
+
+    def test_unchanged_workspace_has_the_same_signature(self, workspace):
+        assert self.signature(workspace) == self.signature(workspace) != ''
+
+    def test_rewriting_adding_or_removing_a_file_changes_it(self, workspace):
+        package = workspace / 'src' / 'demo'
+        seen = {self.signature(workspace)}
+        (package / 'demo' / 'driver.py').write_text((package / 'demo' / 'driver.py').read_text() + '\n# edited\n')
+        seen.add(self.signature(workspace))
+        (package / 'demo' / 'extra.py').write_text('VALUE = 1\n')
+        seen.add(self.signature(workspace))
+        (package / 'demo' / 'extra.py').unlink()
+        (package / 'config').mkdir()
+        (package / 'config' / 'p.yaml').write_text('a: 1\n')
+        seen.add(self.signature(workspace))
+        assert len(seen) == 4
+
+    def test_files_outside_the_packages_do_not_count(self, workspace):
+        before = self.signature(workspace)
+        (workspace / 'notes.txt').write_text('scratch')
+        (workspace / 'build').mkdir()
+        (workspace / 'build' / 'out.py').write_text('x = 1\n')
+        assert self.signature(workspace) == before
+
+    def test_directory_without_packages_has_no_signature(self, tmp_path):
+        assert hook.survey(str(tmp_path)) == ([], [], [], '')
         report, _done = run_hook(SKILL_WORKSPACE=str(tmp_path))
-        assert report['packages'] == 3 and report['packages_without_findings'] == ['arm', 'base']
+        assert report['tree'] == '' and report['packages'] == 0
 
-    def test_no_list_when_nothing_was_found(self, tmp_path):
-        make_package(tmp_path / 'src', name='arm')
-        report, _done = run_hook(SKILL_WORKSPACE=str(tmp_path))
-        assert report['packages'] == 1 and report['packages_without_findings'] == []
-
-    def test_no_list_after_a_partial_run(self):
-        issues = [{'file': 'demo/setup.py', 'line': 1}]
-        assert hook._without_findings(issues, [], ['arm', 'demo']) == ['arm']
-        assert hook._without_findings(issues, ['time limit reached: 1 of 2 packages were checked'],
-                                      ['arm', 'demo']) == []
-        assert hook._without_findings([], [], ['arm', 'demo']) == []
-
-    def test_the_directory_name_is_what_a_finding_carries(self, tmp_path):
-        package = make_package(tmp_path / 'src', installed=(), files={'launch/demo.launch.py': BROKEN_LAUNCH})
-        package.rename(package.with_name('demo_checkout'))
-        make_package(tmp_path / 'src', name='arm')
-        issues, skipped, names = hook.survey(str(tmp_path))
-        assert names == ['arm', 'demo_checkout']
-        assert {issue['file'].split('/')[0] for issue in issues} == {'demo_checkout'}
-        assert hook._without_findings(issues, skipped, names) == ['arm']
+    def test_a_file_that_disappears_while_it_is_read_is_skipped(self, workspace, monkeypatch):
+        import workspace_checks
+        packages = workspace_checks.find_packages(workspace)
+        packages[0].files.append(workspace / 'src' / 'demo' / 'gone.py')
+        assert len(hook._tree(packages)) == 64
 
 
 class TestTooBroad:
@@ -259,7 +269,7 @@ class TestLimits:
 
         def survey(path, deadline=None):
             seen.append(deadline - time.monotonic())
-            return [], ['time limit reached: 1 of 2 packages were checked'], ['arm', 'base']
+            return [], ['time limit reached: 1 of 2 packages were checked'], ['arm', 'base'], 'sig'
 
         monkeypatch.setattr(hook, 'survey', survey)
         monkeypatch.setenv('SKILL_WORKSPACE', str(workspace))
@@ -272,8 +282,10 @@ class TestLimits:
     def test_time_limit_fits_inside_the_adapter_and_client_timeouts(self):
         from scripts import claude_hook
         config = json.loads((ROOT / 'hooks' / 'hooks.json').read_text(encoding='utf-8'))
-        client = config['hooks']['SessionStart'][0]['hooks'][0]['timeout']
-        assert hook.TIME_LIMIT < 12 < client
+        start = config['hooks']['SessionStart'][0]['hooks'][0]['timeout']
+        stop = config['hooks']['Stop'][0]['hooks'][0]['timeout']
+        # Stop runs the workspace report and then the changed-file check, 12 seconds each.
+        assert hook.TIME_LIMIT < 12 < start and 2 * 12 < stop
         assert 'timeout=8 if event == \'PreToolUse\' else 12' in Path(claude_hook.__file__).read_text()
 
 

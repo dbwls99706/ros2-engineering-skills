@@ -29,7 +29,7 @@
           {
             "type": "command",
             "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" Stop",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       }

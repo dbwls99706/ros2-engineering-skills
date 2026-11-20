@@ -99,7 +99,7 @@ jobs:
               --cov-fail-under=90 2>&1 | tee pytest-output.log
       - name: Enforce individual validator coverage
         run: |
-          for module in skill_validate_hook skill_stop_hook skill_start_hook workspace_checks claude_hook validate_skill install_skill verify_eval_capture benchmark_capture measure_context; do
+          for module in skill_validate_hook skill_stop_hook skill_workspace_hook workspace_checks claude_hook validate_skill install_skill verify_eval_capture benchmark_capture measure_context; do
             python -m coverage report --include="*/${module}.py" --fail-under=90
           done
       - name: Upload coverage

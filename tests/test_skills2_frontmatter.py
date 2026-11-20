@@ -177,7 +177,7 @@ class TestVersionConsistency:
 
     def test_hook_report_versions_are_independent_but_consistent(self, tmp_path):
         hook_versions = {
-            self._hook_version('skill_start_hook.py', tmp_path),
+            self._hook_version('skill_workspace_hook.py', tmp_path),
             self._hook_version('skill_stop_hook.py', tmp_path),
             self._hook_version(
                 'skill_validate_hook.py', tmp_path,
