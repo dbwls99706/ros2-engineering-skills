@@ -491,6 +491,14 @@ class LaunchFileVisitor(ast.NodeVisitor):
                           f"{func_name}('{cond.value}'): using a hardcoded string "
                           f"makes this condition always {'true' if val in ('true', '1') else 'false'}. "
                           f"Use LaunchConfiguration('arg_name') for dynamic conditions.")
+            elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cond.value):
+                # A bare word is passed as it stands. It is not the value of
+                # the launch argument with that name, and it is not a boolean.
+                self._add(node, "error",
+                          f"{func_name}('{cond.value}') is given the text '{cond.value}' "
+                          f"itself, not the value of a launch argument. It is not 'true' or "
+                          f"'false', so launch fails when the condition is evaluated. "
+                          f"Use {func_name}(LaunchConfiguration('{cond.value}')).")
 
     def _check_push_ros_namespace(self, node: ast.Call) -> None:
         """Check PushRosNamespace for common issues."""

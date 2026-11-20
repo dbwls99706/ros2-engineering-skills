@@ -122,7 +122,7 @@ class TestPluginPackaging:
 
     def test_hook_schema_and_scripts(self):
         config = _load_json(HOOKS_JSON)['hooks']
-        assert set(config) == {'PreToolUse', 'Stop'}
+        assert set(config) == {'SessionStart', 'PreToolUse', 'Stop'}
         for event, groups in config.items():
             assert isinstance(groups, list) and groups
             for group in groups:
