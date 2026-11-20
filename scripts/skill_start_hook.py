@@ -19,6 +19,7 @@ directory and the filesystem root produce an empty report.
 import json
 import os
 import sys
+import time
 
 HOOK = 'ros2-engineering-skills:start'
 VERSION = '1.6.0'
@@ -27,6 +28,9 @@ MAX_ISSUES = 40
 # description, a missing output= setting). At session start only what fails
 # is worth the model's attention.
 LAUNCH_SEVERITIES = ('error',)
+# The client gives this hook 15 seconds and the adapter 12. Past this limit the
+# checks that have not started are skipped and the report says so.
+TIME_LIMIT = 8.0
 
 
 def _resolve_workspace():
@@ -56,21 +60,27 @@ def _too_broad(workspace):
     return real in (os.path.realpath(os.path.expanduser('~')), os.path.abspath(os.sep))
 
 
-def _launch_issues(packages, workspace_checks, launch_validator):
+def _launch_issues(packages, workspace_checks, launch_validator, deadline=None):
+    """(issues, complete). *complete* is False when the time limit cut the loop short."""
     issues = []
     for package in packages:
         for path in workspace_checks.launch_files(package):
+            if deadline is not None and time.monotonic() >= deadline:
+                return issues, False
             for issue in launch_validator.validate_file(str(path)):
                 if issue.severity not in LAUNCH_SEVERITIES:
                     continue
                 issues.append({
                     'file': str(path.relative_to(package.root.parent)), 'line': issue.line,
                     'severity': issue.severity, 'check': 'launch', 'message': issue.message})
-    return issues
+    return issues, True
 
 
-def collect(workspace):
-    """(issues, checks_skipped, package count) for *workspace*."""
+def collect(workspace, deadline=None):
+    """(issues, checks_skipped, package count) for *workspace*.
+
+    *deadline* is a time.monotonic() value; None means no limit.
+    """
     if _too_broad(workspace):
         return [], [], 0
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -79,17 +89,22 @@ def collect(workspace):
         import workspace_checks
     finally:
         sys.path.pop(0)
-    issues, skipped, packages = workspace_checks.check_workspace(workspace)
+    issues, skipped, packages = workspace_checks.check_workspace(workspace, deadline)
     if not packages:
-        return [], [], 0
-    issues = issues + _launch_issues(packages, workspace_checks, launch_validator)
+        # Nothing is claimed about a directory with no package in it, but a
+        # search that was cut short is still recorded as cut short.
+        return [], skipped, 0
+    found, complete = _launch_issues(packages, workspace_checks, launch_validator, deadline)
+    issues = issues + found
+    if not complete:
+        skipped = skipped + ['time limit reached: not every launch file was validated']
     order = {'error': 0, 'warning': 1, 'info': 2}
     issues.sort(key=lambda issue: (order.get(issue['severity'], 3), issue['file'], issue['line']))
     return issues, skipped, len(packages)
 
 
 def main():
-    issues, skipped, packages = collect(_resolve_workspace())
+    issues, skipped, packages = collect(_resolve_workspace(), time.monotonic() + TIME_LIMIT)
     if len(issues) > MAX_ISSUES:
         skipped = skipped + [f'{len(issues) - MAX_ISSUES} further findings are not listed']
         issues = issues[:MAX_ISSUES]

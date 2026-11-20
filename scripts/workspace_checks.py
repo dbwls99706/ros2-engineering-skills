@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+import time
 import tokenize
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass, field
@@ -78,6 +79,7 @@ class Package:
     entry_points_line: int = 1
     cmake_text: Optional[str] = None
     files: list = field(default_factory=list)
+    truncated: bool = False  # more files than MAX_FILES_PER_PACKAGE: not all were read
 
 
 @dataclass
@@ -138,20 +140,40 @@ def _opaque(call: ast.Call) -> bool:
 
 # ---------------------------------------------------------------- discovery
 
+def _expired(deadline: Optional[float]) -> bool:
+    """*deadline* is a time.monotonic() value; None means no limit."""
+    return deadline is not None and time.monotonic() >= deadline
+
+
 def find_packages(root: Path) -> list:
     """ROS packages under *root*: directories that hold a package.xml."""
-    packages = []
+    return _discover(root)[0]
+
+
+def _discover(root: Path, deadline: Optional[float] = None) -> tuple:
+    """(packages, notes). A note says where the search stopped short of the whole tree."""
+    packages: list = []
+    notes = []
     for current, dirs, names in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
+        if _expired(deadline):
+            notes.append("time limit reached while looking for packages: the directory tree was "
+                         "only partly searched")
+            break
         if "package.xml" not in names:
             continue
+        if len(packages) >= MAX_PACKAGES:
+            notes.append(f"more than {MAX_PACKAGES} packages: only the first {MAX_PACKAGES} "
+                         "were checked")
+            break
         package = _load_package(Path(current))
         if package is not None:
             packages.append(package)
             dirs[:] = []  # a package does not contain packages
-        if len(packages) >= MAX_PACKAGES:
-            break
-    return packages
+            if package.truncated:
+                notes.append(f"{package.name}: more than {MAX_FILES_PER_PACKAGE} files, not all "
+                             "were read")
+    return packages, notes
 
 
 def _load_package(root: Path) -> Optional[Package]:
@@ -173,10 +195,11 @@ def _load_package(root: Path) -> Optional[Package]:
     if package.setup_text is not None:
         package.console_scripts, package.entry_points_line = _console_scripts(package.setup_text)
     for current, dirs, names in os.walk(root):
+        if len(package.files) > MAX_FILES_PER_PACKAGE:
+            package.truncated = True
+            break
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
         package.files.extend(Path(current) / name for name in sorted(names))
-        if len(package.files) > MAX_FILES_PER_PACKAGE:
-            break
     return package
 
 
@@ -399,8 +422,10 @@ def _declared_parameters(source: str, tree: ast.AST) -> Optional[set]:
                 return None  # parameters may be declared by a base class elsewhere
     declared = set()
     for call in ast.walk(tree):
-        if not isinstance(call, ast.Call) or _opaque(call):
+        if not isinstance(call, ast.Call):
             continue
+        if _call_name(call) in ("declare_parameter", "declare_parameters") and _opaque(call):
+            return None  # *args or **kwargs: the declared name is not written here
         if _call_name(call) == "declare_parameter":
             name = _text(_argument(call, 0, "name") or ast.Constant(None))
             if name is None:
@@ -759,12 +784,21 @@ def check_qos(root: Path) -> tuple:
     return issues, []
 
 
-def check_workspace(root) -> tuple:
-    """(issues, skipped, packages) for every ROS package found under *root*."""
+def check_workspace(root, deadline: Optional[float] = None) -> tuple:
+    """(issues, skipped, packages) for every ROS package found under *root*.
+
+    *deadline* is a time.monotonic() value. Once it has passed, the checks that
+    have not started are not run, and *skipped* says which: a partial result is
+    labelled as partial, never returned as if it were the whole workspace.
+    """
     root = Path(root).resolve()
-    issues, skipped = [], []
-    packages = find_packages(root)
+    issues: list = []
+    packages, skipped = _discover(root, deadline)
+    checked = 0
     for package in packages:
+        if _expired(deadline):
+            break
+        checked += 1
         nodes = launch_nodes(package)
         issues.extend(check_install_rules(package))
         issues.extend(check_executables(package, nodes))
@@ -777,7 +811,11 @@ def check_workspace(root) -> tuple:
         for path in package.files:
             if path.suffix == ".py" and path not in launch and path.name != "setup.py":
                 issues.extend(check_node_source(package, path))
-    if packages:
+    if checked < len(packages):
+        skipped.append(f"time limit reached: {checked} of {len(packages)} packages were checked")
+    if packages and _expired(deadline):
+        skipped.append("time limit reached: QoS declarations were not compared")
+    elif packages:
         found, missed = check_qos(root)
         for issue in found:
             issue["file"] = _relative(issue["file"], root, packages)

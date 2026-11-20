@@ -271,6 +271,10 @@ def run_hook(event, payload):
     if not feedback:
         return {}, '', 0
     if event == 'SessionStart':
+        if not report.get('packages'):
+            # No ROS package was found, so this is not known to be a ROS
+            # workspace: other projects are not given ROS context.
+            return {}, '', 0
         # Context for the model and nothing else: no decision, no permission.
         return {'hookSpecificOutput': {
             'hookEventName': 'SessionStart',
