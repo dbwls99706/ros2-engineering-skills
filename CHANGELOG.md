@@ -2,6 +2,121 @@
 
 All notable changes are documented here.
 
+## 1.9.0 - 2026-11-20
+
+Source bundle version 1.9.0. One new capability: the Claude Code plugin reads
+the ROS 2 workspace when a conversation starts and tells the model where its
+files disagree. The hook-report contract moves to 1.6.0 because a third report
+is added and its findings carry a `check` identifier; the two existing reports
+keep their fields. `workspace_checks.py` is 0.1.0. Not run for this release:
+the Docker ROS jobs locally (CI runs them), the preregistered model benchmark,
+and the `ask` confirmation prompt in a real client. The trials mentioned below
+were informal, with one model, and are not a benchmark result.
+
+Workspace check (`scripts/workspace_checks.py`, new):
+
+- Reads the `ament_python` packages under a directory and compares
+  declarations between files. Nothing is imported, built or run. The other
+  validators read one file at a time; these defects sit between two files,
+  build cleanly and fail at bring-up.
+- Reported: a launch `Node` whose executable is not a console script of its
+  package; a console script that points at a module or function the package
+  does not contain; a `launch/`, `config/` or similar directory that a launch
+  file needs and `setup.py` or `CMakeLists.txt` never installs; a parameter
+  file with no section for the node it is given to, including sections under a
+  namespace key; a parameter that a section sets and the node does not declare;
+  an imported ROS package missing from `package.xml`; `create_publisher` or
+  `create_subscription` without the QoS argument; a literal `create_timer`
+  period that contradicts the rate in the comment on that call; a synchronous
+  service call or `rclpy.spin*` inside a subscription, timer or service
+  callback; a remapping of a name the node never creates; a lifecycle node
+  that nothing in its launch file configures and activates; and, through
+  `qos_audit.py`, a publisher and subscription that cannot connect or a
+  VOLATILE subscription facing a TRANSIENT_LOCAL publisher.
+- Input the check cannot decide is left alone, never guessed: a computed name
+  or namespace, `*args` or `**kwargs`, a node class with a base other than
+  `Node` or `LifecycleNode`, a callback group or `MultiThreadedExecutor` in the
+  module, `entry_points` that is not a literal, a parameter file name that
+  matches more than one file, and a node that also receives inline parameters.
+- Rules added after running it on public repositories, each pinned by a test:
+  the `tf2_ros` module is provided by `tf2_ros_py`; the interface packages
+  that come with `rclpy` are not separate dependencies; `test_depend` is a
+  declaration; a module the package ships itself is not a dependency; test
+  code is not read for dependencies or QoS pairs.
+- Run on eleven public ROS 2 repositories (174 packages): eight findings, each
+  read against the source: six endpoint calls without a QoS argument in one
+  test package and an undeclared interface dependency in two packages. The
+  whole set as one workspace takes about four seconds. Ten package variants
+  from `create_package.py` produce no finding, and a test keeps it so.
+- `python3 scripts/workspace_checks.py <path> [--json]` runs it by hand in any
+  client. Exit status 1 for a finding of severity `error`, 2 when the path is
+  not a directory.
+
+Session start (`scripts/skill_start_hook.py`, `scripts/claude_hook.py`,
+`hooks/hooks.json`):
+
+- `hooks/hooks.json` registers SessionStart. For a new conversation (`startup`,
+  `clear`) the adapter runs the workspace check and the launch validator and
+  returns the findings as `additionalContext`. There is no decision and no
+  permission field. A resumed, compacted or forked session is not read again.
+- Why the list is wrapped in text. Given the findings alone, a model fixed what
+  was listed and stopped reading the code; in informal trials it then found
+  none of the defects the check cannot see. The delivered text says that it is
+  a mechanical check and not a review, names what the check cannot see, asks
+  for the code to be read as it would be without the list, and calls the
+  findings a floor. Delivering the same findings at the end of the session
+  instead was tried and did worse.
+- Known cost: the wording reduces that effect and does not remove it. With the
+  list, defects outside it were still found less often than without it.
+  `ROS2_SKILL_DISABLE_HOOKS=SessionStart` turns the check off; `all` still
+  turns every hook off.
+- Bounded: 200 packages, 300 files per package, 512 KiB per file, 8 seconds;
+  40 findings in the report, of which 24 and 7000 characters reach the model. A
+  run that stops at a limit says so in `checks_skipped`, so a partial result is
+  labelled as partial.
+- Silent where it has nothing to say: no context is produced for a directory
+  with no `package.xml`, a home directory and the filesystem root are not
+  searched, and a knowledge-only installation never runs it.
+- Only errors from the launch validator are included; its style warnings are
+  left out. A Python file in a `launch/` directory that is not named
+  `*.launch.py` and does not mention `generate_launch_description` is a helper
+  module or a node script, and is not validated as a launch file.
+- A failure of the check is reported as skipped, not as a clean workspace.
+
+Launch validator (`scripts/launch_validator.py`):
+
+- `IfCondition('use_rviz')` and `UnlessCondition('use_rviz')` are errors. The
+  text is evaluated as it stands, it is not the value of the launch argument
+  with that name, and launch accepts only `true`, `false`, `1` and `0`. The
+  message gives the corrected call with `LaunchConfiguration`. A literal
+  `'true'` or `'false'` stays a warning.
+
+Validation and CI:
+
+- `tests/test_workspace_checks.py` exercises every check three ways: the
+  defect is reported, the corrected input is silent, and input that cannot be
+  decided is silent. `tests/test_start_hook.py` and
+  `tests/test_hook_protocol.py` cover the report, the limits, the transport
+  and the delivered wording.
+- Writing those tests found three defects in the new code, fixed before
+  release: `declare_parameter(*spec)` was read as "declares nothing", a
+  parameter section under a namespace key was not recognised, and a search cut
+  short by the time limit before any package was found lost its note.
+- `skill_start_hook` and `workspace_checks` join the per-module 90% coverage
+  gate in `.github/workflows/test.yml`.
+
+References and sources:
+
+- `docs/SKILL_CONTRACT.md` describes what is compared, what cannot be seen, the
+  known cost and the limits. `docs/CLIENT_COMPATIBILITY.md` and `README.md`
+  list three hooks and the manual command for other clients.
+- Nine entries in `docs/sources.json`, each read on 2026-11-20: the rclpy
+  endpoint and timer signatures, launch condition evaluation, the deadlock of
+  a synchronous service call in a callback, launch file installation,
+  parameter file sections and wildcards, the namespace form of a parameter
+  file, the unconfigured state of a managed node, `package.xml` as the source
+  of rosdep's dependencies, and the SessionStart hook contract.
+
 ## 1.8.1 - 2026-11-12
 
 Source bundle version 1.8.1. Three checks gave a wrong answer on inputs the test

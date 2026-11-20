@@ -12,7 +12,7 @@ compatibility: >
   target ROS 2 environment. Claude plugin hooks are client-specific.
 metadata:
   author: dbwls99706
-  version: "1.8.1"
+  version: "1.9.0"
   repository: "https://github.com/dbwls99706/ros2-engineering-skills"
 ---
 
@@ -166,6 +166,7 @@ only for an authorized launch.
 |---|---|
 | Generate a package after changes are authorized | `scripts/create_package.py` |
 | Inspect a launch file or directory statically | `scripts/launch_validator.py` |
+| Check that a workspace's files agree with each other (static) | `scripts/workspace_checks.py` |
 | Run an authorized launch (POSIX) | `scripts/launch_supervisor.py` |
 | Compare declared offered/requested QoS | `scripts/qos_checker.py` |
 | Audit QoS declarations across a package (static) | `scripts/qos_audit.py` |
