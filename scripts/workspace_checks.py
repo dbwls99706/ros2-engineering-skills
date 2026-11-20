@@ -691,6 +691,7 @@ def check_node_source(package: Package, path: Path) -> list:
                     add(call, "warning", "timer-period", issue)
 
     issues.extend(_callback_signatures(package, path, tree))
+    issues.extend(_methods_without_self(package, path, tree))
     # Whether a blocking call inside a callback deadlocks depends on the
     # executor and the callback groups. With either in play it is not decided.
     if re.search(r"MultiThreadedExecutor|CallbackGroup|callback_group", source):
@@ -748,6 +749,39 @@ def _node_classes(tree: ast.AST) -> list:
                 for base in cls.bases):
             found.append(cls)
     return found
+
+
+def _methods_without_self(package: Package, path: Path, tree: ast.AST) -> list:
+    """A method that uses self and does not take it: NameError the first time it runs."""
+    issues = []
+    module_names = {target.id for node in getattr(tree, "body", []) if isinstance(node, ast.Assign)
+                    for target in node.targets if isinstance(target, ast.Name)}
+    for cls in _nodes(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for method in cls.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) or method.decorator_list:
+                continue
+            spec = method.args
+            parameters = {arg.arg for arg in spec.posonlyargs + spec.args + spec.kwonlyargs}
+            if "self" in parameters or "self" in module_names or spec.vararg or spec.kwarg:
+                continue
+            bound = {node.id for node in ast.walk(method)
+                     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+            nested = any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
+                                           ast.Global, ast.Nonlocal))
+                         for node in ast.walk(method) if node is not method)
+            uses = [node for node in ast.walk(method)
+                    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"]
+            if not uses or "self" in bound or nested:
+                continue
+            issues.append(_issue(
+                package, path, method.lineno, "error", "missing-self",
+                f"{cls.name}.{method.name}() uses self at line {uses[0].lineno} but does not "
+                "take it as a parameter; when it is called as a method the first argument is "
+                "bound to the wrong name and the body raises NameError or TypeError."))
+    return issues
 
 
 def _node_calls(tree: ast.AST) -> list:

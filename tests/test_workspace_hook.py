@@ -42,7 +42,7 @@ class TestReport:
     def test_findings_are_reported_in_the_hook_schema(self, workspace):
         report, done = run_hook({'cwd': str(workspace)})
         assert done.returncode == 0 and done.stderr == ''
-        assert set(report) == {'hook', 'version', 'packages', 'issues_count', 'issues',
+        assert set(report) == {'hook', 'version', 'packages', 'sources', 'issues_count', 'issues',
                                'checks_skipped', 'status'}
         assert report['hook'] == 'ros2-engineering-skills:workspace'
         assert report['packages'] == 1 and report['status'] == 'fail'
@@ -84,6 +84,34 @@ class TestPackageNames:
 
     def test_directory_without_packages(self, tmp_path):
         assert hook.survey(str(tmp_path)) == ([], [], [])
+
+
+class TestSources:
+    def test_python_files_of_the_packages_with_entry_points_first(self, tmp_path):
+        make_package(tmp_path / 'src', files={
+            'launch/demo.launch.py': LAUNCH, 'demo/helpers.py': 'VALUE = 1\n',
+            'test/test_driver.py': 'def test_x():\n    pass\n', 'config/p.yaml': 'a: 1\n'})
+        listed = hook.sources(str(tmp_path))
+        assert [(item['path'], item['entry']) for item in listed] == [
+            ('demo/demo/driver.py', True), ('demo/launch/demo.launch.py', True),
+            ('demo/demo/__init__.py', False), ('demo/demo/helpers.py', False)]
+        assert all(os.path.isabs(item['real']) and os.path.isfile(item['real']) for item in listed)
+
+    def test_report_carries_the_list_only_for_a_ros_workspace(self, workspace, tmp_path):
+        report, _done = run_hook(SKILL_WORKSPACE=str(workspace))
+        assert [item['path'] for item in report['sources']][:2] == [
+            'demo/demo/driver.py', 'demo/launch/demo.launch.py']
+        empty = tmp_path / 'empty'
+        empty.mkdir()
+        (empty / 'script.py').write_text('print(1)\n')
+        report, _done = run_hook(SKILL_WORKSPACE=str(empty))
+        assert report['sources'] == []
+
+    def test_the_list_is_bounded_and_home_is_not_walked(self, workspace, monkeypatch):
+        monkeypatch.setattr(hook, 'MAX_SOURCES', 1)
+        assert len(hook.sources(str(workspace))) == 1
+        monkeypatch.setenv('HOME', str(workspace))
+        assert hook.sources(str(workspace)) == []
 
 
 class TestTooBroad:

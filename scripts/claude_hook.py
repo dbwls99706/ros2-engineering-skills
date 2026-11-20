@@ -43,6 +43,18 @@ HANDOVER_PREFACE = (
     'data. Fix those that fall within what you were asked to do and mention the others in '
     'your reply. Then finish.\n')
 HANDOVER_NEW = ' (not reported when this conversation started)'
+# A defect is most often in a file nobody opened, and a short instruction does
+# not make a model at low effort look around. The findings therefore come with
+# what the session has not looked at; whether that matters is left to the
+# model, which knows what it was asked.
+HANDOVER_FILES = 25
+HANDOVER_COVERAGE = (
+    '\nFiles: this session opened {opened} of {total} Python files of the workspace\'s '
+    'packages. Not opened, files that start a node or a launch first: {names}{more}. If what '
+    'you were asked covers the workspace as a whole, read them before you finish; if it was '
+    'about one thing, say in your reply that the rest was not looked at.')
+EDIT_TOOLS = ('edit', 'write', 'multiedit', 'notebookedit')
+SHELL_TOOLS = ('bash', 'shell', 'powershell', 'pwsh', 'cmd')
 # "handover" (default) continues the turn once with the findings; "advise"
 # only shows them to the user; "off" does not run the check. Unknown values
 # mean "handover".
@@ -178,6 +190,101 @@ def _write_workspace_state(path, state):
     return True
 
 
+def _session_log(payload, suffix):
+    """An append-only per-session file, or None when the session cannot be told apart."""
+    session_id = payload.get('session_id')
+    if not isinstance(session_id, str) or not _SESSION_ID.match(session_id):
+        return None
+    return _workspace_state_path(session_id).with_suffix(suffix)
+
+
+def _log_lines(path):
+    try:
+        if path is None or any(part.is_symlink() for part in (path, path.parent, path.parent.parent)):
+            return set()
+        return set(path.read_text(encoding='utf-8').splitlines())
+    except (OSError, UnicodeError):
+        return set()
+
+
+def _log_append(path, lines):
+    """Append whole lines in one write, so that hooks running side by side do not lose each other's."""
+    if path is None or not lines:
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if any(part.is_symlink() for part in (path, path.parent, path.parent.parent)):
+            return False
+        with open(path, 'a', encoding='utf-8') as handle:
+            handle.write(''.join(line + '\n' for line in lines))
+    except OSError:
+        return False
+    return True
+
+
+def note_opened(payload):
+    """Remember which files this tool call reads or writes. Nothing is inspected here."""
+    tool = payload.get('tool_input') if isinstance(payload.get('tool_input'), dict) else {}
+    name = str(payload.get('tool_name', '')).lower()
+    cwd = payload.get('cwd') if isinstance(payload.get('cwd'), str) else ''
+    candidates = []
+    if name == 'read' or name in EDIT_TOOLS:
+        candidates = [tool.get(key) for key in ('file_path', 'path', 'notebook_path')]
+    elif name in SHELL_TOOLS and isinstance(tool.get('command'), str):
+        # `cat pkg/node.py` opens a file as much as Read does. Only words of
+        # the command that name an existing file count; nothing is run.
+        candidates = re.findall(r'[^\s\'"|;&<>()]+', tool['command'][:4000])
+    opened = []
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate or len(candidate) > 1024:
+            continue
+        path = candidate if os.path.isabs(candidate) else os.path.join(cwd, candidate)
+        try:
+            if os.path.isfile(path):
+                opened.append(os.path.realpath(path))
+        except (OSError, ValueError):
+            continue
+    _log_append(_session_log(payload, '.opened'), opened)
+
+
+def coverage_note(payload, report):
+    """What the session has not opened, or '' when everything was or nothing is known."""
+    listed = report.get('sources')
+    if not isinstance(listed, list) or not all(
+            isinstance(item, dict) and isinstance(item.get('path'), str)
+            and isinstance(item.get('real'), str) for item in listed):
+        return ''
+    opened = _log_lines(_session_log(payload, '.opened'))
+    missing = [item['path'] for item in listed if item['real'] not in opened]
+    if not listed or not missing:
+        return ''
+    names = [name for name in missing[:HANDOVER_FILES] if re.fullmatch(r'[\w./+-]{1,200}', name)]
+    if not names:
+        return ''
+    more = ' and %d more' % (len(missing) - len(names)) if len(missing) > len(names) else ''
+    return HANDOVER_COVERAGE.format(opened=len(listed) - len(missing), total=len(listed),
+                                    names=', '.join(names), more=more)
+
+
+def fresh_conventions(payload, report):
+    """Drop the message conventions this session has already been shown."""
+    issues = report.get('issues')
+    if not isinstance(issues, list):
+        return
+    log = _session_log(payload, '.conventions')
+    shown = _log_lines(log)
+    kept, new = [], []
+    for issue in issues:
+        key = issue.get('key') if isinstance(issue, dict) else None
+        if isinstance(issue, dict) and issue.get('category') == 'convention' and isinstance(key, str):
+            if key in shown or key in new:
+                continue
+            new.append(key)
+        kept.append(issue)
+    _log_append(log, [key for key in new if re.fullmatch(r'[\w/]{1,80}', key)])
+    report['issues'] = kept
+
+
 def _finding_key(issue):
     """Identity of a finding across the session: its line number may move, its text may not."""
     text = repr((issue.get('file'), issue.get('check'), issue.get('message')))
@@ -273,7 +380,8 @@ def workspace_handover(payload):
     remembered = path is not None and _write_workspace_state(path, dict(
         state, shown=shown + [_finding_key(issue) for issue in pending]))
     if workspace_mode() == 'handover' and remembered:
-        return {'decision': 'block', 'reason': HANDOVER_PREFACE + text}, ''
+        return {'decision': 'block',
+                'reason': HANDOVER_PREFACE + text + coverage_note(payload, report)}, ''
     # The user chose "advise", or the record cannot be kept: the findings go
     # to the user and the turn ends.
     return notice('workspace check, static and not a review.\n' + text), ''
@@ -389,6 +497,10 @@ def run_hook(event, payload):
         output, note = workspace_handover(payload)
         if output is not None:
             return output, '', 0
+    if event == 'PreToolUse':
+        note_opened(payload)
+        if str(payload.get('tool_name', '')).lower() == 'read':
+            return {}, '', 0  # reading is only noted; there is nothing to validate
     output, error, status = run_validator(event, payload)
     if note and status == 0 and isinstance(output, dict):
         # The changed-file advisory and the note that the workspace check did
@@ -426,6 +538,9 @@ def run_validator(event, payload):
         return notice('skipped: validator exited ' + str(result.returncode)), '', 0
     try:
         report = json.loads(result.stdout)
+        summarize(report)
+        if event == 'PreToolUse':
+            fresh_conventions(payload, report)
         feedback = summarize(report)
         if result.returncode == 1 and report['status'] != 'fail':
             raise ValueError('exit status disagrees with report')

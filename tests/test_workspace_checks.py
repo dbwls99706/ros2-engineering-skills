@@ -867,6 +867,42 @@ class TestCommandLine:
         assert capsys.readouterr().out.strip() == checks.__version__
 
 
+class TestMissingSelf:
+    SOURCE = (
+        "import rclpy\nfrom rclpy.node import Node\n\n\nclass Buffer(Node):\n"
+        "    def __init__(self):\n        super().__init__('buffer')\n        self.items = []\n\n"
+        "    {signature}\n        {body}\n\n\ndef main():\n    rclpy.init()\n")
+
+    def findings(self, tmp_path, signature, body="self.items.clear()"):
+        make_package(tmp_path, files={"demo/driver.py": self.SOURCE.format(signature=signature, body=body)})
+        return found(tmp_path, "missing-self")
+
+    def test_method_that_uses_self_without_taking_it(self, tmp_path):
+        issue, = self.findings(tmp_path, "def on_jump(time_jump):")
+        assert issue["severity"] == "error" and issue["line"] == 10
+        assert "Buffer.on_jump() uses self at line 11 but does not take it" in issue["message"]
+
+    @pytest.mark.parametrize("signature,body", [
+        ("def on_jump(self, time_jump):", "self.items.clear()"),
+        ("def on_jump(time_jump):", "return time_jump"),
+        ("@staticmethod\n    def on_jump(time_jump):", "self.items.clear()"),
+        ("def on_jump(*args):", "self.items.clear()"),
+        ("def on_jump(**kwargs):", "self.items.clear()"),
+        ("def on_jump(this):", "self = this; self.items.clear()"),
+        ("def on_jump(this):", "return lambda: self.items"),
+        ("async def on_jump(self):", "self.items.clear()"),
+        ("def on_jump(node, *, self):", "self.items.clear()"),
+    ])
+    def test_what_is_correct_or_cannot_be_decided_is_silent(self, tmp_path, signature, body):
+        assert self.findings(tmp_path, signature, body) == []
+
+    def test_module_level_name_called_self_is_not_judged(self, tmp_path):
+        source = self.SOURCE.format(signature="def on_jump(time_jump):", body="self.items.clear()")
+        source = source.replace("class Buffer", "self = None\n\n\nclass Buffer")
+        make_package(tmp_path, files={"demo/driver.py": source})
+        assert found(tmp_path, "missing-self") == []
+
+
 class TestKeywordArguments:
     def test_keyword_that_no_distribution_has(self, tmp_path):
         make_package(tmp_path, files={"demo/driver.py": node_source(

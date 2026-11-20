@@ -13,7 +13,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|pwsh|cmd",
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|pwsh|cmd",
         "hooks": [
           {
             "type": "command",
