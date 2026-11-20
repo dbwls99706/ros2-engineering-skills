@@ -42,8 +42,8 @@ class TestReport:
     def test_findings_are_reported_in_the_hook_schema(self, workspace):
         report, done = run_hook({'cwd': str(workspace)})
         assert done.returncode == 0 and done.stderr == ''
-        assert set(report) == {'hook', 'version', 'packages', 'issues_count', 'issues',
-                               'checks_skipped', 'status'}
+        assert set(report) == {'hook', 'version', 'packages', 'packages_without_findings',
+                               'issues_count', 'issues', 'checks_skipped', 'status'}
         assert report['hook'] == 'ros2-engineering-skills:start'
         assert report['packages'] == 1 and report['status'] == 'fail'
         assert report['issues_count'] == len(report['issues']) == 2
@@ -71,6 +71,36 @@ class TestReport:
         before = sorted(str(path) for path in workspace.rglob('*'))
         run_hook({'cwd': str(workspace)})
         assert sorted(str(path) for path in workspace.rglob('*')) == before
+
+
+class TestPackagesWithoutFindings:
+    def test_packages_no_finding_names_are_listed(self, tmp_path):
+        make_package(tmp_path / 'src', installed=(), files={'launch/demo.launch.py': BROKEN_LAUNCH})
+        make_package(tmp_path / 'src', name='arm')
+        make_package(tmp_path / 'src', name='base')
+        report, _done = run_hook(SKILL_WORKSPACE=str(tmp_path))
+        assert report['packages'] == 3 and report['packages_without_findings'] == ['arm', 'base']
+
+    def test_no_list_when_nothing_was_found(self, tmp_path):
+        make_package(tmp_path / 'src', name='arm')
+        report, _done = run_hook(SKILL_WORKSPACE=str(tmp_path))
+        assert report['packages'] == 1 and report['packages_without_findings'] == []
+
+    def test_no_list_after_a_partial_run(self):
+        issues = [{'file': 'demo/setup.py', 'line': 1}]
+        assert hook._without_findings(issues, [], ['arm', 'demo']) == ['arm']
+        assert hook._without_findings(issues, ['time limit reached: 1 of 2 packages were checked'],
+                                      ['arm', 'demo']) == []
+        assert hook._without_findings([], [], ['arm', 'demo']) == []
+
+    def test_the_directory_name_is_what_a_finding_carries(self, tmp_path):
+        package = make_package(tmp_path / 'src', installed=(), files={'launch/demo.launch.py': BROKEN_LAUNCH})
+        package.rename(package.with_name('demo_checkout'))
+        make_package(tmp_path / 'src', name='arm')
+        issues, skipped, names = hook.survey(str(tmp_path))
+        assert names == ['arm', 'demo_checkout']
+        assert {issue['file'].split('/')[0] for issue in issues} == {'demo_checkout'}
+        assert hook._without_findings(issues, skipped, names) == ['arm']
 
 
 class TestTooBroad:
@@ -227,11 +257,11 @@ class TestLimits:
     def test_main_runs_under_the_time_limit(self, workspace, monkeypatch, capsys):
         seen = []
 
-        def collect(path, deadline=None):
+        def survey(path, deadline=None):
             seen.append(deadline - time.monotonic())
-            return [], ['time limit reached: 1 of 2 packages were checked'], 2
+            return [], ['time limit reached: 1 of 2 packages were checked'], ['arm', 'base']
 
-        monkeypatch.setattr(hook, 'collect', collect)
+        monkeypatch.setattr(hook, 'survey', survey)
         monkeypatch.setenv('SKILL_WORKSPACE', str(workspace))
         hook.main()
         report = json.loads(capsys.readouterr().out)

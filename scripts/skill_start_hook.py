@@ -22,7 +22,7 @@ import sys
 import time
 
 HOOK = 'ros2-engineering-skills:start'
-VERSION = '1.6.0'
+VERSION = '1.7.0'
 MAX_ISSUES = 40
 # The launch validator's warnings are mostly style advice (a missing argument
 # description, a missing output= setting). At session start only what fails
@@ -98,8 +98,14 @@ def collect(workspace, deadline=None):
 
     *deadline* is a time.monotonic() value; None means no limit.
     """
+    issues, skipped, names = survey(workspace, deadline)
+    return issues, skipped, len(names)
+
+
+def survey(workspace, deadline=None):
+    """(issues, checks_skipped, package directory names) for *workspace*."""
     if _too_broad(workspace):
-        return [], [], 0
+        return [], [], []
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
         import launch_validator
@@ -110,25 +116,41 @@ def collect(workspace, deadline=None):
     if not packages:
         # Nothing is claimed about a directory with no package in it, but a
         # search that was cut short is still recorded as cut short.
-        return [], skipped, 0
+        return [], skipped, []
     found, complete = _launch_issues(packages, workspace_checks, launch_validator, deadline)
     issues = issues + found
     if not complete:
         skipped = skipped + ['time limit reached: not every launch file was validated']
     order = {'error': 0, 'warning': 1, 'info': 2}
     issues.sort(key=lambda issue: (order.get(issue['severity'], 3), issue['file'], issue['line']))
-    return issues, skipped, len(packages)
+    return issues, skipped, [package.root.name for package in packages]
+
+
+def _without_findings(issues, skipped, names):
+    """Packages no finding names, or [] when the run was partial or found nothing.
+
+    A package without a finding was compared and nothing disagreed as written.
+    That is not a result for the package, and the report says which ones they
+    are so that silence is not read as one. After a partial run the list would
+    include packages that were never read, so it is left out.
+    """
+    if not issues or skipped:
+        return []
+    named = {issue['file'].split('/', 1)[0] for issue in issues}
+    return sorted(name for name in names if name not in named)
 
 
 def main():
-    issues, skipped, packages = collect(_resolve_workspace(), time.monotonic() + TIME_LIMIT)
+    issues, skipped, names = survey(_resolve_workspace(), time.monotonic() + TIME_LIMIT)
+    quiet = _without_findings(issues, skipped, names)
     if len(issues) > MAX_ISSUES:
         skipped = skipped + [f'{len(issues) - MAX_ISSUES} further findings are not listed']
         issues = issues[:MAX_ISSUES]
     print(json.dumps({
         'hook': HOOK,
         'version': VERSION,
-        'packages': packages,
+        'packages': len(names),
+        'packages_without_findings': quiet,
         'issues_count': len(issues),
         'issues': issues,
         'checks_skipped': skipped,

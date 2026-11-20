@@ -511,7 +511,7 @@ def test_report_carries_the_structured_result_in_both_modes():
     assert manual.returncode == 0 and event.returncode == 0
     for result, mode in ((manual, 'manual'), (event, 'event')):
         report = json.loads(result.stdout)
-        assert report['mode'] == mode and report['version'] == '1.6.0'
+        assert report['mode'] == mode and report['version'] == '1.7.0'
         assert report['status'] == 'pass'
         assert report['actuation'] == {'status': 'detected', 'confidence': 'high', 'reasons': []}
         assert report['issues'][0]['category'] == 'actuation'
