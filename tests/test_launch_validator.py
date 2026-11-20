@@ -442,6 +442,31 @@ class TestValidateFile:
         assert len(dups) == 1
         assert dups[0].severity == "warning"
 
+    @pytest.mark.parametrize("condition", ["IfCondition", "UnlessCondition"])
+    def test_condition_given_an_argument_name_as_text_is_error(self, tmp_path, condition):
+        # launch evaluates the text itself; only true/false/1/0 are accepted.
+        path = write_launch_file(tmp_path, "literal.launch.py", CONDITIONAL_NODES.replace(
+            "condition=IfCondition(use_sim)", f"condition={condition}('use_sim')"))
+        issue, = [i for i in validate_file(path) if "use_sim')" in i.message and "text" in i.message]
+        assert issue.severity == "error"
+        assert f"{condition}(LaunchConfiguration('use_sim'))" in issue.message
+
+    @pytest.mark.parametrize("literal,severity", [
+        ("true", "warning"), ("False", "warning"), ("1", "warning"), ("0", "warning")])
+    def test_condition_given_a_boolean_literal_stays_a_warning(self, tmp_path, literal, severity):
+        path = write_launch_file(tmp_path, "constant.launch.py", CONDITIONAL_NODES.replace(
+            "condition=IfCondition(use_sim)", f"condition=IfCondition('{literal}')"))
+        issue, = [i for i in validate_file(path) if "hardcoded string" in i.message]
+        assert issue.severity == severity
+
+    @pytest.mark.parametrize("argument", [
+        "use_sim", "LaunchConfiguration('use_sim')", "PythonExpression(['not ', use_sim])",
+        "'$(var use_sim)'", "'use sim'", "''", "predicate=use_sim"])
+    def test_condition_that_is_not_a_bare_word_is_not_an_error(self, tmp_path, argument):
+        path = write_launch_file(tmp_path, "other.launch.py", CONDITIONAL_NODES.replace(
+            "condition=IfCondition(use_sim)", f"condition=IfCondition({argument})"))
+        assert not [i for i in validate_file(path) if i.severity == "error"]
+
     def test_dynamic_group_namespace_skips_duplicate_check(self, tmp_path):
         path = write_launch_file(tmp_path, "dyn.launch.py",
                                  DYNAMIC_GROUP_NAMESPACE)
