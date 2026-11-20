@@ -23,9 +23,10 @@ import sys
 HOOK = 'ros2-engineering-skills:start'
 VERSION = '1.6.0'
 MAX_ISSUES = 40
-# Launch findings below this level are style advice; at session start only
-# what would fail or misbehave is worth the model's attention.
-LAUNCH_SEVERITIES = ('error', 'warning')
+# The launch validator's warnings are mostly style advice (a missing argument
+# description, a missing output= setting). At session start only what fails
+# is worth the model's attention.
+LAUNCH_SEVERITIES = ('error',)
 
 
 def _resolve_workspace():

@@ -52,6 +52,8 @@ RESOURCE_DIRS = ("launch", "config", "params", "rviz", "urdf", "maps", "worlds",
 ROS_IMPORTS = {"rclpy", "tf2_ros", "tf2_geometry_msgs", "cv_bridge", "message_filters",
                "image_transport", "rclpy_action"}
 INTERFACE_SUFFIXES = ("_msgs", "_srvs", "_interfaces")
+# Python modules whose ROS package has another name.
+PROVIDED_BY = {"tf2_ros": {"tf2_ros", "tf2_ros_py"}}
 # A test dependency is still a declaration: the package says it knows the name.
 DEPEND_TAGS = ("depend", "exec_depend", "build_depend", "build_export_depend", "run_depend",
                "test_depend")
@@ -498,12 +500,19 @@ def _section_matches(key: str, name: str) -> bool:
     return "*" in key or key == name or key.endswith("/" + name)
 
 
+def _is_test(path: Path) -> bool:
+    """A test module or anything under a test directory."""
+    name = path.name.rpartition(":")[0] or path.name
+    return bool({"test", "tests"} & set(path.parts)) or name.startswith("test") or name.endswith(
+        "_test.py")
+
+
 def check_dependencies(package: Package) -> list:
     """ROS packages the code imports must be declared in package.xml."""
     imported: set = set()
     for path in package.files:
         relative = path.relative_to(package.root).parts
-        if path.suffix != ".py" or path.name == "setup.py" or relative[0] in ("launch", "test", "tests"):
+        if path.suffix != ".py" or path.name == "setup.py" or relative[0] == "launch" or _is_test(path):
             continue
         tree = _parse(_read(path))
         if tree is None:
@@ -517,7 +526,10 @@ def check_dependencies(package: Package) -> list:
               if name in ROS_IMPORTS or name.endswith(INTERFACE_SUFFIXES)}
     if "rclpy" in package.depends:
         needed -= WITH_RCLPY
-    missing = sorted(needed - package.depends - {package.name})
+    # A module the package ships itself is not a dependency.
+    own = {path.name for path in package.root.iterdir()} | {package.name}
+    missing = sorted(name for name in needed - own
+                     if not PROVIDED_BY.get(name, {name}) & package.depends)
     if not missing:
         return []
     them = "it" if len(missing) == 1 else "them"
@@ -713,6 +725,8 @@ def check_qos(root: Path) -> tuple:
     for pair in report.pairs:
         if pair["compatibility"] != qos_audit.INCOMPATIBLE:
             continue
+        if _is_test(Path(pair["publisher"])) or _is_test(Path(pair["subscription"])):
+            continue  # tests build mismatched endpoints on purpose
         file, _, line = pair["subscription"].rpartition(":")
         scope = ("" if pair["relation"] == "confirmed"
                  else " if both are the same topic at runtime (namespaces and remapping are "
@@ -728,7 +742,7 @@ def check_qos(root: Path) -> tuple:
             continue
         if sub.qos.durability != qos_audit.VOLATILE or sub.topic_kind == "dynamic":
             continue
-        if {"test", "tests"} & set(Path(sub.file).parts):
+        if _is_test(Path(sub.file)):
             continue  # a test sets up its endpoints in a known order
         for pub in report.endpoints:
             if (pub.kind == "publisher" and not pub.reasons and pub.qos is not None
