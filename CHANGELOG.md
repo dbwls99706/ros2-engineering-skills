@@ -45,10 +45,12 @@ Workspace check (`scripts/workspace_checks.py`, new):
   body cannot change the answer; `int()` or `float()` of a `ROS_` or `RMW_`
   environment variable read with a default, which raises when the variable is
   set but empty; and `from module import name` where the module's source can
-  be read and defines no such name. These came from reverting real bug-fix
-  commits of public ROS 2 packages: of ten such defects the check reported
-  none at first and reports three now. The other seven are not decidable
-  without running the code, and most logic defects are of that kind.
+  be read and defines no such name, or where the package has no such
+  submodule. These came from reverting real bug-fix commits of public ROS 2
+  packages: of ten such defects the check reported none at first and reports
+  three now. On a second set of seven, not used to write these rules, it
+  reports none. Most logic defects are not decidable without running the
+  code, and the check leaves them alone.
 - Input the check cannot decide is left alone, never guessed: a computed name
   or namespace, `*args` or `**kwargs`, a node class with a base other than
   `Node` or `LifecycleNode`, a callback group or `MultiThreadedExecutor` in the
