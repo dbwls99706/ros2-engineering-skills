@@ -16,6 +16,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import workspace_checks as checks  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def no_installed_sources(monkeypatch):
+    """What is installed on the machine running the tests is not part of any case here."""
+    monkeypatch.delenv("AMENT_PREFIX_PATH", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+
 NODE = """\
 import rclpy
 from rclpy.node import Node
@@ -1466,6 +1474,17 @@ class TestImportShadowing:
             "launch/__init__.py": "", "launch/demo.launch.py": LAUNCH,
             "config/__init__.py": "", "demo/tools.py": "from config import settings\nfrom launch import Thing\n"})
         assert found(tmp_path, "import-name") == []
+
+    def test_installed_module_is_read_past_a_data_directory_of_its_name(self, tmp_path, monkeypatch):
+        site = tmp_path / "opt" / "lib" / "python3.12" / "site-packages" / "launch"
+        site.mkdir(parents=True)
+        (site / "__init__.py").write_text("class LaunchDescription:\n    pass\n")
+        monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path / "opt"))
+        make_package(tmp_path / "ws", installed=("launch",), files={
+            "launch/__init__.py": "Thing = 1\n", "launch/demo.launch.py": LAUNCH,
+            "demo/tools.py": "from launch import LaunchDescription\nfrom launch import Thing\n"})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert "`Thing`" in issue["message"]
 
     def test_compiled_or_namespace_module_is_not_read(self, tmp_path, monkeypatch):
         site = tmp_path / "opt" / "lib" / "python3.12" / "site-packages"
