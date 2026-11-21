@@ -74,6 +74,7 @@ findings of the workspace check when it is about to finish.
 | SessionStart for a resumed, compacted or forked session | Empty JSON object; the record the session has is kept |
 | PreToolUse, clean | JSON object, exit 0; ordinary host permission checks remain |
 | PreToolUse, warning | `hookSpecificOutput.additionalContext`, exit 0 |
+| PreToolUse, code that uses a message type with documented conventions | One `[info]` line per type in `additionalContext`, once per session |
 | PreToolUse, dangerous literal command | Exit 2, explanation on stderr, no stdout JSON |
 | PreToolUse, command that can move hardware | Warning in `additionalContext`, exit 0; never a block |
 | The same, with `ROS2_SKILL_ACTUATION=ask` | `permissionDecision: "ask"` with the reason, plus the same context; never `allow` |
@@ -125,6 +126,7 @@ their Python launch files:
 | `callback-signature` | A callback defined in the same module cannot be called with what rclpy passes in any supported distribution |
 | `name-mismatch` | A topic, service or action is used under a name nothing in the workspace offers, one or two characters from a name offered with the same type |
 | `interface-field` | A callback reads or writes a field its message or service does not have, when the `.msg` or `.srv` file is in the workspace or under `AMENT_PREFIX_PATH` |
+| `missing-self` | A method uses `self` and does not take it as a parameter |
 | `remapping` | A launch file remaps a name the node's source never creates |
 | `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
 | `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect, or a VOLATILE subscription faces a TRANSIENT_LOCAL publisher |
@@ -183,6 +185,18 @@ The exit status is 1 when a finding has severity `error`, 2 when the path is
 not a directory, and 0 otherwise. The start report uses the hook-report
 contract (version 1.7.0): it adds `packages`, and each finding carries the
 `check` identifier from the table above.
+
+### Message conventions
+
+When code is written that imports `LaserScan`, `Imu`, `Image`, `JointState`,
+`PointCloud2`, `Odometry`, `OccupancyGrid` or `Quaternion`, the PreToolUse
+context carries one line with what the type means beyond its field list, as
+[message types](../references/message-types.md) documents it: which values of
+`ranges` are not distances, what a covariance of `-1` says, that `step`
+includes padding. Each type is shown once per session. It is information, not
+a finding: nothing is checked against it, and in informal trials a small model
+read it and left its code as it was. What can be decided from the code is
+reported by the workspace check instead, and a model acts on that.
 
 ### Destructive commands
 

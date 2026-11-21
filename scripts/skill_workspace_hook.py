@@ -23,7 +23,6 @@ import time
 HOOK = 'ros2-engineering-skills:workspace'
 VERSION = '1.7.0'
 MAX_ISSUES = 40
-MAX_SOURCES = 600
 # The launch validator's warnings are mostly style advice (a missing argument
 # description, a missing output= setting). Only what fails is reported here.
 LAUNCH_SEVERITIES = ('error',)
@@ -101,40 +100,6 @@ def collect(workspace, deadline=None):
     return issues, skipped, len(names)
 
 
-def sources(workspace):
-    """Python files of the packages under *workspace*, files that start something first.
-
-    Each entry is {'path': as findings name it, 'real': resolved path,
-    'entry': True for a launch file or the module of a console script}. Test
-    code and setup.py are left out. The adapter compares the list with the
-    files a session opened.
-    """
-    if _too_broad(workspace):
-        return []
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    try:
-        import workspace_checks
-    finally:
-        sys.path.pop(0)
-    found = []
-    for package in workspace_checks.find_packages(workspace_checks.Path(workspace).resolve()):
-        launch = set(workspace_checks.launch_files(package))
-        entries = set()
-        for module, _function in (package.console_scripts or {}).values():
-            path = workspace_checks._module_file(package, module)
-            if path is not None:
-                entries.add(path)
-        for path in package.files:
-            relative = path.relative_to(package.root)
-            if path.suffix != '.py' or path.name == 'setup.py' or workspace_checks._is_test(relative):
-                continue
-            found.append({'path': str(path.relative_to(package.root.parent)),
-                          'real': os.path.realpath(path),
-                          'entry': path in launch or path in entries})
-    found.sort(key=lambda item: (not item['entry'], item['path']))
-    return found[:MAX_SOURCES]
-
-
 def survey(workspace, deadline=None):
     """(issues, checks_skipped, package directory names) for *workspace*."""
     if _too_broad(workspace):
@@ -160,8 +125,7 @@ def survey(workspace, deadline=None):
 
 
 def main():
-    workspace = _resolve_workspace()
-    issues, skipped, names = survey(workspace, time.monotonic() + TIME_LIMIT)
+    issues, skipped, names = survey(_resolve_workspace(), time.monotonic() + TIME_LIMIT)
     if len(issues) > MAX_ISSUES:
         skipped = skipped + [f'{len(issues) - MAX_ISSUES} further findings are not listed']
         issues = issues[:MAX_ISSUES]
@@ -169,7 +133,6 @@ def main():
         'hook': HOOK,
         'version': VERSION,
         'packages': len(names),
-        'sources': sources(workspace) if names else [],
         'issues_count': len(issues),
         'issues': issues,
         'checks_skipped': skipped,

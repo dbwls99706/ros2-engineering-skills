@@ -2,7 +2,7 @@
 
 ![ros2-engineering-skills cover](docs/assets/cover.svg)
 
-Source version: **1.9.0**. See [release notes](CHANGELOG.md#190---2026-11-20) and
+Source version: **1.9.0**. See [release notes](CHANGELOG.md#190---2026-11-21) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -147,7 +147,9 @@ similar defects that build cleanly and fail at bring-up. It records what it
 finds when a conversation starts and says nothing. When the model is about to
 finish, it hands over what is still reported, including what the session itself
 broke, and the model continues once to deal with it. It is a mechanical check
-of declarations, not a review. What it compares, what it cannot see and why the
+of declarations, not a review. While code is written, the PreToolUse hook
+also adds, once per session, what a message type such as `LaserScan` or `Imu`
+means beyond its fields. What is compared, what cannot be seen and why the
 findings come at the end are described in the
 [skill contract](docs/SKILL_CONTRACT.md#workspace-check). Set
 `ROS2_SKILL_WORKSPACE=advise` to have the findings shown to you instead, or
@@ -253,7 +255,7 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `qos_audit.py` | Pair QoS declarations across a package by topic and type | Static; unresolved values are never guessed, and a Python profile modified after construction is not judged from its constructor |
 | `rosbag2_qos_checker.py` | Inspect bag metadata QoS | Static metadata analysis |
 | `launch_validator.py` | Detect selected Python launch defects | Does not start a graph |
-| `workspace_checks.py` | Compare declarations between files of Python packages: console scripts, install rules, parameter files, `package.xml`, remappings, QoS, rclpy keywords and callback signatures, endpoint names, interface fields | Static; reads literals only, never guesses, reports only what fails on every supported distribution, and no finding is not a pass |
+| `workspace_checks.py` | Compare declarations between files of Python packages: console scripts, install rules, parameter files, `package.xml`, remappings, QoS, rclpy keywords and callback signatures, endpoint names, interface fields, methods without `self` | Static; reads literals only, never guesses, reports only what fails on every supported distribution, and no finding is not a pass |
 | `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
 | `skill_validate_hook.py` | Inspect source and command strings, including `ros2` commands that can move hardware | Best-effort guard, not a security or safety boundary; automatic source advice only with confirmed ROS context |
 | `skill_workspace_hook.py` | Report the workspace check and launch errors for the whole workspace | A report, never a gate; bounded in size and time, and a partial run says so |

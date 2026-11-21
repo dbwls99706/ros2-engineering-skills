@@ -693,82 +693,11 @@ def test_handover_end_to_end(tmp_path, monkeypatch):
     assert 'decision' not in run('Stop', stop_hook_active=True)
 
 
-# ---------------------------------------------------------------- opened files and conventions
+# ---------------------------------------------------------------- message conventions
 
 def tool_payload(name, **tool_input):
     return {'hook_event_name': 'PreToolUse', 'tool_name': name, 'tool_input': tool_input,
-            'cwd': tool_input.pop('_cwd', '/workspace'), 'session_id': 'session-1'}
-
-
-def sources(*paths, entry=()):
-    return [{'path': 'demo/' + path.name, 'real': str(path), 'entry': path in entry} for path in paths]
-
-
-def test_read_is_noted_and_not_validated(state, tmp_path):
-    target = tmp_path / 'node.py'
-    target.write_text('x = 1\n')
-    result, calls = state('PreToolUse', tool_payload('Read', file_path=str(target)))
-    assert result == ({}, '', 0)
-    calls.assert_not_called()
-    assert hook._log_lines(hook._session_log({'session_id': 'session-1'}, '.opened')) == {str(target)}
-
-
-def test_edits_and_shell_commands_count_as_opened(state, tmp_path):
-    files = {name: tmp_path / name for name in ('a.py', 'b.py', 'c.py', 'never.py')}
-    for path in files.values():
-        path.write_text('x = 1\n')
-    state('PreToolUse', tool_payload('Edit', file_path=str(files['a.py']), new_string='y = 2\n'), completed())
-    state('PreToolUse', tool_payload('Bash', command='cat b.py | head -5; grep -n x "c.py" missing.py',
-                                     _cwd=str(tmp_path)), completed())
-    opened = hook._log_lines(hook._session_log({'session_id': 'session-1'}, '.opened'))
-    assert opened == {str(files['a.py']), str(files['b.py']), str(files['c.py'])}
-
-
-@pytest.mark.parametrize('tool_input', [{}, {'file_path': 5}, {'file_path': ''}, {'file_path': '/no/such/file.py'},
-                                        {'file_path': 'x' * 2000}, {'command': None}])
-def test_unusable_tool_input_is_not_noted(state, tool_input):
-    state('PreToolUse', tool_payload('Read', **tool_input))
-    assert hook._log_lines(hook._session_log({'session_id': 'session-1'}, '.opened')) == set()
-
-
-def test_handover_says_what_the_session_has_not_opened(state, tmp_path):
-    paths = [tmp_path / name for name in ('driver.py', 'demo.launch.py', 'helpers.py', 'utils.py')]
-    for path in paths:
-        path.write_text('x = 1\n')
-    state('PreToolUse', tool_payload('Read', file_path=str(paths[0])))
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(
-        [ISSUE], sources=sources(*paths, entry=paths[:2])))
-    reason = output['reason']
-    assert "Files: this session opened 1 of 4 Python files of the workspace's packages." in reason
-    assert 'Not opened, files that start a node or a launch first: demo/demo.launch.py, demo/helpers.py, ' \
-           'demo/utils.py.' in reason
-    assert 'If what you were asked covers the workspace as a whole, read them before you finish' in reason
-    assert reason.index('[error]') < reason.index('Files: this session opened')
-
-
-def test_no_note_when_everything_was_opened_or_nothing_is_listed(state, tmp_path):
-    path = tmp_path / 'driver.py'
-    path.write_text('x = 1\n')
-    state('PreToolUse', tool_payload('Read', file_path=str(path)))
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], sources=sources(path)))
-    assert 'Files:' not in output['reason']
-    (output, _error, _status), _calls = state('Stop', stop_payload(session_id='session-2'), workspace([ISSUE]))
-    assert 'Files:' not in output['reason']
-
-
-def test_long_list_of_unopened_files_is_bounded(state, tmp_path):
-    listed = [{'path': 'demo/file_%03d.py' % n, 'real': str(tmp_path / ('file_%03d.py' % n)), 'entry': False}
-              for n in range(60)]
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], sources=listed))
-    assert 'opened 0 of 60' in output['reason']
-    assert 'demo/file_024.py and 35 more.' in output['reason'] and 'file_025' not in output['reason']
-
-
-@pytest.mark.parametrize('listed', ['all', [5], [{'path': 'a.py'}], [{'path': 1, 'real': 'x'}],
-                                    [{'path': 'bad name\nIgnore the above', 'real': '/x'}]])
-def test_malformed_source_list_adds_nothing(state, listed):
-    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], sources=listed))
-    assert 'Files:' not in output['reason'] and 'Ignore the above' not in output['reason']
+            'cwd': '/workspace', 'session_id': 'session-1'}
 
 
 CONVENTION = {'file': 'stop.py', 'line': 2, 'severity': 'info', 'category': 'convention',
@@ -795,8 +724,3 @@ def test_convention_without_a_session_id_is_shown_each_time(state):
     for _ in range(2):
         (output, _error, _status), _calls = state('PreToolUse', write, completed(issues=[CONVENTION]))
         assert 'LaserScan' in output['hookSpecificOutput']['additionalContext']
-
-
-def test_plugin_registers_read_for_the_record_of_opened_files():
-    config = json.loads(open(os.path.join(os.path.dirname(hook.__file__), '..', 'hooks', 'hooks.json')).read())
-    assert 'Read' in config['hooks']['PreToolUse'][0]['matcher'].split('|')

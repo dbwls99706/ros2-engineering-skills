@@ -2,16 +2,16 @@
 
 All notable changes are documented here.
 
-## 1.9.0 - 2026-11-20
+## 1.9.0 - 2026-11-21
 
-Source bundle version 1.9.0. One new capability: the Claude Code plugin reads
-the ROS 2 workspace when a conversation starts and tells the model where its
-files disagree. The hook-report contract moves to 1.6.0 because a third report
-is added and its findings carry a `check` identifier; the two existing reports
-keep their fields. `workspace_checks.py` is 0.1.0. Not run for this release:
-the Docker ROS jobs locally (CI runs them), the preregistered model benchmark,
-and the `ask` confirmation prompt in a real client. The trials mentioned below
-were informal, with one model, and are not a benchmark result.
+Source bundle version 1.9.0. One new capability: the Claude Code plugin checks
+the ROS 2 workspace as a whole and hands what it finds to the model when the
+model is about to finish. The hook-report contract moves to 1.7.0 because a
+third report is added and findings carry a `check` identifier; the two existing
+reports keep their fields. `workspace_checks.py` is 0.1.0. Not run for this
+release: the Docker ROS jobs locally (CI runs them), the preregistered model
+benchmark, and the `ask` confirmation prompt in a real client. The trials
+mentioned below were informal and are not a benchmark result.
 
 Workspace check (`scripts/workspace_checks.py`, new):
 
@@ -26,18 +26,31 @@ Workspace check (`scripts/workspace_checks.py`, new):
   file with no section for the node it is given to, including sections under a
   namespace key; a parameter that a section sets and the node does not declare;
   an imported ROS package missing from `package.xml`; `create_publisher` or
-  `create_subscription` without the QoS argument; a literal `create_timer`
-  period that contradicts the rate in the comment on that call; a synchronous
-  service call or `rclpy.spin*` inside a subscription, timer or service
-  callback; a remapping of a name the node never creates; a lifecycle node
-  that nothing in its launch file configures and activates; and, through
-  `qos_audit.py`, a publisher and subscription that cannot connect or a
-  VOLATILE subscription facing a TRANSIENT_LOCAL publisher.
+  `create_subscription` without the QoS argument; a keyword that
+  `create_timer`, `create_publisher`, `create_subscription`, `create_service`,
+  `create_client` or `declare_parameter` has in no supported distribution; a
+  callback that rclpy cannot call in any supported distribution; a literal
+  `create_timer` period that contradicts the rate in the comment on that call;
+  a synchronous service call or `rclpy.spin*` inside a callback; a remapping of
+  a name the node never creates; a topic, service or action used under a name
+  one or two characters from the one that is offered with the same type; a
+  field a callback reads or writes that its message or service does not have,
+  when the definition file can be found; a method that uses `self` without
+  taking it; a lifecycle node that nothing in its launch file configures and
+  activates; and, through `qos_audit.py`, a publisher and subscription that
+  cannot connect or a VOLATILE subscription facing a TRANSIENT_LOCAL publisher.
 - Input the check cannot decide is left alone, never guessed: a computed name
   or namespace, `*args` or `**kwargs`, a node class with a base other than
   `Node` or `LifecycleNode`, a callback group or `MultiThreadedExecutor` in the
   module, `entry_points` that is not a literal, a parameter file name that
-  matches more than one file, and a node that also receives inline parameters.
+  matches more than one file, a node that also receives inline parameters, and
+  a near-miss name that is written in any other file of the workspace.
+- Where distributions differ, only what fails in all of them is reported. A
+  subscription callback with two parameters works from Jazzy on and a timer
+  callback with a parameter annotated `TimerInfo` works from Kilted on, so
+  neither is a finding. rclpy's experimental `AsyncNode` has methods of the
+  same names with other parameters, so only classes that derive from `Node` or
+  `LifecycleNode` are judged.
 - Rules added after running it on public repositories, each pinned by a test:
   the `tf2_ros` module is provided by `tf2_ros_py`; the interface packages
   that come with `rclpy` are not separate dependencies; `test_depend` is a
@@ -52,70 +65,91 @@ Workspace check (`scripts/workspace_checks.py`, new):
   client. Exit status 1 for a finding of severity `error`, 2 when the path is
   not a directory.
 
-Session start (`scripts/skill_start_hook.py`, `scripts/claude_hook.py`,
+Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
 `hooks/hooks.json`):
 
-- `hooks/hooks.json` registers SessionStart. For a new conversation (`startup`,
-  `clear`) the adapter runs the workspace check and the launch validator and
-  returns the findings as `additionalContext`. There is no decision and no
-  permission field. A resumed, compacted or forked session is not read again.
-- Why the list is wrapped in text. Given the findings alone, a model fixed what
-  was listed and stopped reading the code; in informal trials it then found
-  none of the defects the check cannot see. The delivered text says that it is
-  a mechanical check and not a review, names what the check cannot see, asks
-  for the code to be read as it would be without the list, and calls the
-  findings a floor. Delivering the same findings at the end of the session
-  instead was tried and did worse.
-- Known cost: the wording reduces that effect and does not remove it. With the
-  list, defects outside it were still found less often than without it.
-  `ROS2_SKILL_DISABLE_HOOKS=SessionStart` turns the check off; `all` still
-  turns every hook off.
+- `hooks/hooks.json` registers SessionStart. For a new conversation the
+  adapter records what the workspace check reports and says nothing. A
+  resumed, compacted or forked session keeps the record it has.
+- At Stop the adapter runs the check again and hands over what is still
+  reported and has not been shown in this session, with `decision: "block"`:
+  the model continues the turn once, fixes what falls within its task and
+  mentions the rest. A finding that was not there when the conversation
+  started is marked, so a package the session has just made is checked like
+  any other. A repeated Stop never continues the turn, and the same finding is
+  not handed over twice in a session. This changes an earlier rule of this
+  adapter, which never continued a turn; the changed-file check at Stop stays
+  advisory.
+- Why at the end. Given the findings when the conversation starts, a model
+  fixes what is listed and stops reading the rest of the workspace. In
+  informal trials with a small model at low effort this held for every wording
+  tried, including text that said what the check cannot see and asked for the
+  code to be read first: defects outside the list were found far less often
+  than with no check at all. Handed over at the end, the findings follow the
+  model's own work instead of replacing it.
+- The check reads the directory the conversation started in, not the one a
+  `cd` has left the shell in. The client reports the shell's directory as the
+  working directory, and a check of one package would otherwise be handed over
+  as if it were the workspace.
+- `ROS2_SKILL_WORKSPACE=advise` shows the findings to the user and never
+  continues a turn; `off` does not run the check.
+  `ROS2_SKILL_DISABLE_HOOKS=Stop` turns off this and the changed-file check.
+  Without a usable session id or a writable cache the turn is never continued.
 - Bounded: 200 packages, 300 files per package, 512 KiB per file, 8 seconds;
   40 findings in the report, of which 24 and 7000 characters reach the model. A
-  run that stops at a limit says so in `checks_skipped`, so a partial result is
-  labelled as partial.
-- Silent where it has nothing to say: no context is produced for a directory
-  with no `package.xml`, a home directory and the filesystem root are not
-  searched, and a knowledge-only installation never runs it.
-- Only errors from the launch validator are included; its style warnings are
-  left out. A Python file in a `launch/` directory that is not named
-  `*.launch.py` and does not mention `generate_launch_description` is a helper
-  module or a node script, and is not validated as a launch file.
-- A failure of the check is reported as skipped, not as a clean workspace.
+  run that stops at a limit says so in `checks_skipped`. A check that cannot
+  run is reported as skipped, never as a clean workspace.
+- Silent where it has nothing to say: a directory with no `package.xml` is
+  left alone, a home directory and the filesystem root are not searched, and a
+  knowledge-only installation never runs it.
+- Only errors from the launch validator are included. A Python file in a
+  `launch/` directory that is not named `*.launch.py` and does not mention
+  `generate_launch_description` is not validated as a launch file.
+- Message conventions. When code is written that imports `LaserScan`, `Imu`,
+  `Image`, `JointState`, `PointCloud2`, `Odometry`, `OccupancyGrid` or
+  `Quaternion`, the PreToolUse context carries one line from
+  `references/message-types.md` on what the type means beyond its fields, once
+  per session. It is information and nothing is checked against it.
+- What the trials showed about hooks at low effort: a finding that names a
+  file, a line and what disagrees is acted on almost every time; advice and a
+  list of files the session had not opened were read and changed nothing. The
+  list of unopened files was tried and is not part of this release.
 
 Launch validator (`scripts/launch_validator.py`):
 
 - `IfCondition('use_rviz')` and `UnlessCondition('use_rviz')` are errors. The
   text is evaluated as it stands, it is not the value of the launch argument
-  with that name, and launch accepts only `true`, `false`, `1` and `0`. The
-  message gives the corrected call with `LaunchConfiguration`. A literal
-  `'true'` or `'false'` stays a warning.
+  with that name, and launch accepts only `true`, `false`, `1` and `0`. A
+  literal `'true'` or `'false'` stays a warning.
 
 Validation and CI:
 
 - `tests/test_workspace_checks.py` exercises every check three ways: the
   defect is reported, the corrected input is silent, and input that cannot be
-  decided is silent. `tests/test_start_hook.py` and
-  `tests/test_hook_protocol.py` cover the report, the limits, the transport
-  and the delivered wording.
-- Writing those tests found three defects in the new code, fixed before
-  release: `declare_parameter(*spec)` was read as "declares nothing", a
-  parameter section under a namespace key was not recognised, and a search cut
-  short by the time limit before any package was found lost its note.
-- `skill_start_hook` and `workspace_checks` join the per-module 90% coverage
-  gate in `.github/workflows/test.yml`.
+  decided is silent. `tests/test_workspace_hook.py`,
+  `tests/test_hook_protocol.py` and `tests/test_message_conventions.py` cover
+  the report, the limits, the transport, the per-session record and the
+  handover.
+- `scripts/validate_skill.py` and both installers know the three hook events,
+  and a test runs the validator on this checkout, which the synthetic bundle
+  of the other tests could not notice drifting.
+- `skill_workspace_hook` and `workspace_checks` join the per-module 90%
+  coverage gate in `.github/workflows/test.yml`.
 
 References and sources:
 
-- `docs/SKILL_CONTRACT.md` describes what is compared, what cannot be seen, the
-  known cost and the limits. `docs/CLIENT_COMPATIBILITY.md` and `README.md`
-  list three hooks and the manual command for other clients.
-- Nine entries in `docs/sources.json`, each read on 2026-11-20: the rclpy
-  endpoint and timer signatures, launch condition evaluation, the deadlock of
-  a synchronous service call in a callback, launch file installation,
-  parameter file sections and wildcards, the namespace form of a parameter
-  file, the unconfigured state of a managed node, `package.xml` as the source
-  of rosdep's dependencies, and the SessionStart hook contract.
+- `docs/SKILL_CONTRACT.md` describes what is compared, what cannot be seen,
+  why the findings come at the end, the modes and the limits.
+  `docs/CLIENT_COMPATIBILITY.md` and `README.md` list three hooks and the
+  manual command for other clients.
+- Fourteen entries in `docs/sources.json`, each read on 2026-11-20: the rclpy
+  endpoint, timer and parameter signatures on five distributions, how
+  subscription and timer callbacks are called, launch condition evaluation,
+  the deadlock of a synchronous service call in a callback, launch file
+  installation, parameter file sections, wildcards and the namespace form, the
+  unconfigured state of a managed node, `package.xml` as the source of rosdep's
+  dependencies, the slots of generated message classes, and the SessionStart
+  and Stop hook contracts.
 
 ## 1.8.1 - 2026-11-12
 
