@@ -129,7 +129,7 @@ their Python launch files:
 | `missing-self` | A method uses `self` and does not take it as a parameter |
 | `invariant-loop` | A `while` tests membership in a container that the function created and nothing else holds, and the body neither rebinds the names in the condition nor names the container |
 | `environment-number` | `int()` or `float()` of a `ROS_` or `RMW_` environment variable read with a default: the default is not used when the variable is set but empty |
-| `import-name` | `from module import name` where the module's source is in the workspace, or under `PYTHONPATH` or `AMENT_PREFIX_PATH`, and defines no such name |
+| `import-name` | `from module import name` where the module's source is in the workspace, or under `PYTHONPATH` or `AMENT_PREFIX_PATH`, and defines no such name, or where the package has no such submodule |
 | `remapping` | A launch file remaps a name the node's source never creates |
 | `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
 | `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect, or a VOLATILE subscription faces a TRANSIENT_LOCAL publisher |

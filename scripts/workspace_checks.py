@@ -1020,6 +1020,19 @@ def check_imports(roots: tuple, package: Package, path: Path) -> list:
             target = _resolve_module(((), (base,)), node.module)
         else:
             target = _resolve_module(roots, node.module)
+        if target is None and not node.level and "." in node.module:
+            # The parent package can be read and has no such submodule.
+            parent_name, _, leaf = node.module.rpartition(".")
+            parent = _resolve_module(roots, parent_name)
+            if (parent is not None and parent.name == "__init__.py" and _module_names(parent) is not None
+                    and leaf not in (_module_names(parent) or ())
+                    and not (parent.parent / leaf).exists()
+                    and not list(parent.parent.glob(leaf + ".*"))):
+                issues.append(_issue(
+                    package, path, node.lineno, "error", "import-name",
+                    f"`from {node.module} import ...`: the package {parent_name} has no module "
+                    f"`{leaf}`; the import raises ModuleNotFoundError when this file is loaded."))
+            continue
         if target is None or target.resolve() == path.resolve():
             continue
         defined = _module_names(target)

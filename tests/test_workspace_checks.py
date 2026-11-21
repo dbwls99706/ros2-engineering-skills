@@ -1477,3 +1477,53 @@ class TestImportShadowing:
         make_package(tmp_path / "ws", files={
             "demo/tools.py": "from fastlib import a\nfrom native import b\nfrom typed import c\n"})
         assert found(tmp_path / "ws", "import-name") == []
+
+
+class TestImportOfAMissingModule:
+    def site(self, tmp_path, monkeypatch):
+        package = tmp_path / "opt" / "lib" / "python3.12" / "site-packages" / "rclpy"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("from rclpy.node import Node\n")
+        (package / "executors.py").write_text("class ExternalShutdownException(Exception):\n    pass\n")
+        (package / "node.py").write_text("class Node:\n    pass\n")
+        monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path / "opt"))
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        return package
+
+    def test_submodule_the_package_does_not_have(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch)
+        make_package(tmp_path / "ws", files={
+            "demo/tools.py": "from rclpy.executor import ExternalShutdownException\n"})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert issue["severity"] == "error"
+        assert "the package rclpy has no module `executor`" in issue["message"]
+        assert "ModuleNotFoundError" in issue["message"]
+
+    @pytest.mark.parametrize("importer", [
+        "from rclpy.executors import ExternalShutdownException\n",
+        "from rclpy.node import Node\n",
+        "from rclpy.missing.deeper import X\n",
+        "from unknown.executor import X\n",
+    ])
+    def test_existing_or_unresolvable_module_is_silent(self, tmp_path, monkeypatch, importer):
+        self.site(tmp_path, monkeypatch)
+        make_package(tmp_path / "ws", files={"demo/tools.py": importer})
+        assert found(tmp_path / "ws", "import-name") == []
+
+    @pytest.mark.parametrize("change", ["compiled", "dynamic", "bound by the package"])
+    def test_what_may_exist_without_a_source_file_is_silent(self, tmp_path, monkeypatch, change):
+        package = self.site(tmp_path, monkeypatch)
+        if change == "compiled":
+            (package / "executor.cpython-312-x86_64-linux-gnu.so").write_bytes(b"")
+        elif change == "dynamic":
+            (package / "__init__.py").write_text("def __getattr__(name):\n    return name\n")
+        else:
+            (package / "__init__.py").write_text("from rclpy import executors as executor\n")
+        make_package(tmp_path / "ws", files={"demo/tools.py": "from rclpy.executor import X\n"})
+        assert found(tmp_path / "ws", "import-name") == []
+
+    def test_without_an_installed_distribution_nothing_is_said(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AMENT_PREFIX_PATH", raising=False)
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        make_package(tmp_path, files={"demo/tools.py": "from rclpy.executor import X\n"})
+        assert found(tmp_path, "import-name") == []
