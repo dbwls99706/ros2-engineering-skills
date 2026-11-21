@@ -784,6 +784,263 @@ def _methods_without_self(package: Package, path: Path, tree: ast.AST) -> list:
     return issues
 
 
+# Calls that read a container without keeping or changing it.
+_READERS = {"len", "sorted", "list", "tuple", "set", "frozenset", "any", "all", "enumerate",
+            "print", "str", "repr", "min", "max", "sum", "reversed", "iter", "bool", "isinstance"}
+_FRESH = {"list", "dict", "set", "sorted", "tuple", "frozenset"}
+
+
+def _fresh_local(func: ast.AST, name: str) -> bool:
+    """*name* is bound once in *func* to a new container and nothing else can reach it.
+
+    Then only a statement that names it can change it: it is never passed to a
+    call that might keep it, never given another name and never stored.
+    """
+    bound = 0
+    for node in ast.walk(func):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == name for target in node.targets):
+            value = node.value
+            fresh = isinstance(value, (ast.List, ast.Dict, ast.Set, ast.ListComp, ast.SetComp,
+                                       ast.DictComp)) or (
+                isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                and value.func.id in _FRESH)
+            if not fresh or len(node.targets) != 1:
+                return False
+            bound += 1
+        elif isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
+            parent_ok = False  # every other binding (loop target, with, augmented, import) is not fresh
+            if not parent_ok and not any(
+                    isinstance(a, ast.Assign) and node in a.targets for a in ast.walk(func)):
+                return False
+    if bound != 1:
+        return False
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call):
+            reader = isinstance(node.func, ast.Name) and node.func.id in _READERS
+            passed = list(node.args) + [keyword.value for keyword in node.keywords]
+            if not reader and any(isinstance(item, ast.Name) and item.id == name
+                                  for arg in passed for item in ast.walk(arg)):
+                return False
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return, ast.Yield,
+                               ast.YieldFrom)) and node.value is not None:
+            if any(isinstance(item, ast.Name) and item.id == name for item in ast.walk(node.value)):
+                if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Compare)):
+                    return False
+    return True
+
+
+def _invariant_loops(package: Package, path: Path, tree: ast.AST) -> list:
+    """A while loop whose condition has the same value on every pass.
+
+    Reported only when that can be read off the function: the condition is
+    made of plain names, the body has no way out and never rebinds them, and
+    the container being tested is a new local that nothing in the body names.
+    """
+    issues = []
+    for func in _nodes(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # A nested function, lambda or class can change a name of the enclosing
+        # function from elsewhere; the names it mentions are not judged.
+        inner = {item.id for node in ast.walk(func) if node is not func and isinstance(
+                     node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
+                 for item in ast.walk(node) if isinstance(item, ast.Name)}
+        if any(isinstance(node, (ast.Global, ast.Nonlocal)) for node in ast.walk(func)):
+            continue
+        for loop in ast.walk(func):
+            if not isinstance(loop, ast.While) or loop.orelse:
+                continue
+            test = loop.test
+            if any(not isinstance(node, (ast.Name, ast.Compare, ast.BoolOp, ast.UnaryOp, ast.Constant,
+                                         ast.And, ast.Or, ast.Not, ast.In, ast.NotIn, ast.Eq, ast.NotEq,
+                                         ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Is, ast.IsNot, ast.Load))
+                   for node in ast.walk(test)):
+                continue  # a call, an attribute or an index can change between passes
+            names = {node.id for node in ast.walk(test) if isinstance(node, ast.Name)}
+            containers = {node.comparators[0].id for node in ast.walk(test)
+                          if isinstance(node, ast.Compare) and len(node.ops) == 1
+                          and isinstance(node.ops[0], (ast.In, ast.NotIn))
+                          and isinstance(node.comparators[0], ast.Name)}
+            if not names or not containers or names & inner:
+                continue  # only membership in a container is judged
+            body = [node for statement in loop.body for node in ast.walk(statement)]
+            if any(isinstance(node, (ast.Break, ast.Return, ast.Raise, ast.Yield, ast.YieldFrom,
+                                     ast.Await, ast.Try, ast.With, ast.AsyncWith)) for node in body):
+                continue
+            touched = False
+            for node in body:
+                if isinstance(node, ast.Name) and node.id in names and isinstance(node.ctx, (ast.Store, ast.Del)):
+                    touched = True
+                elif isinstance(node, ast.Name) and node.id in containers:
+                    touched = True  # the container is named in the body: it may change
+                elif isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(
+                        node.value, ast.Name) and node.value.id in names:
+                    touched = True
+            if touched or not all(_fresh_local(func, name) for name in containers):
+                continue
+            shown = ", ".join(sorted(names))
+            issues.append(_issue(
+                package, path, loop.lineno, "warning", "invariant-loop",
+                f"the condition of this while loop reads {shown}, and the loop body neither "
+                f"rebinds them nor names {', '.join(sorted(containers))}, which is a container "
+                "created in this function that nothing else holds. The condition has the same "
+                "value on every pass: the loop never runs or never ends, unless it ends in an "
+                "exception. A `for` over the container may have been meant."))
+    return issues
+
+
+def _environment_numbers(package: Package, path: Path, tree: ast.AST) -> list:
+    """int() or float() of a ROS environment variable that has a default but may be empty."""
+    issues = []
+    for call in _nodes(tree):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                and call.func.id in ("int", "float") and len(call.args) == 1 and not call.keywords):
+            continue
+        inner = call.args[0]
+        if not isinstance(inner, ast.Call) or _opaque(inner) or len(inner.args) != 2:
+            continue
+        target = ast.unparse(inner.func)
+        if target not in ("os.environ.get", "os.getenv", "environ.get", "getenv"):
+            continue
+        key = _text(inner.args[0])
+        if key is None or not key.startswith(("ROS_", "RMW_")):
+            continue
+        default = ast.unparse(inner.args[1])
+        issues.append(_issue(
+            package, path, call.lineno, "warning", "environment-number",
+            f"{call.func.id}({target}('{key}', {default})) uses the default only when {key} is "
+            f"unset. When it is set but empty (`{key}=` in a shell or a compose file) the call "
+            f"raises ValueError. `{call.func.id}({target}('{key}') or {default})` covers both."))
+    return issues
+
+
+@functools.lru_cache(maxsize=4096)
+def _module_names(path: Path) -> Optional[frozenset]:
+    """Names a module defines at import time, or None when that cannot be read off the file."""
+    source = _read(path)
+    tree = _parse(source)
+    if tree is None or source is None or re.search(
+            r"__getattr__|globals\(\)|setattr\(|import \*|sys\.modules|__dict__|exec\(", source):
+        return None
+    names: set = set()
+
+    def collect(statements: list) -> None:
+        for node in statements:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    names.update(item.id for item in ast.walk(target) if isinstance(item, ast.Name))
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+            elif isinstance(node, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
+                for field_name in ("body", "orelse", "finalbody"):
+                    collect(getattr(node, field_name, []) or [])
+                for handler in getattr(node, "handlers", []) or []:
+                    collect(handler.body)
+                if isinstance(node, (ast.For, ast.With)):
+                    names.update(item.id for item in ast.walk(node) if isinstance(item, ast.Name)
+                                 and isinstance(item.ctx, ast.Store))
+    collect(getattr(tree, "body", []))
+    return frozenset(names)
+
+
+def _python_roots(packages: list) -> tuple:
+    """(package roots, installed roots): where a top-level import can resolve."""
+    installed = []
+    for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        if entry and os.path.isdir(entry):
+            installed.append(Path(entry))
+    for prefix in os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep):
+        if prefix:
+            installed.extend(sorted(Path(prefix).glob("lib/python3*/site-packages")))
+            installed.extend(sorted(Path(prefix).glob("local/lib/python3*/dist-packages")))
+    return tuple(package.root for package in packages), tuple(installed)
+
+
+# Directories of a package that are installed as data or run as tests. A
+# launch/ directory with an __init__.py is not the module `launch`.
+_NOT_MODULES = set(RESOURCE_DIRS) | {"test", "tests", "scripts", "doc", "docs", "resource"}
+
+
+@functools.lru_cache(maxsize=8192)
+def _resolve_module(roots: tuple, module: str) -> Optional[Path]:
+    """The one file *module* names; None when there is none or it cannot be read here.
+
+    *roots* is (package roots, other roots). Under a package root only a real
+    module directory counts, not a data directory that happens to share the
+    name of an installed module.
+    """
+    workspace, installed = roots
+    top = module.split(".")[0]
+    found = []
+    for root in (() if top in _NOT_MODULES else workspace) + installed:
+        base = root.joinpath(*module.split("."))
+        if base.with_suffix(".py").is_file():
+            found.append(base.with_suffix(".py"))
+        elif (base / "__init__.py").is_file():
+            found.append(base / "__init__.py")
+        elif root in installed and (
+                base.is_dir() or list(base.parent.glob(base.name + ".*.so"))
+                or base.with_suffix(".pyi").is_file()):
+            return None  # a namespace package or a compiled module: not readable here
+    unique = {str(path.resolve()) for path in found}
+    return found[0] if len(unique) == 1 else None
+
+
+def check_python(roots: tuple, package: Package, path: Path) -> list:
+    """Defects of plain Python that can be read off one file and stop a node at run time."""
+    tree = _parse(_read(path))
+    if tree is None:
+        return []
+    return (_invariant_loops(package, path, tree) + _environment_numbers(package, path, tree)
+            + check_imports(roots, package, path))
+
+
+def check_imports(roots: tuple, package: Package, path: Path) -> list:
+    """`from module import name` where the module's own source defines no such name."""
+    tree = _parse(_read(path))
+    if tree is None:
+        return []
+    imports = [node for node in _nodes(tree) if isinstance(node, ast.ImportFrom)]
+    if not imports:
+        return []
+    guarded = {id(node) for block in _nodes(tree) if isinstance(block, (ast.Try, ast.If))
+               for node in ast.walk(block) if isinstance(node, ast.ImportFrom)}
+    issues = []
+    for node in imports:
+        if id(node) in guarded or not node.module:
+            continue  # inside try or if: an optional import is the author's choice
+        if node.level:
+            base = path.parent
+            for _ in range(node.level - 1):
+                base = base.parent
+            target = _resolve_module(((), (base,)), node.module)
+        else:
+            target = _resolve_module(roots, node.module)
+        if target is None or target.resolve() == path.resolve():
+            continue
+        defined = _module_names(target)
+        if defined is None:
+            continue
+        for alias in node.names:
+            if alias.name == "*" or alias.name in defined:
+                continue
+            folder = target.parent if target.name == "__init__.py" else None
+            if folder is not None and ((folder / (alias.name + ".py")).is_file()
+                                       or (folder / alias.name).is_dir()
+                                       or list(folder.glob(alias.name + ".*"))):
+                continue  # a submodule
+            issues.append(_issue(
+                package, path, node.lineno, "error", "import-name",
+                f"`from {'.' * node.level}{node.module} import {alias.name}`: "
+                f"{target.name if target.name != '__init__.py' else target.parent.name + '/__init__.py'} "
+                f"defines no `{alias.name}`; the import raises ImportError when this file is loaded."))
+    return issues
+
+
 def _node_calls(tree: ast.AST) -> list:
     """Method calls whose receiver is known to be an rclpy node.
 
@@ -1209,6 +1466,9 @@ def check_workspace(root, deadline: Optional[float] = None) -> tuple:
     issues: list = []
     packages, skipped = _discover(root, deadline)
     checked = 0
+    roots = _python_roots(packages)
+    _resolve_module.cache_clear()  # files may have changed since the last run in this process
+    _module_names.cache_clear()
     for package in packages:
         if _expired(deadline):
             break
@@ -1226,6 +1486,9 @@ def check_workspace(root, deadline: Optional[float] = None) -> tuple:
             if path.suffix == ".py" and path not in launch and path.name != "setup.py":
                 issues.extend(check_node_source(package, path))
                 issues.extend(check_interface_fields(packages, package, path))
+            if path.suffix == ".py" and path.name != "setup.py" and not _is_test(
+                    path.relative_to(package.root)):
+                issues.extend(check_python(roots, package, path))
     if checked < len(packages):
         skipped.append(f"time limit reached: {checked} of {len(packages)} packages were checked")
     elif packages and not _expired(deadline):

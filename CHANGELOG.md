@@ -35,10 +35,20 @@ Workspace check (`scripts/workspace_checks.py`, new):
   a name the node never creates; a topic, service or action used under a name
   one or two characters from the one that is offered with the same type; a
   field a callback reads or writes that its message or service does not have,
-  when the definition file can be found; a method that uses `self` without
-  taking it; a lifecycle node that nothing in its launch file configures and
-  activates; and, through `qos_audit.py`, a publisher and subscription that
-  cannot connect or a VOLATILE subscription facing a TRANSIENT_LOCAL publisher.
+  when the definition file can be found; a lifecycle node that nothing in its
+  launch file configures and activates; and, through `qos_audit.py`, a
+  publisher and subscription that cannot connect or a VOLATILE subscription
+  facing a TRANSIENT_LOCAL publisher.
+- Four defects of plain Python that can be read off one function or one import
+  and stop a node at run time: a method that uses `self` without taking it; a
+  `while` that tests membership in a container the function created, where the
+  body cannot change the answer; `int()` or `float()` of a `ROS_` or `RMW_`
+  environment variable read with a default, which raises when the variable is
+  set but empty; and `from module import name` where the module's source can
+  be read and defines no such name. These came from reverting real bug-fix
+  commits of public ROS 2 packages: of ten such defects the check reported
+  none at first and reports three now. The other seven are not decidable
+  without running the code, and most logic defects are of that kind.
 - Input the check cannot decide is left alone, never guessed: a computed name
   or namespace, `*args` or `**kwargs`, a node class with a base other than
   `Node` or `LifecycleNode`, a callback group or `MultiThreadedExecutor` in the
@@ -58,8 +68,9 @@ Workspace check (`scripts/workspace_checks.py`, new):
   code is not read for dependencies or QoS pairs.
 - Run on eleven public ROS 2 repositories (174 packages): eight findings, each
   read against the source: six endpoint calls without a QoS argument in one
-  test package and an undeclared interface dependency in two packages. The
-  whole set as one workspace takes about four seconds. Ten package variants
+  test package and an undeclared interface dependency in two packages. None
+  of the Python checks above reports anything there. The whole set as one
+  workspace takes about four seconds. Ten package variants
   from `create_package.py` produce no finding, and a test keeps it so.
 - `python3 scripts/workspace_checks.py <path> [--json]` runs it by hand in any
   client. Exit status 1 for a finding of severity `error`, 2 when the path is

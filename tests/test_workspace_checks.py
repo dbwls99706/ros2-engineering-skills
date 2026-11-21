@@ -456,7 +456,8 @@ class TestDependencies:
 
     def test_module_the_package_ships_is_not_a_dependency(self, tmp_path):
         make_package(tmp_path, files={
-            "demo_msgs/__init__.py": "", "demo/driver.py": NODE + "from demo_msgs import shapes\n"})
+            "demo_msgs/__init__.py": "", "demo_msgs/shapes.py": "SQUARE = 4\n",
+            "demo/driver.py": NODE + "from demo_msgs import shapes\n"})
         assert found(tmp_path) == []
 
     def test_relative_and_ordinary_imports_are_ignored(self, tmp_path):
@@ -1262,3 +1263,217 @@ class TestInterfaceFields:
     def test_definition_file_is_parsed_by_section(self):
         assert checks._interface_fields("int64 a  # first\n# note\n\nint64 B=2\n---\nbool ok\n---\n") == [
             {"a", "B"}, {"ok"}, set()]
+
+
+def plain_module(body):
+    """A package module that is plain Python: these checks do not need rclpy in the file."""
+    return "import os\n\n\n" + textwrap.dedent(body).strip("\n") + "\n"
+
+
+LOOP = """
+def prune(topics, lookup):
+    to_remove = []
+    for topic in topics:
+        if lookup(topic) is None:
+            to_remove.append(topic)
+    {loop}
+    return topics
+"""
+
+
+class TestInvariantLoops:
+    def findings(self, tmp_path, loop, template=LOOP):
+        make_package(tmp_path, files={"demo/tools.py": plain_module(template.format(loop=loop))})
+        return found(tmp_path, "invariant-loop")
+
+    def test_while_written_where_for_was_meant(self, tmp_path):
+        issue, = self.findings(tmp_path, "while (topic in to_remove):\n        topics.remove(topic)")
+        assert issue["severity"] == "warning" and (issue["file"], issue["line"]) == ("demo/demo/tools.py", 9)
+        assert "reads to_remove, topic" in issue["message"]
+        assert "never runs or never ends" in issue["message"] and "`for`" in issue["message"]
+
+    def test_the_loop_that_was_meant_is_silent(self, tmp_path):
+        assert self.findings(tmp_path, "for topic in to_remove:\n        topics.remove(topic)") == []
+
+    @pytest.mark.parametrize("loop", [
+        "while topic in to_remove:\n        to_remove.remove(topic)",
+        "while topic in to_remove:\n        to_remove = to_remove[1:]",
+        "while topic in to_remove:\n        topic = topics.pop()",
+        "while topic in to_remove:\n        topic.refresh()",
+        "while topic in to_remove:\n        if lookup(topic):\n            break",
+        "while topic in to_remove:\n        return topics",
+        "while topic in to_remove:\n        raise ValueError(topic)",
+        "while topic in to_remove:\n        prune_one(topics, to_remove)",
+        "while topic in to_remove:\n        try:\n            topics.remove(topic)\n"
+        "        except ValueError:\n            pass",
+        "while topic in lookup(to_remove):\n        topics.remove(topic)",
+        "while topic in self.pending:\n        topics.remove(topic)",
+        "while topics:\n        topics.pop()",
+        "while topic == 'a':\n        topics.remove(topic)",
+        "while True:\n        topics.remove(topic)",
+        "while topic in to_remove:\n        topics.remove(topic)\n    else:\n        pass",
+    ])
+    def test_a_loop_that_can_end_or_cannot_be_read_is_silent(self, tmp_path, loop):
+        assert self.findings(tmp_path, loop) == []
+
+    @pytest.mark.parametrize("old,new", [
+        ("    to_remove = []\n", "    to_remove = lookup.pending\n"),
+        ("    to_remove = []\n", "    to_remove = []\n    register(to_remove)\n"),
+        ("    to_remove = []\n", "    to_remove = []\n    alias = to_remove\n"),
+        ("    to_remove = []\n", "    to_remove = []\n    watch = lambda: to_remove.clear()\n"),
+        ("    to_remove = []\n", "    global to_remove\n    to_remove = []\n"),
+        ("def prune(topics, lookup):", "def prune(topics, lookup, to_remove):"),
+        ("    to_remove = []\n", "    to_remove = []\n    to_remove = list(topics)\n"),
+    ])
+    def test_a_container_something_else_can_reach_is_not_judged(self, tmp_path, old, new):
+        template = LOOP.replace(old, new)
+        assert template != LOOP
+        if "def prune(topics, lookup, to_remove)" in template:
+            template = template.replace("    to_remove = []\n", "")
+        assert self.findings(tmp_path, "while topic in to_remove:\n        topics.remove(topic)", template) == []
+
+    def test_reading_the_container_elsewhere_keeps_it_judged(self, tmp_path):
+        template = LOOP.replace("    return topics", "    print(len(to_remove), sorted(to_remove))\n    return topics")
+        assert len(self.findings(tmp_path, "while topic in to_remove:\n        topics.remove(topic)", template)) == 1
+
+
+class TestEnvironmentNumbers:
+    def findings(self, tmp_path, expression):
+        make_package(tmp_path, files={"demo/tools.py": plain_module(f"PORT = 11511 + {expression}")})
+        return found(tmp_path, "environment-number")
+
+    @pytest.mark.parametrize("expression", [
+        "int(os.environ.get('ROS_DOMAIN_ID', 0))", "int(os.getenv('ROS_DOMAIN_ID', '0'))",
+        "float(os.environ.get('RMW_TIMEOUT', 1.5))"])
+    def test_number_from_a_ros_variable_with_a_default(self, tmp_path, expression):
+        issue, = self.findings(tmp_path, expression)
+        assert issue["severity"] == "warning" and issue["line"] == 4
+        assert "set but empty" in issue["message"] and "raises ValueError" in issue["message"]
+        assert " or " in issue["message"]
+
+    @pytest.mark.parametrize("expression", [
+        "int(os.environ.get('ROS_DOMAIN_ID') or 0)",
+        "int(os.environ.get('ROS_DOMAIN_ID'))",
+        "int(os.environ['ROS_DOMAIN_ID'])",
+        "int(os.environ.get('PORT', 8080))",
+        "int(os.environ.get(NAME, 0))",
+        "int(os.environ.get('ROS_DOMAIN_ID', 0), 10)",
+        "int(settings.get('ROS_DOMAIN_ID', 0))",
+        "len(os.environ.get('ROS_DOMAIN_ID', ''))",
+        "int(os.environ.get(*pair))",
+    ])
+    def test_what_handles_empty_or_is_not_this_pattern_is_silent(self, tmp_path, expression):
+        assert self.findings(tmp_path, expression) == []
+
+
+class TestImportNames:
+    def workspace(self, tmp_path, importer, helpers="def scale(value):\n    return value\n\nLIMIT = 3\n", extra=None):
+        files = {"demo/helpers.py": helpers, "demo/tools.py": importer}
+        files.update(extra or {})
+        make_package(tmp_path, files=files)
+        return found(tmp_path, "import-name")
+
+    def test_name_the_module_does_not_define(self, tmp_path):
+        issue, = self.workspace(tmp_path, "from demo.helpers import scale, rescale\n")
+        assert issue["severity"] == "error" and (issue["file"], issue["line"]) == ("demo/demo/tools.py", 1)
+        assert "`from demo.helpers import rescale`: helpers.py defines no `rescale`" in issue["message"]
+        assert "ImportError" in issue["message"]
+
+    def test_relative_import(self, tmp_path):
+        issue, = self.workspace(tmp_path, "from .helpers import rescale\n")
+        assert "`from .helpers import rescale`" in issue["message"]
+
+    def test_name_missing_from_a_package_init(self, tmp_path):
+        issue, = self.workspace(tmp_path, "from demo import missing\n")
+        assert "demo/__init__.py defines no `missing`" in issue["message"]
+
+    def test_module_of_another_package_in_the_workspace(self, tmp_path):
+        make_package(tmp_path, name="shared", files={"shared/units.py": "def to_si(value):\n    return value\n"})
+        make_package(tmp_path, files={"demo/tools.py": "from shared.units import to_si, to_imperial\n"})
+        issue, = found(tmp_path, "import-name")
+        assert "units.py defines no `to_imperial`" in issue["message"]
+
+    def test_module_on_the_python_path(self, tmp_path, monkeypatch):
+        site = tmp_path / "opt" / "lib" / "python3.12" / "site-packages" / "launch_ros" / "substitutions"
+        site.mkdir(parents=True)
+        (site.parent / "__init__.py").write_text("")
+        (site / "__init__.py").write_text("from .find_package import FindPackageShare\n")
+        (site / "find_package.py").write_text("class FindPackageShare:\n    pass\n")
+        monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path / "opt"))
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        make_package(tmp_path / "ws", files={
+            "demo/tools.py": "from launch_ros.substitutions import FileContent, FindPackageShare\n"})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert "substitutions/__init__.py defines no `FileContent`" in issue["message"]
+
+    @pytest.mark.parametrize("importer", [
+        "from demo.helpers import scale, LIMIT\n",
+        "from demo.helpers import *\n",
+        "from demo import helpers\n",
+        "from demo import driver\n",
+        "import demo.helpers\n",
+        "from unknown_package.helpers import anything\n",
+        "from os.path import nothing_here\n",
+        "try:\n    from demo.helpers import rescale\nexcept ImportError:\n    rescale = None\n",
+        "if True:\n    from demo.helpers import rescale\n",
+        "from . import helpers\n",
+    ])
+    def test_what_exists_or_cannot_be_resolved_is_silent(self, tmp_path, importer):
+        assert self.workspace(tmp_path, importer) == []
+
+    @pytest.mark.parametrize("helpers", [
+        "from .other import *\n",
+        "def __getattr__(name):\n    return name\n",
+        "globals()['rescale'] = 1\n",
+        "import sys\nsys.modules[__name__].rescale = 1\n",
+        "setattr(object, 'x', 1)\n",
+        "def scale(:\n",
+    ])
+    def test_module_whose_names_cannot_be_read_is_silent(self, tmp_path, helpers):
+        assert self.workspace(tmp_path, "from demo.helpers import rescale\n", helpers,
+                              extra={"demo/other.py": "rescale = 1\n"}) == []
+
+    @pytest.mark.parametrize("helpers", [
+        "if True:\n    rescale = 1\n",
+        "try:\n    import json as rescale\nexcept ImportError:\n    rescale = None\n",
+        "for rescale in range(1):\n    pass\n",
+        "with open(__file__) as rescale:\n    pass\n",
+        "rescale: int = 1\n",
+        "first, rescale = 1, 2\n",
+        "class rescale:\n    pass\n",
+        "async def rescale():\n    pass\n",
+        "import numpy.linalg as rescale\n",
+    ])
+    def test_every_way_a_module_binds_a_name_counts(self, tmp_path, helpers):
+        assert self.workspace(tmp_path, "from demo.helpers import rescale\n", helpers) == []
+
+    def test_two_modules_of_the_same_name_are_not_decided(self, tmp_path):
+        make_package(tmp_path, name="shared", files={"common/units.py": "A = 1\n"})
+        make_package(tmp_path, name="other", files={"common/units.py": "B = 1\n"})
+        make_package(tmp_path, files={"demo/tools.py": "from common.units import C\n"})
+        assert found(tmp_path, "import-name") == []
+
+    def test_test_code_is_not_read(self, tmp_path):
+        make_package(tmp_path, files={"demo/helpers.py": "A = 1\n",
+                                      "test/test_tools.py": "from demo.helpers import B\n"})
+        assert found(tmp_path, "import-name") == []
+
+
+class TestImportShadowing:
+    def test_data_directory_named_like_an_installed_module_is_not_that_module(self, tmp_path):
+        # launch/__init__.py in a package is not the module `launch`.
+        make_package(tmp_path, installed=("launch",), files={
+            "launch/__init__.py": "", "launch/demo.launch.py": LAUNCH,
+            "config/__init__.py": "", "demo/tools.py": "from config import settings\nfrom launch import Thing\n"})
+        assert found(tmp_path, "import-name") == []
+
+    def test_compiled_or_namespace_module_is_not_read(self, tmp_path, monkeypatch):
+        site = tmp_path / "opt" / "lib" / "python3.12" / "site-packages"
+        (site / "fastlib").mkdir(parents=True)
+        (site / "native.cpython-312-x86_64-linux-gnu.so").write_bytes(b"")
+        (site / "typed.pyi").write_text("def f() -> None: ...\n")
+        monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path / "opt"))
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path / "missing"))
+        make_package(tmp_path / "ws", files={
+            "demo/tools.py": "from fastlib import a\nfrom native import b\nfrom typed import c\n"})
+        assert found(tmp_path / "ws", "import-name") == []

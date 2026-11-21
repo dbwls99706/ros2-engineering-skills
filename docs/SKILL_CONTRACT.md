@@ -127,14 +127,21 @@ their Python launch files:
 | `name-mismatch` | A topic, service or action is used under a name nothing in the workspace offers, one or two characters from a name offered with the same type |
 | `interface-field` | A callback reads or writes a field its message or service does not have, when the `.msg` or `.srv` file is in the workspace or under `AMENT_PREFIX_PATH` |
 | `missing-self` | A method uses `self` and does not take it as a parameter |
+| `invariant-loop` | A `while` tests membership in a container that the function created and nothing else holds, and the body neither rebinds the names in the condition nor names the container |
+| `environment-number` | `int()` or `float()` of a `ROS_` or `RMW_` environment variable read with a default: the default is not used when the variable is set but empty |
+| `import-name` | `from module import name` where the module's source is in the workspace, or under `PYTHONPATH` or `AMENT_PREFIX_PATH`, and defines no such name |
 | `remapping` | A launch file remaps a name the node's source never creates |
 | `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
 | `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect, or a VOLATILE subscription faces a TRANSIENT_LOCAL publisher |
 | `launch` | An error from `launch_validator.py`; its style warnings are left out |
 
-What it cannot see: logic, units, timing, conditions, what a value means, C++
-nodes (only their QoS declarations are read), XML and YAML launch files, and
-anything computed at run time. No finding is not a pass.
+What it cannot see: most of logic. The last four rows of the table are plain
+Python defects that can be read off one function or one import; they are a
+small part of what goes wrong in code, chosen because each can be decided
+without running anything. Units, timing, thresholds, what a value means, an
+edge case that is not handled, C++ nodes (only their QoS declarations are
+read), XML and YAML launch files and anything computed at run time are not
+seen. No finding is not a pass.
 
 Input the check cannot decide is left alone, never guessed: a computed name or
 namespace, `*args` or `**kwargs`, a node class with a base other than `Node` or
@@ -147,7 +154,14 @@ reported: a subscription callback with two parameters works from Jazzy on, and
 a timer callback with a parameter annotated `TimerInfo` works from Kilted on,
 so neither is a finding. A near-miss name is not reported when the name is
 written in any other file of the workspace, because a C++ node, a parameter
-file or a remapping may be its counterpart.
+file or a remapping may be its counterpart. A loop is not judged when a nested
+function names what its condition reads, when the container was passed to a
+call, given another name or came from outside the function, or when the body
+has a `break`, `return`, `raise` or `try`. An import is not judged inside `try`
+or `if`, when the module has a star import, `__getattr__` or writes to its own
+namespace, when it is compiled or a namespace package, or when two modules of
+that name are found. A `launch/` or `config/` directory with an `__init__.py`
+is not taken for the module of that name.
 
 Why at the end. Given the findings when the conversation starts, a model fixes
 what is listed and stops reading the rest of the workspace. In informal trials
