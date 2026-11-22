@@ -44,6 +44,14 @@ HANDOVER_PREFACE = (
     'verify: fix those. A request for one specific change does not: leave the other files '
     'alone and list the findings in your reply. Then finish.\n')
 HANDOVER_NEW = ' (not reported when this conversation started)'
+# Tests are named, never run by the hook: running them is the model's step, under the client's
+# permission rules and the actuation check, and a test bench may be wired to hardware.
+HANDOVER_TESTS = (
+    'Packages changed in this conversation have tests that were not run in it. Run them now, '
+    'unless they would move connected hardware (then say so in your reply instead), and fix '
+    'what they show:\n')
+HANDOVER_TEST_PACKAGES = 5
+TEST_COMMAND = re.compile(r'(?:^|[\s;&|(])(pytest|py\.test|colcon\s+test|launch_test|unittest)(?=$|[\s;&|)])')
 # "handover" (default) continues the turn once with the findings; "advise"
 # only shows them to the user; "off" does not run the check. Unknown values
 # mean "handover".
@@ -230,6 +238,44 @@ def fresh_conventions(payload, report):
     report['issues'] = kept
 
 
+def _package_states(report):
+    """{path: (name, fingerprint, tests)} from a workspace report; malformed entries are dropped."""
+    states = {}
+    listed = report.get('package_state')
+    for item in listed if isinstance(listed, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name, path, fingerprint, tests = (item.get(key) for key in ('package', 'path', 'fingerprint', 'tests'))
+        if (isinstance(name, str) and re.fullmatch(r'[A-Za-z][\w]{0,80}', name)
+                and isinstance(path, str) and isinstance(fingerprint, str)
+                and re.fullmatch(r'[\w./-]{1,200}', path) and '..' not in path.split('/')
+                and (tests is None or (isinstance(tests, str) and re.fullmatch(r'[\w./-]{1,200}', tests)
+                                       and '..' not in tests.split('/')))):
+            states[path] = (name, fingerprint, tests)
+    return states
+
+
+def note_test_run(payload):
+    """PreToolUse: remember that this session has run tests, so they are not asked for again."""
+    command = payload.get('tool_input', {}).get('command')
+    if isinstance(command, str) and TEST_COMMAND.search(command):
+        _log_append(_session_log(payload, '.tests'), ['run'])
+
+
+def untested_packages(payload, state, report):
+    """[(path, name, tests)] for packages this session changed, with tests it has not run.
+
+    Without the record made when the conversation started there is nothing to
+    compare with, and nothing is claimed.
+    """
+    before = state.get('packages')
+    if not isinstance(before, dict) or _log_lines(_session_log(payload, '.tests')):
+        return []
+    told = state.get('tests_shown') if isinstance(state.get('tests_shown'), list) else []
+    return [(path, name, tests) for path, (name, fingerprint, tests) in sorted(_package_states(report).items())
+            if tests and before.get(path) != fingerprint and path not in told]
+
+
 def _finding_key(issue):
     """Identity of a finding across the session: its line number may move, its text may not."""
     text = repr((issue.get('file'), issue.get('check'), issue.get('message')))
@@ -291,6 +337,7 @@ def remember_workspace(payload):
     if path is not None and report.get('packages'):
         _write_workspace_state(path, {
             'baseline': [_finding_key(issue) for issue in report['issues']],
+            'packages': {key: value[1] for key, value in _package_states(report).items()},
             'root': root, 'shown': []})
     return {}
 
@@ -307,7 +354,8 @@ def workspace_handover(payload):
     baseline = state.get('baseline') if isinstance(state.get('baseline'), list) else None
     pending = [issue for issue in report['issues'] if _finding_key(issue) not in shown]
     skipped = [str(item) for item in report['checks_skipped']]
-    if not pending:
+    untested = untested_packages(payload, state, report)
+    if not pending and not untested:
         return None, ''
     lines = []
     for issue in pending[:HANDOVER_FINDINGS]:
@@ -321,14 +369,26 @@ def workspace_handover(payload):
     if len(pending) > HANDOVER_FINDINGS:
         lines.append('Additional findings omitted; run scripts/workspace_checks.py for all of them.')
     text = '\n'.join(lines)[:HANDOVER_FEEDBACK]
+    tests = ''
+    if untested:
+        named = ['{name}: `python3 -m pytest {tests} -q` (in a built workspace: `colcon test '
+                 '--packages-select {name}`)'.format(name=name, tests=tests_dir)
+                 for _path, name, tests_dir in untested[:HANDOVER_TEST_PACKAGES]]
+        if len(untested) > HANDOVER_TEST_PACKAGES:
+            named.append('and %d more changed packages with tests' % (len(untested) - HANDOVER_TEST_PACKAGES))
+        tests = HANDOVER_TESTS + '\n'.join(named)
     # Without a stored record the same list would come back at every turn end.
+    told = state.get('tests_shown') if isinstance(state.get('tests_shown'), list) else []
     remembered = path is not None and _write_workspace_state(path, dict(
-        state, shown=shown + [_finding_key(issue) for issue in pending]))
+        state, shown=shown + [_finding_key(issue) for issue in pending],
+        tests_shown=told + [item[0] for item in untested]))
+    parts = ([HANDOVER_PREFACE + text] if pending else []) + ([tests] if tests else [])
     if workspace_mode() == 'handover' and remembered:
-        return {'decision': 'block', 'reason': HANDOVER_PREFACE + text}, ''
+        return {'decision': 'block', 'reason': '\n'.join(parts)}, ''
     # The user chose "advise", or the record cannot be kept: the findings go
     # to the user and the turn ends.
-    return notice('workspace check, static and not a review.\n' + text), ''
+    return notice('workspace check, static and not a review.\n'
+                  + '\n'.join(([text] if pending else []) + ([tests] if tests else []))), ''
 
 
 def actuation_mode():
@@ -437,6 +497,8 @@ def run_hook(event, payload):
         return notice('repeated Stop skipped; use the manual validator for '
                       'remaining findings.'), '', 0
     note = ''
+    if event == 'PreToolUse':
+        note_test_run(payload)
     if event == 'Stop' and workspace_mode() != 'off':
         output, note = workspace_handover(payload)
         if output is not None:

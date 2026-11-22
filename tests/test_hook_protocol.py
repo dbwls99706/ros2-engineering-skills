@@ -694,6 +694,32 @@ def test_handover_end_to_end(tmp_path, monkeypatch):
     assert 'decision' not in run('Stop', stop_hook_active=True)
 
 
+def test_tests_of_a_changed_package_end_to_end(tmp_path):
+    from tests.test_workspace_checks import make_package
+    package = make_package(tmp_path / 'src', files={'test/test_driver.py': 'def test_it():\n    assert True\n'})
+    script = os.path.join(os.path.dirname(hook.__file__), 'claude_hook.py')
+    env = {key: value for key, value in os.environ.items()
+           if key not in (hook.DISABLE_ENV, hook.WORKSPACE_ENV, 'SKILL_WORKSPACE', 'CLAUDE_PROJECT_DIR')}
+    env['XDG_CACHE_HOME'] = str(tmp_path / 'cache')
+
+    def run(event, **extra):
+        payload = {'hook_event_name': event, 'cwd': str(tmp_path), 'session_id': 'tests-end-to-end', **extra}
+        done = subprocess.run([hook.sys.executable, '-B', script, event], capture_output=True, text=True,
+                              env=env, input=json.dumps(payload), timeout=60)
+        assert done.returncode == 0 and done.stderr == ''
+        return json.loads(done.stdout)
+
+    assert run('SessionStart', source='startup') == {}
+    assert 'decision' not in run('Stop')  # nothing changed, nothing reported
+    driver = package / 'demo' / 'driver.py'
+    driver.write_text(driver.read_text() + '\n# edited in the session\n')
+    output = run('Stop')
+    assert output['decision'] == 'block'
+    assert 'demo: `python3 -m pytest src/demo/test -q`' in output['reason']
+    driver.write_text(driver.read_text() + '# again\n')
+    assert 'decision' not in run('Stop')  # named once
+
+
 # ---------------------------------------------------------------- message conventions
 
 def tool_payload(name, **tool_input):
@@ -725,3 +751,108 @@ def test_convention_without_a_session_id_is_shown_each_time(state):
     for _ in range(2):
         (output, _error, _status), _calls = state('PreToolUse', write, completed(issues=[CONVENTION]))
         assert 'LaserScan' in output['hookSpecificOutput']['additionalContext']
+
+
+# ---------------------------------------------------------------- tests of changed packages
+
+def states(fingerprint='aaaa', tests='src/demo/test', **extra):
+    return [{'package': 'demo', 'path': 'src/demo', 'fingerprint': fingerprint, 'tests': tests, **extra}]
+
+
+def test_changed_package_with_tests_that_were_not_run_is_handed_over_once(state):
+    state('SessionStart', start_payload(), workspace(package_state=states()))
+    (output, error, status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')))
+    assert status == 0 and not error and output['decision'] == 'block'
+    reason = output['reason']
+    assert reason.startswith('Packages changed in this conversation have tests that were not run in it.')
+    assert 'unless they would move connected hardware' in reason
+    assert ('demo: `python3 -m pytest src/demo/test -q` (in a built workspace: '
+            '`colcon test --packages-select demo`)') in reason
+    assert 'static check' not in reason  # no finding, so no finding preface
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('cccc')),
+                                              completed())
+    assert output == {}
+
+
+def test_tests_follow_the_findings_in_one_handover(state):
+    state('SessionStart', start_payload(), workspace([ISSUE], package_state=states()))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], package_state=states('bbbb')))
+    reason = output['reason']
+    assert reason.index('Before you finish: a static check') < reason.index("executable 'other'") < reason.index(
+        'Packages changed in this conversation have tests')
+
+
+@pytest.mark.parametrize('command', [
+    'python3 -m pytest src/demo/test -q', 'cd src/demo && pytest', 'colcon test --packages-select demo',
+    'colcon  test', 'python -m unittest discover', 'launch_test test/launch.py', 'py.test -x'])
+def test_tests_the_session_ran_are_not_asked_for(state, command):
+    state('SessionStart', start_payload(), workspace(package_state=states()))
+    state('PreToolUse', tool_payload('Bash', command=command), completed())
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')),
+                                              completed())
+    assert output == {}
+
+
+@pytest.mark.parametrize('command', [
+    'ls test', 'cat pytest.ini', 'colcon build', 'echo my-pytest-notes', 'grep unittests x'])
+def test_other_commands_are_not_a_test_run(state, command):
+    state('SessionStart', start_payload(), workspace(package_state=states()))
+    state('PreToolUse', tool_payload('Bash', command=command), completed())
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')))
+    assert output['decision'] == 'block'
+
+
+@pytest.mark.parametrize('at_start,at_stop', [
+    (states(), states()),                                   # nothing changed
+    (states(tests=None), states('bbbb', tests=None)),       # changed, no tests of its own
+    ([], states('bbbb')[:0]),                               # no package
+])
+def test_unchanged_or_untested_packages_are_left_alone(state, at_start, at_stop):
+    state('SessionStart', start_payload(), workspace(package_state=at_start))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=at_stop), completed())
+    assert output == {}
+
+
+def test_a_package_made_in_the_session_counts_as_changed(state):
+    state('SessionStart', start_payload(), workspace(package_state=states()))
+    made = states() + [{'package': 'extra', 'path': 'src/extra', 'fingerprint': 'dddd', 'tests': 'src/extra/test'}]
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(packages=2, package_state=made))
+    assert 'extra: `python3 -m pytest src/extra/test -q`' in output['reason'] and 'demo:' not in output['reason']
+
+
+def test_without_the_record_from_the_start_nothing_is_claimed(state):
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')),
+                                              completed())
+    assert output == {}
+
+
+@pytest.mark.parametrize('entry', [
+    'demo', {'package': 'demo'},
+    {'package': 'demo; rm -rf /', 'path': 'src/demo', 'fingerprint': 'b', 'tests': 'src/demo/test'},
+    {'package': 'demo', 'path': '../outside', 'fingerprint': 'b', 'tests': 'src/demo/test'},
+    {'package': 'demo', 'path': 'src/demo', 'fingerprint': 'b', 'tests': 'src/demo/test`; reboot`'},
+    {'package': 'demo', 'path': 'src/demo', 'fingerprint': 'b', 'tests': '../../etc'},
+    {'package': 'demo', 'path': 'src/demo', 'fingerprint': 7, 'tests': 'src/demo/test'},
+])
+def test_malformed_package_states_never_reach_the_model(state, entry):
+    state('SessionStart', start_payload(), workspace(package_state=states()))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=[entry]), completed())
+    assert output == {}
+
+
+def test_only_a_few_packages_are_named(state):
+    def many(fingerprint):
+        return [{'package': 'p%d' % n, 'path': 'src/p%d' % n, 'fingerprint': fingerprint,
+                 'tests': 'src/p%d/test' % n} for n in range(8)]
+    state('SessionStart', start_payload(), workspace(packages=8, package_state=many('a')))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(packages=8, package_state=many('b')))
+    assert output['reason'].count('python3 -m pytest') == 5
+    assert 'and 3 more changed packages with tests' in output['reason']
+
+
+def test_advise_mode_names_the_tests_to_the_user(state, monkeypatch):
+    monkeypatch.setenv(hook.WORKSPACE_ENV, 'advise')
+    state('SessionStart', start_payload(), workspace(package_state=states()))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')))
+    assert set(output) == {'systemMessage'}
+    assert 'python3 -m pytest src/demo/test -q' in output['systemMessage']

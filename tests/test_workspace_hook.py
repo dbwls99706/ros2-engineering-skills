@@ -43,7 +43,10 @@ class TestReport:
         report, done = run_hook({'cwd': str(workspace)})
         assert done.returncode == 0 and done.stderr == ''
         assert set(report) == {'hook', 'version', 'packages', 'issues_count', 'issues',
-                               'checks_skipped', 'status'}
+                               'checks_skipped', 'package_state', 'status'}
+        assert report['package_state'] == [{
+            'package': 'demo', 'path': 'src/demo', 'tests': None,
+            'fingerprint': report['package_state'][0]['fingerprint']}]
         assert report['hook'] == 'ros2-engineering-skills:workspace'
         assert report['packages'] == 1 and report['status'] == 'fail'
         assert report['issues_count'] == len(report['issues']) == 2
@@ -274,3 +277,40 @@ class TestGeneratedPackages:
              '--dest', str(tmp_path / 'src')], capture_output=True, text=True, timeout=60)
         assert done.returncode == 0, done.stderr
         assert hook.collect(str(tmp_path)) == ([], [], 1)
+
+
+class TestPackageStates:
+    def test_fingerprint_follows_the_files_and_reads_nothing_else(self, workspace):
+        before, = hook.package_states(str(workspace))
+        assert before['package'] == 'demo' and before['path'] == 'src/demo' and len(before['fingerprint']) == 24
+        assert hook.package_states(str(workspace)) == [before]
+        driver = workspace / 'src' / 'demo' / 'demo' / 'driver.py'
+        driver.write_text(driver.read_text() + '\n# changed\n')
+        after, = hook.package_states(str(workspace))
+        assert after['fingerprint'] != before['fingerprint']
+        (workspace / 'src' / 'demo' / '__pycache__').mkdir()
+        (workspace / 'src' / 'demo' / '__pycache__' / 'driver.pyc').write_bytes(b'x')
+        assert hook.package_states(str(workspace)) == [after]
+
+    @pytest.mark.parametrize('files,expected', [
+        ({'test/test_driver.py': 'def test_it():\n    pass\n'}, 'src/demo/test'),
+        ({'tests/driver_test.py': 'def test_it():\n    pass\n'}, 'src/demo/tests'),
+        ({'test/test_flake8.py': '', 'test/test_copyright.py': '', 'test/test_pep257.py': ''}, None),
+        ({'test/helpers.py': '', 'test/data/test_values.py': ''}, None),
+        ({'demo/test_driver.py': 'def test_it():\n    pass\n'}, None),
+    ])
+    def test_own_tests_are_found_and_lint_tests_are_not(self, tmp_path, files, expected):
+        make_package(tmp_path / 'src', files=files)
+        state, = hook.package_states(str(tmp_path))
+        assert state['tests'] == expected
+
+    def test_a_home_directory_has_no_states(self, monkeypatch, tmp_path):
+        make_package(tmp_path / 'src')
+        monkeypatch.setenv('HOME', str(tmp_path))
+        assert hook.package_states(str(tmp_path)) == []
+
+    def test_past_the_time_limit_no_state_is_reported(self, workspace, monkeypatch, capsys):
+        monkeypatch.setenv('SKILL_WORKSPACE', str(workspace))
+        monkeypatch.setattr(hook, 'TIME_LIMIT', -1.0)
+        hook.main()
+        assert json.loads(capsys.readouterr().out)['package_state'] == []

@@ -103,6 +103,20 @@ conversation started is marked as such, so a package the session has just made
 is checked like any other. A repeated Stop never continues the turn, and the
 same finding is not handed over twice in a session.
 
+The same handover names the tests of packages the session changed. The
+workspace report carries, for each package, a fingerprint of its files (path,
+size and modification time; nothing is read) and the directory of its own
+tests, if it has any besides the lint tests (`package_state`). A package whose
+fingerprint differs from the one recorded when the conversation started, or
+that did not exist then, counts as changed. If it has tests and no command of
+the session ran `pytest`, `colcon test`, `launch_test` or `unittest`, the
+handover gives the command, `python3 -m pytest <directory> -q`, and tells the
+model to run it unless it would move connected hardware. The hook itself runs
+nothing: the command is the model's step, under the client's permission rules
+and the PreToolUse checks. Without the record from the start of the
+conversation, or when the check ran out of time, no test is asked for. A
+package is named once in a session, and at most five in one handover.
+
 The check reads the directory the conversation started in, not the directory a
 `cd` has left the shell in: after `cd src/one_package` the client reports that
 package as the working directory, and a check of it alone would otherwise be

@@ -15,6 +15,7 @@ Nothing is built, imported or run. A workspace without a package.xml, a home
 directory and the filesystem root produce an empty report.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -29,6 +30,10 @@ LAUNCH_SEVERITIES = ('error',)
 # The client gives this hook 15 seconds and the adapter 12. Past this limit the
 # checks that have not started are skipped and the report says so.
 TIME_LIMIT = 8.0
+# Test files that every generated package carries and that say nothing about its code.
+LINT_TESTS = {'test_copyright.py', 'test_flake8.py', 'test_pep257.py', 'test_xmllint.py',
+              'test_mypy.py'}
+MAX_PACKAGE_STATES = 200
 
 
 def _resolve_workspace():
@@ -91,6 +96,42 @@ def _launch_issues(packages, workspace_checks, launch_validator, deadline=None):
     return issues, True
 
 
+def package_states(workspace):
+    """What the adapter needs to tell which packages a session changed and how to test them.
+
+    A fingerprint of the files (path, size, modification time; nothing is
+    read) and the directory of the package's own tests, relative to the
+    workspace, or None when it has none besides the lint tests.
+    """
+    if _too_broad(workspace):
+        return []
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import workspace_checks
+    finally:
+        sys.path.pop(0)
+    workspace = os.path.realpath(workspace)
+    states = []
+    for package in workspace_checks.find_packages(workspace)[:MAX_PACKAGE_STATES]:
+        digest = hashlib.sha256()
+        tests = None
+        for path in package.files:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            relative = path.relative_to(package.root)
+            digest.update(repr((str(relative), stat.st_size, stat.st_mtime_ns)).encode('utf-8'))
+            if (tests is None and len(relative.parts) == 2 and relative.parts[0] in ('test', 'tests')
+                    and path.suffix == '.py' and path.name not in LINT_TESTS
+                    and (path.name.startswith('test_') or path.name.endswith('_test.py'))):
+                tests = os.path.relpath(path.parent, workspace)
+        states.append({'package': package.name,
+                       'path': os.path.relpath(package.root, workspace),
+                       'fingerprint': digest.hexdigest()[:24], 'tests': tests})
+    return states
+
+
 def collect(workspace, deadline=None):
     """(issues, checks_skipped, package count) for *workspace*.
 
@@ -125,7 +166,12 @@ def survey(workspace, deadline=None):
 
 
 def main():
-    issues, skipped, names = survey(_resolve_workspace(), time.monotonic() + TIME_LIMIT)
+    workspace = _resolve_workspace()
+    deadline = time.monotonic() + TIME_LIMIT
+    issues, skipped, names = survey(workspace, deadline)
+    # Past the time limit the adapter is told nothing about the packages, and
+    # asks for no test: an incomplete list would read as "these did not change".
+    states = package_states(workspace) if names and time.monotonic() < deadline else []
     if len(issues) > MAX_ISSUES:
         skipped = skipped + [f'{len(issues) - MAX_ISSUES} further findings are not listed']
         issues = issues[:MAX_ISSUES]
@@ -136,6 +182,7 @@ def main():
         'issues_count': len(issues),
         'issues': issues,
         'checks_skipped': skipped,
+        'package_state': states,
         'status': 'fail' if any(issue['severity'] == 'error' for issue in issues) else 'pass',
     }, indent=2))
 

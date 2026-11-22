@@ -146,8 +146,9 @@ does not have, a service name one character from the one that is offered, and
 similar defects that build cleanly and fail at bring-up. It records what it
 finds when a conversation starts and says nothing. When the model is about to
 finish, it hands over what is still reported, including what the session itself
-broke, and the model continues once to deal with it. It is a mechanical check
-of declarations, not a review. While code is written, the PreToolUse hook
+broke, and names the tests of packages the session changed and did not run;
+the model continues once to deal with it. The hook runs nothing itself. It is
+a mechanical check of declarations, not a review. While code is written, the PreToolUse hook
 also adds, once per session, what a message type such as `LaserScan` or `Imu`
 means beyond its fields. What is compared, what cannot be seen and why the
 findings come at the end are described in the

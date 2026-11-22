@@ -114,6 +114,13 @@ Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
   not handed over twice in a session. This changes an earlier rule of this
   adapter, which never continued a turn; the changed-file check at Stop stays
   advisory.
+- The handover also names the tests of packages the session changed and did
+  not test: `python3 -m pytest <package>/test -q`, with the instruction not to
+  run tests that move connected hardware. The hook runs nothing itself. A
+  package counts as changed when the fingerprint of its files differs from the
+  one recorded at SessionStart; a session that ran `pytest`, `colcon test`,
+  `launch_test` or `unittest` is not asked again. The static check does not
+  see most logic defects; a package's own tests are where they show.
 - Why at the end. Given the findings when the conversation starts, a model
   fixes what is listed and stops reading the rest of the workspace. In
   informal trials with a small model at low effort this held for every wording
