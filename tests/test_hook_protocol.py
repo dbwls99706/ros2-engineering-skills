@@ -715,7 +715,7 @@ def test_tests_of_a_changed_package_end_to_end(tmp_path):
     driver.write_text(driver.read_text() + '\n# edited in the session\n')
     output = run('Stop')
     assert output['decision'] == 'block'
-    assert 'demo: `(cd src/demo && python3 -m pytest test -q)`' in output['reason']
+    assert 'demo: `python3 -m pytest src/demo/test -q -o pythonpath=src/demo`' in output['reason']
     driver.write_text(driver.read_text() + '# again\n')
     assert 'decision' not in run('Stop')  # named once
 
@@ -766,7 +766,7 @@ def test_changed_package_with_tests_that_were_not_run_is_handed_over_once(state)
     reason = output['reason']
     assert reason.startswith('No test was run in this conversation. For each package below that you changed')
     assert 'unless they would move connected hardware' in reason
-    assert ('demo: `(cd src/demo && python3 -m pytest test -q)` (in a built workspace: '
+    assert ('demo: `python3 -m pytest src/demo/test -q -o pythonpath=src/demo` (in a built workspace: '
             '`colcon test --packages-select demo`)') in reason
     assert 'static check' not in reason  # no finding, so no finding preface
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('cccc')),
@@ -817,7 +817,7 @@ def test_a_package_made_in_the_session_counts_as_changed(state):
     state('SessionStart', start_payload(), workspace(package_state=states()))
     made = states() + [{'package': 'extra', 'path': 'src/extra', 'fingerprint': 'dddd', 'tests': 'src/extra/test'}]
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(packages=2, package_state=made))
-    assert 'extra: `(cd src/extra && python3 -m pytest test -q)`' in output['reason']
+    assert 'extra: `python3 -m pytest src/extra/test -q -o pythonpath=src/extra`' in output['reason']
     assert 'demo:' not in output['reason']
 
 
@@ -856,7 +856,7 @@ def test_advise_mode_names_the_tests_to_the_user(state, monkeypatch):
     state('SessionStart', start_payload(), workspace(package_state=states()))
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')))
     assert set(output) == {'systemMessage'}
-    assert '(cd src/demo && python3 -m pytest test -q)' in output['systemMessage']
+    assert 'python3 -m pytest src/demo/test -q -o pythonpath=src/demo' in output['systemMessage']
 
 
 def test_package_of_a_finding_handed_over_now_is_named_before_it_is_changed(state):
@@ -864,7 +864,7 @@ def test_package_of_a_finding_handed_over_now_is_named_before_it_is_changed(stat
     state('SessionStart', start_payload(), workspace([ISSUE], package_state=states()))
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], package_state=states()))
     assert "executable 'other'" in output['reason']
-    assert 'demo: `(cd src/demo && python3 -m pytest test -q)`' in output['reason']
+    assert 'demo: `python3 -m pytest src/demo/test -q -o pythonpath=src/demo`' in output['reason']
 
 
 def test_changed_packages_are_named_before_those_only_about_to_change(state):
@@ -872,4 +872,4 @@ def test_changed_packages_are_named_before_those_only_about_to_change(state):
     state('SessionStart', start_payload(), workspace([ISSUE], packages=2, package_state=both))
     now = [dict(both[0]), dict(both[1], fingerprint='y')]
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], packages=2, package_state=now))
-    assert output['reason'].index('other: `(cd src/other') < output['reason'].index('demo: `(cd src/demo')
+    assert output['reason'].index('other: `python3 -m pytest src/other') < output['reason'].index('demo: `python3 -m')

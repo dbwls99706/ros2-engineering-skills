@@ -382,10 +382,10 @@ def workspace_handover(payload):
     text = '\n'.join(lines)[:HANDOVER_FEEDBACK]
     tests = ''
     if untested:
-        # From the package directory, as colcon runs them: the package is then importable.
-        named = ['{name}: `(cd {path} && python3 -m pytest {tests} -q)` (in a built workspace: '
-                 '`colcon test --packages-select {name}`)'.format(
-                     name=name, path=package_path, tests=os.path.relpath(tests_dir, package_path))
+        # One plain command, so that a permission rule for pytest matches it; the package
+        # directory goes on the import path, as it is when colcon runs the tests from there.
+        named = ['{name}: `python3 -m pytest {tests} -q -o pythonpath={path}` (in a built workspace: '
+                 '`colcon test --packages-select {name}`)'.format(name=name, path=package_path, tests=tests_dir)
                  for package_path, name, tests_dir in untested[:HANDOVER_TEST_PACKAGES]]
         if len(untested) > HANDOVER_TEST_PACKAGES:
             named.append('and %d more packages with tests' % (len(untested) - HANDOVER_TEST_PACKAGES))

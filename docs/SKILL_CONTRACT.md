@@ -112,9 +112,10 @@ that did not exist then, counts as changed, and so does a package that holds a
 finding handed over now: the turn continues only once, so the tests of what is
 about to be fixed are named in the same handover. If such a package has tests
 and no command of the session ran `pytest`, `colcon test`, `launch_test` or
-`unittest`, the handover gives the command, run from the package directory as
-colcon runs it, `(cd <package> && python3 -m pytest test -q)`, and tells the
-model to run it for the packages it changed unless it would move connected
+`unittest`, the handover gives one plain command, so that a permission rule for
+pytest matches it, with the package directory on the import path as it is when
+colcon runs the tests: `python3 -m pytest <package>/test -q -o
+pythonpath=<package>`. It tells the model to run it for the packages it changed unless it would move connected
 hardware. The hook itself runs
 nothing: the command is the model's step, under the client's permission rules
 and the PreToolUse checks. Without the record from the start of the
