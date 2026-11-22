@@ -47,9 +47,9 @@ HANDOVER_NEW = ' (not reported when this conversation started)'
 # Tests are named, never run by the hook: running them is the model's step, under the client's
 # permission rules and the actuation check, and a test bench may be wired to hardware.
 HANDOVER_TESTS = (
-    'Packages changed in this conversation have tests that were not run in it. Run them now, '
-    'unless they would move connected hardware (then say so in your reply instead), and fix '
-    'what they show:\n')
+    'No test was run in this conversation. For each package below that you changed, or change '
+    'now, run its tests before you finish, unless they would move connected hardware (then say '
+    'so in your reply instead), and fix what they show:\n')
 HANDOVER_TEST_PACKAGES = 5
 TEST_COMMAND = re.compile(r'(?:^|[\s;&|(])(pytest|py\.test|colcon\s+test|launch_test|unittest)(?=$|[\s;&|)])')
 # "handover" (default) continues the turn once with the findings; "advise"
@@ -262,9 +262,12 @@ def note_test_run(payload):
         _log_append(_session_log(payload, '.tests'), ['run'])
 
 
-def untested_packages(payload, state, report):
-    """[(path, name, tests)] for packages this session changed, with tests it has not run.
+def untested_packages(payload, state, report, pending=()):
+    """[(path, name, tests)] for packages with tests that this session changed and has not tested.
 
+    A package also counts when a finding that is handed over now lies in it:
+    the turn continues only once, so the tests of what is about to be fixed
+    have to be named in the same handover. Changed packages come first.
     Without the record made when the conversation started there is nothing to
     compare with, and nothing is claimed.
     """
@@ -272,8 +275,16 @@ def untested_packages(payload, state, report):
     if not isinstance(before, dict) or _log_lines(_session_log(payload, '.tests')):
         return []
     told = state.get('tests_shown') if isinstance(state.get('tests_shown'), list) else []
-    return [(path, name, tests) for path, (name, fingerprint, tests) in sorted(_package_states(report).items())
-            if tests and before.get(path) != fingerprint and path not in told]
+    touched = {str(issue.get('file', '')).split('/')[0] for issue in pending}
+    changed, fixing = [], []
+    for path, (name, fingerprint, tests) in sorted(_package_states(report).items()):
+        if not tests or path in told:
+            continue
+        if before.get(path) != fingerprint:
+            changed.append((path, name, tests))
+        elif path.split('/')[-1] in touched:
+            fixing.append((path, name, tests))
+    return changed + fixing
 
 
 def _finding_key(issue):
@@ -354,7 +365,7 @@ def workspace_handover(payload):
     baseline = state.get('baseline') if isinstance(state.get('baseline'), list) else None
     pending = [issue for issue in report['issues'] if _finding_key(issue) not in shown]
     skipped = [str(item) for item in report['checks_skipped']]
-    untested = untested_packages(payload, state, report)
+    untested = untested_packages(payload, state, report, pending)
     if not pending and not untested:
         return None, ''
     lines = []
@@ -371,11 +382,13 @@ def workspace_handover(payload):
     text = '\n'.join(lines)[:HANDOVER_FEEDBACK]
     tests = ''
     if untested:
-        named = ['{name}: `python3 -m pytest {tests} -q` (in a built workspace: `colcon test '
-                 '--packages-select {name}`)'.format(name=name, tests=tests_dir)
-                 for _path, name, tests_dir in untested[:HANDOVER_TEST_PACKAGES]]
+        # From the package directory, as colcon runs them: the package is then importable.
+        named = ['{name}: `(cd {path} && python3 -m pytest {tests} -q)` (in a built workspace: '
+                 '`colcon test --packages-select {name}`)'.format(
+                     name=name, path=package_path, tests=os.path.relpath(tests_dir, package_path))
+                 for package_path, name, tests_dir in untested[:HANDOVER_TEST_PACKAGES]]
         if len(untested) > HANDOVER_TEST_PACKAGES:
-            named.append('and %d more changed packages with tests' % (len(untested) - HANDOVER_TEST_PACKAGES))
+            named.append('and %d more packages with tests' % (len(untested) - HANDOVER_TEST_PACKAGES))
         tests = HANDOVER_TESTS + '\n'.join(named)
     # Without a stored record the same list would come back at every turn end.
     told = state.get('tests_shown') if isinstance(state.get('tests_shown'), list) else []

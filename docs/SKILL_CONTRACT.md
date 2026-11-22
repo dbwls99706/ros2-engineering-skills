@@ -108,10 +108,14 @@ workspace report carries, for each package, a fingerprint of its files (path,
 size and modification time; nothing is read) and the directory of its own
 tests, if it has any besides the lint tests (`package_state`). A package whose
 fingerprint differs from the one recorded when the conversation started, or
-that did not exist then, counts as changed. If it has tests and no command of
-the session ran `pytest`, `colcon test`, `launch_test` or `unittest`, the
-handover gives the command, `python3 -m pytest <directory> -q`, and tells the
-model to run it unless it would move connected hardware. The hook itself runs
+that did not exist then, counts as changed, and so does a package that holds a
+finding handed over now: the turn continues only once, so the tests of what is
+about to be fixed are named in the same handover. If such a package has tests
+and no command of the session ran `pytest`, `colcon test`, `launch_test` or
+`unittest`, the handover gives the command, run from the package directory as
+colcon runs it, `(cd <package> && python3 -m pytest test -q)`, and tells the
+model to run it for the packages it changed unless it would move connected
+hardware. The hook itself runs
 nothing: the command is the model's step, under the client's permission rules
 and the PreToolUse checks. Without the record from the start of the
 conversation, or when the check ran out of time, no test is asked for. A

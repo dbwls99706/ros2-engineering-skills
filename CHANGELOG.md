@@ -115,10 +115,11 @@ Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
   adapter, which never continued a turn; the changed-file check at Stop stays
   advisory.
 - The handover also names the tests of packages the session changed and did
-  not test: `python3 -m pytest <package>/test -q`, with the instruction not to
-  run tests that move connected hardware. The hook runs nothing itself. A
-  package counts as changed when the fingerprint of its files differs from the
-  one recorded at SessionStart; a session that ran `pytest`, `colcon test`,
+  not test: `(cd <package> && python3 -m pytest test -q)`, with the
+  instruction not to run tests that move connected hardware. The hook runs
+  nothing itself. A package counts as changed when the fingerprint of its
+  files differs from the one recorded at SessionStart, or when a finding
+  handed over now lies in it; a session that ran `pytest`, `colcon test`,
   `launch_test` or `unittest` is not asked again. The static check does not
   see most logic defects; a package's own tests are where they show.
 - Why at the end. Given the findings when the conversation starts, a model
