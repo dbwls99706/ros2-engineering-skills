@@ -153,7 +153,7 @@ their Python launch files:
 | `returns-none` | `__str__` or `__repr__` has a path that returns `None`: `str()`, `print()` and string formatting raise `TypeError` |
 | `other-client` | A function waits for one client attribute of `self` and sends its only request through another, which it never waits for |
 | `class-attribute` | A function makes an instance of an imported class and then assigns an attribute on the class itself |
-| `scan-ranges` | A file imports `LaserScan`, reads `.ranges` as distances (indexing, iteration, `min` and the like) and nowhere mentions `isfinite`, `isinf`, `isnan`, `range_min`, `range_max`, `inf` or `nan` |
+| `scan-ranges` | A file imports `LaserScan`, reads `.ranges` as distances (indexing, iteration, `min` and the like) and nowhere reads `range_min` or `range_max`. The message says whether the file excludes `inf` and `NaN` at all or only leaves out the range limits |
 | `remapping` | A launch file remaps a name the node's source never creates |
 | `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
 | `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect, or a VOLATILE subscription faces a TRANSIENT_LOCAL publisher |

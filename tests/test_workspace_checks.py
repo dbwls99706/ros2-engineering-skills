@@ -1796,9 +1796,8 @@ class TestScanRanges:
     @pytest.mark.parametrize("body", [
         "valid = [r for r in scan.ranges if scan.range_min <= r <= scan.range_max]\n"
         "self.pub.publish(Bool(data=bool(valid) and min(valid) < 0.5))",
-        "import math\nvalid = [r for r in scan.ranges if math.isfinite(r)]\n"
+        "import math\nvalid = [r for r in scan.ranges if math.isfinite(r) and r >= scan.range_min]\n"
         "self.pub.publish(Bool(data=bool(valid) and min(valid) < 0.5))",
-        "close = [r for r in scan.ranges if r == r and r != float('inf')]\nself.pub.publish(Bool(data=bool(close)))",
         "self.last = scan.ranges",
         "self.pub.publish(Bool(data=len(scan.ranges) > 0))",
         "self.forward(scan.ranges)",
@@ -1806,6 +1805,41 @@ class TestScanRanges:
     ])
     def test_filtered_or_passed_on_or_undecidable_is_silent(self, tmp_path, body):
         assert self.findings(tmp_path, body) == []
+
+    @pytest.mark.parametrize("body", [
+        "import math\nvalid = [r for r in scan.ranges if math.isfinite(r)]\n"
+        "self.pub.publish(Bool(data=bool(valid) and min(valid) < 0.5))",
+        "for r in scan.ranges:\n    if r != r or r < 0.5:  # nan counts as blocked\n"
+        "        self.pub.publish(Bool(data=True))",
+        "close = [r for r in scan.ranges if r != float('inf')]\nself.pub.publish(Bool(data=bool(close)))",
+    ])
+    def test_inf_and_nan_handled_but_the_range_limits_never_read(self, tmp_path, body):
+        issue, = self.findings(tmp_path, body)
+        assert "never reads range_min or range_max" in issue["message"]
+        assert "scan.range_min..scan.range_max" in issue["message"] and "REP 117" in issue["message"]
+
+    HELPER = ("def blocked(ranges, limit):\n    for i, r in enumerate(ranges):\n        if r < limit:\n"
+              "            return True\n    return False\n\n\ndef keep(ranges, limit):\n    return ranges\n\n\n")
+
+    @pytest.mark.parametrize("body", [
+        "self.pub.publish(Bool(data=blocked(scan.ranges, 0.5)))",
+        "self.pub.publish(Bool(data=self.near(scan.ranges)))\n\ndef near(self, ranges):\n    return min(ranges) < 0.5",
+    ])
+    def test_ranges_handed_to_a_function_of_this_file_that_reads_them(self, tmp_path, body):
+        source = self.SOURCE.replace("class Guard(Node):", self.HELPER + "class Guard(Node):")
+        issue, = self.findings(tmp_path, body, source)
+        assert "scan.ranges is read as distances" in issue["message"]
+
+    @pytest.mark.parametrize("body", [
+        "self.last = keep(scan.ranges, 0.5)",
+        "self.pub.publish(Bool(data=blocked(limit=0.5, ranges=scan.ranges)))",
+        "self.pub.publish(Bool(data=blocked(*[scan.ranges, 0.5])))",
+        "self.pub.publish(Bool(data=other.blocked(scan.ranges, 0.5)))",
+        "self.pub.publish(Bool(data=blocked(0.5, scan.ranges)))",
+    ])
+    def test_helper_that_does_not_read_them_or_cannot_be_matched_is_silent(self, tmp_path, body):
+        source = self.SOURCE.replace("class Guard(Node):", self.HELPER + "class Guard(Node):")
+        assert self.findings(tmp_path, body, source) == []
 
     def test_file_that_does_not_import_laserscan_is_not_judged(self, tmp_path):
         source = self.SOURCE.replace("from sensor_msgs.msg import LaserScan\n", "from demo.types import LaserScan\n")

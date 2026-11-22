@@ -66,8 +66,9 @@ Workspace check (`scripts/workspace_checks.py`, new):
   logic defects are not decidable without running the code, and the check
   leaves them alone; the handover names the package's tests for that reason.
 - `LaserScan.ranges` read as distances (indexed, iterated, passed to `min`
-  and the like) in a file that never mentions `isfinite`, `isinf`, `isnan`,
-  `range_min`, `range_max`, `inf` or `nan` (REP 117). The same convention
+  and the like) in a file that never reads `range_min` or `range_max`
+  (REP 117); the message says whether `inf` and `NaN` are excluded at all or
+  only the range limits are left out. The same convention
   shown as a note while the code was written was read and changed nothing;
   as a finding with a file and a line it can be acted on.
 - A third-party module imported unconditionally at module level by an

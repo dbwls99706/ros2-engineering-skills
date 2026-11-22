@@ -1268,9 +1268,42 @@ def _class_attributes(package: Package, path: Path, tree: ast.AST) -> list:
     return issues
 
 
-_SCAN_GUARDS = re.compile(r"isfinite|isinf|isnan|range_min|range_max|\binf\b|\bnan\b", re.I)
+_SCAN_LIMITS = re.compile(r"range_min|range_max")
+_SCAN_GUARDS = re.compile(r"isfinite|isinf|isnan|\binf\b|\bnan\b", re.I)
 _REDUCERS = {"min", "max", "sum", "sorted", "mean", "median", "array", "asarray", "amin", "amax",
              "argmin", "argmax", "any", "all", "filter", "map", "enumerate", "zip", "list", "tuple"}
+
+
+def _measured(node: ast.AST, parents: dict) -> bool:
+    """*node* is indexed, iterated or reduced: its elements are read one by one."""
+    parent = parents.get(node)
+    if isinstance(parent, ast.Call) and node in parent.args and _call_name(parent) == "enumerate":
+        node, parent = parent, parents.get(parent)
+    return ((isinstance(parent, ast.Subscript) and parent.value is node)
+            or (isinstance(parent, (ast.For, ast.comprehension)) and parent.iter is node)
+            or (isinstance(parent, ast.Call) and node in parent.args
+                and _call_name(parent) in _REDUCERS))
+
+
+def _measured_by_helper(node: ast.AST, parents: dict, tree: ast.AST) -> bool:
+    """*node* is passed by position to a function of this file that reads that parameter's elements."""
+    call = parents.get(node)
+    if not (isinstance(call, ast.Call) and node in call.args) or _opaque(call):
+        return False
+    name = call.func.id if isinstance(call.func, ast.Name) else _self_attribute(call.func)
+    helpers = [item for item in _nodes(tree)
+               if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == name]
+    if name is None or len(helpers) != 1 or helpers[0].args.vararg:
+        return False
+    spec = helpers[0].args
+    names = [arg.arg for arg in spec.posonlyargs + spec.args]
+    if names[:1] == ["self"] and not isinstance(call.func, ast.Name):
+        names = names[1:]
+    index = call.args.index(node)
+    if index >= len(names):
+        return False
+    return any(isinstance(item, ast.Name) and item.id == names[index] and isinstance(item.ctx, ast.Load)
+               and _measured(item, parents) for item in ast.walk(helpers[0]))
 
 
 def _scan_ranges(package: Package, path: Path, tree: ast.AST) -> list:
@@ -1279,7 +1312,7 @@ def _scan_ranges(package: Package, path: Path, tree: ast.AST) -> list:
     imports_scan = any(isinstance(node, ast.ImportFrom) and node.module == "sensor_msgs.msg"
                        and any(alias.name == "LaserScan" for alias in node.names)
                        for node in _nodes(tree))
-    if not imports_scan or _SCAN_GUARDS.search(source):
+    if not imports_scan or _SCAN_LIMITS.search(source):
         return []
     parents = {child: parent for parent in _nodes(tree) for child in ast.iter_child_nodes(parent)}
     for function in _nodes(tree):
@@ -1292,14 +1325,16 @@ def _scan_ranges(package: Package, path: Path, tree: ast.AST) -> list:
                     and isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name)
                     and node.value.id in parameters):
                 continue
-            parent = parents.get(node)
-            measured = (
-                (isinstance(parent, ast.Subscript) and parent.value is node)
-                or (isinstance(parent, (ast.For, ast.comprehension)) and parent.iter is node)
-                or (isinstance(parent, ast.Call) and node in parent.args
-                    and _call_name(parent) in _REDUCERS))
-            if not measured:
+            if not (_measured(node, parents) or _measured_by_helper(node, parents, tree)):
                 continue
+            if _SCAN_GUARDS.search(source):
+                return [_issue(
+                    package, path, node.lineno, "warning", "scan-ranges",
+                    f"{node.value.id}.ranges is read as distances and this file never reads "
+                    "range_min or range_max. A value outside range_min..range_max is not a "
+                    "distance (REP 117): a driver that reports 0.0 for no return would be read "
+                    "as an obstacle at zero distance. Use only values within "
+                    f"{node.value.id}.range_min..{node.value.id}.range_max.")]
             return [_issue(
                 package, path, node.lineno, "warning", "scan-ranges",
                 f"{node.value.id}.ranges is read as distances and this file never excludes "
