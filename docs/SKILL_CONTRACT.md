@@ -120,7 +120,7 @@ their Python launch files:
 | `entry-point` | A console script points at a module or function the package does not contain |
 | `parameter-section` | A parameter file given to a node, directly or as the default of the launch argument it reads, has no section for that node's name |
 | `parameter-name` | A section sets a parameter the node's source does not declare |
-| `dependencies` | The code imports a ROS package that `package.xml` does not declare |
+| `dependencies` | The code imports a ROS package that `package.xml` does not declare, or an `ament_python` package imports, unconditionally at module level, one of a fixed list of third-party modules (`serial`, `cv2`, `scipy`, `requests` and others) and declares nothing that provides it. `yaml` and `numpy` are not reported for a package that declares `rclpy`, which brings both |
 | `missing-qos` | `create_publisher` or `create_subscription` is called without the QoS argument |
 | `timer-period` | A literal `create_timer` period contradicts the rate written in the comment on that call |
 | `blocking-call` | A synchronous service call or `rclpy.spin*` is inside a subscription, timer or service callback |
@@ -132,6 +132,10 @@ their Python launch files:
 | `invariant-loop` | A `while` tests membership in a container that the function created and nothing else holds, and the body neither rebinds the names in the condition nor names the container |
 | `environment-number` | `int()` or `float()` of a `ROS_` or `RMW_` environment variable read with a default: the default is not used when the variable is set but empty |
 | `import-name` | `from module import name` where the module's source is in the workspace, or under `PYTHONPATH` or `AMENT_PREFIX_PATH`, and defines no such name, or where the package has no such submodule |
+| `returns-none` | `__str__` or `__repr__` has a path that returns `None`: `str()`, `print()` and string formatting raise `TypeError` |
+| `other-client` | A function waits for one client attribute of `self` and sends its only request through another, which it never waits for |
+| `class-attribute` | A function makes an instance of an imported class and then assigns an attribute on the class itself |
+| `scan-ranges` | A file imports `LaserScan`, reads `.ranges` as distances (indexing, iteration, `min` and the like) and nowhere mentions `isfinite`, `isinf`, `isnan`, `range_min`, `range_max`, `inf` or `nan` |
 | `remapping` | A launch file remaps a name the node's source never creates |
 | `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
 | `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect, or a VOLATILE subscription faces a TRANSIENT_LOCAL publisher |

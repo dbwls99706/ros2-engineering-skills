@@ -52,8 +52,24 @@ Workspace check (`scripts/workspace_checks.py`, new):
   submodule. These came from reverting real bug-fix commits of public ROS 2
   packages: of ten such defects the check reported none at first and reports
   three now. On a second set of seven, not used to write these rules, it
-  reports none. Most logic defects are not decidable without running the
-  code, and the check leaves them alone.
+  reported none.
+- Three more of the same kind, written from that second set and kept only
+  where they hold in general: `__str__` or `__repr__` with a path that returns
+  `None`; a function that waits for one client and sends its only request
+  through another; and an attribute assigned on an imported class in a
+  function that has just made an instance of it. They report three of those
+  seven. Most logic defects are not decidable without running the code, and
+  the check leaves them alone.
+- `LaserScan.ranges` read as distances (indexed, iterated, passed to `min`
+  and the like) in a file that never mentions `isfinite`, `isinf`, `isnan`,
+  `range_min`, `range_max`, `inf` or `nan` (REP 117). The same convention
+  shown as a note while the code was written was read and changed nothing;
+  as a finding with a file and a line it can be acted on.
+- A third-party module imported unconditionally at module level by an
+  `ament_python` package whose `package.xml` declares nothing that provides
+  it, for a fixed list of modules with a rosdep key (`serial`, `cv2`, `scipy`,
+  `requests` and others). `yaml` and `numpy` are left alone when the package
+  declares `rclpy`, which brings both.
 - Input the check cannot decide is left alone, never guessed: a computed name
   or namespace, `*args` or `**kwargs`, a node class with a base other than
   `Node` or `LifecycleNode`, a callback group or `MultiThreadedExecutor` in the

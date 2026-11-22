@@ -64,6 +64,37 @@ DEPEND_TAGS = ("depend", "exec_depend", "build_depend", "build_export_depend", "
 WITH_RCLPY = {"rcl_interfaces", "builtin_interfaces", "action_msgs", "unique_identifier_msgs",
               "rosgraph_msgs", "lifecycle_msgs", "service_msgs", "type_description_interfaces"}
 # Parameters every node has without declaring them in its own source.
+# Third-party modules and the rosdep key that installs them (rosdistro,
+# rosdep/python.yaml). The second item is what a declared dependency contains
+# when it provides the module under another key.
+ROSDEP_KEYS = {
+    "yaml": ("python3-yaml", ("yaml",)),
+    "numpy": ("python3-numpy", ("numpy",)),
+    "cv2": ("python3-opencv", ("opencv", "cv_bridge")),
+    "scipy": ("python3-scipy", ("scipy",)),
+    "serial": ("python3-serial", ("serial",)),
+    "requests": ("python3-requests", ("requests",)),
+    "matplotlib": ("python3-matplotlib", ("matplotlib",)),
+    "PIL": ("python3-pil", ("pil", "pillow", "imaging")),
+    "psutil": ("python3-psutil", ("psutil",)),
+    "transforms3d": ("python3-transforms3d", ("transforms3d", "tf_transformations")),
+    "lxml": ("python3-lxml", ("lxml",)),
+    "netifaces": ("python3-netifaces", ("netifaces",)),
+    "pydot": ("python3-pydot", ("pydot",)),
+    "smbus": ("python3-smbus", ("smbus",)),
+    "zmq": ("python3-zmq", ("zmq",)),
+    "websockets": ("python3-websockets", ("websockets",)),
+    "pandas": ("python3-pandas", ("pandas",)),
+    "shapely": ("python3-shapely", ("shapely",)),
+    "sklearn": ("python3-sklearn", ("sklearn", "scikit")),
+    "skimage": ("python3-skimage", ("skimage", "scikit")),
+    "jinja2": ("python3-jinja2", ("jinja",)),
+    "h5py": ("python3-h5py", ("h5py",)),
+    "pexpect": ("python3-pexpect", ("pexpect",)),
+}
+# What a package that declares rclpy gets with it: rclpy depends on
+# python3-yaml, and the generated Python messages depend on python3-numpy.
+KEYS_WITH_RCLPY = {"yaml", "numpy"}
 IMPLICIT_PARAMETERS = {"use_sim_time", "qos_overrides", "start_type_description_service"}
 LIFECYCLE_MARKERS = ("LifecycleNode", "lifecycle_manager", "ChangeState", "lifecycle_msgs",
                      "change_state", "EmitEvent", "autostart")
@@ -670,6 +701,7 @@ def _is_test(path: Path) -> bool:
 def check_dependencies(package: Package) -> list:
     """ROS packages the code imports must be declared in package.xml."""
     imported: set = set()
+    top_level: set = set()  # imported unconditionally, at module level
     for path in package.files:
         relative = path.relative_to(package.root).parts
         if path.suffix != ".py" or path.name == "setup.py" or relative[0] == "launch" or _is_test(path):
@@ -677,6 +709,11 @@ def check_dependencies(package: Package) -> list:
         tree = _parse(_read(path))
         if tree is None:
             continue
+        for node in getattr(tree, "body", []):
+            if isinstance(node, ast.Import):
+                top_level.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                top_level.add(node.module.split(".")[0])
         for node in _nodes(tree):
             if isinstance(node, ast.Import):
                 imported.update(alias.name.split(".")[0] for alias in node.names)
@@ -690,14 +727,28 @@ def check_dependencies(package: Package) -> list:
     own = {path.name for path in package.root.iterdir()} | {package.name}
     missing = sorted(name for name in needed - own
                      if not PROVIDED_BY.get(name, {name}) & package.depends)
-    if not missing:
-        return []
-    them = "it" if len(missing) == 1 else "them"
-    return [_issue(
-        package, package.root / "package.xml", 1, "warning", "dependencies",
-        f"the code imports {', '.join(missing)}, but package.xml declares no dependency on "
-        f"{them}. Unless another dependency brings {them} in, rosdep does not install {them} "
-        "and a clean machine fails at import.")]
+    issues = []
+    if missing:
+        them = "it" if len(missing) == 1 else "them"
+        issues.append(_issue(
+            package, package.root / "package.xml", 1, "warning", "dependencies",
+            f"the code imports {', '.join(missing)}, but package.xml declares no dependency on "
+            f"{them}. Unless another dependency brings {them} in, rosdep does not install {them} "
+            "and a clean machine fails at import."))
+    declared = " ".join(sorted(package.depends)).lower()
+    third_party = top_level - own if package.setup_text is not None else set()
+    if "rclpy" in package.depends:
+        third_party -= KEYS_WITH_RCLPY
+    keys = sorted(f"{name} (rosdep key {ROSDEP_KEYS[name][0]})" for name in third_party
+                  if name in ROSDEP_KEYS and not any(part in declared for part in ROSDEP_KEYS[name][1]))
+    if keys:
+        them = "it" if len(keys) == 1 else "them"
+        issues.append(_issue(
+            package, package.root / "package.xml", 1, "warning", "dependencies",
+            f"the code imports {', '.join(keys)}, but package.xml declares no dependency that "
+            f"provides {them}. Unless another dependency brings {them} in, rosdep does not "
+            f"install {them} and a clean machine fails at import."))
+    return issues
 
 
 def _comment(source: str, first: int, last: int) -> str:
@@ -1066,7 +1117,159 @@ def check_python(roots: tuple, package: Package, path: Path) -> list:
     if tree is None:
         return []
     return (_invariant_loops(package, path, tree) + _environment_numbers(package, path, tree)
-            + check_imports(roots, package, path))
+            + check_imports(roots, package, path) + _string_methods(package, path, tree)
+            + _other_clients(package, path, tree) + _class_attributes(package, path, tree)
+            + _scan_ranges(package, path, tree))
+
+
+def _own_nodes(function: ast.AST) -> list:
+    """Nodes of *function* that are not inside a function or class nested in it."""
+    found, stack = [], list(ast.iter_child_nodes(function))
+    while stack:
+        node = stack.pop()
+        found.append(node)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _string_methods(package: Package, path: Path, tree: ast.AST) -> list:
+    """`__str__` or `__repr__` with a path that returns None: str() and print() raise TypeError."""
+    issues = []
+    for cls in _nodes(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for method in cls.body:
+            if (not isinstance(method, ast.FunctionDef) or method.name not in ("__str__", "__repr__")
+                    or method.decorator_list):
+                continue
+            for node in sorted(_own_nodes(method), key=lambda item: getattr(item, "lineno", 0)):
+                if isinstance(node, ast.Return) and (
+                        node.value is None
+                        or (isinstance(node.value, ast.Constant) and node.value.value is None)):
+                    shown = "str()" if method.name == "__str__" else "repr()"
+                    issues.append(_issue(
+                        package, path, node.lineno, "error", "returns-none",
+                        f"{cls.name}.{method.name}() returns None here; {shown}, print() and "
+                        f"string formatting raise TypeError ({method.name} returned non-string)."))
+                    break
+    return issues
+
+
+_WAITS = {"wait_for_server", "wait_for_service"}
+_REQUESTS = {"send_goal_async", "send_goal", "call_async", "call"}
+
+
+def _other_clients(package: Package, path: Path, tree: ast.AST) -> list:
+    """A function waits for one client and sends its request through another."""
+    issues = []
+    for function in _nodes(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        waited: dict = {}
+        asked: dict = {}
+        other = False
+        for node in _own_nodes(function):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            name = _self_attribute(node.func.value)
+            if node.func.attr in _WAITS | _REQUESTS and name is None:
+                other = True  # a client that is not a plain attribute of self
+            elif node.func.attr in _WAITS:
+                waited.setdefault(name, node.lineno)
+            elif node.func.attr in _REQUESTS:
+                asked.setdefault(name, node.lineno)
+        if other or len(waited) != 1 or len(asked) != 1 or set(waited) == set(asked):
+            continue
+        (wait_name, wait_line), (ask_name, ask_line) = *waited.items(), *asked.items()
+        rebound = any(isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store)
+                      and _self_attribute(node) in (wait_name, ask_name) for node in ast.walk(function))
+        if rebound:
+            continue
+        issues.append(_issue(
+            package, path, ask_line, "warning", "other-client",
+            f"{function.name}() waits for self.{wait_name} at line {wait_line} and sends its "
+            f"request through self.{ask_name}, which it never waits for; the request can go out "
+            "before that server is available."))
+    return issues
+
+
+def _class_attributes(package: Package, path: Path, tree: ast.AST) -> list:
+    """An attribute is set on an imported class in a function that has just made an instance of it."""
+    imported = {alias.asname or alias.name for node in getattr(tree, "body", [])
+                if isinstance(node, ast.ImportFrom) for alias in node.names}
+    defined = {node.name for node in _nodes(tree) if isinstance(node, ast.ClassDef)}
+    issues = []
+    for function in _nodes(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        instances: dict = {}
+        for node in ast.walk(function):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name) and not node.value.args
+                    and not node.value.keywords):
+                instances.setdefault(node.value.func.id, (node.targets[0].id, node.lineno))
+        for node in ast.walk(function):
+            if not (isinstance(node, (ast.Assign, ast.AugAssign))):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if not (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)):
+                    continue
+                cls = target.value.id
+                if (cls not in instances or cls not in imported or cls in defined
+                        or not cls[:1].isupper() or instances[cls][1] > node.lineno):
+                    continue
+                name, line = instances[cls]
+                issues.append(_issue(
+                    package, path, node.lineno, "warning", "class-attribute",
+                    f"{cls}.{target.attr} is assigned on the class, while `{name} = {cls}()` at "
+                    f"line {line} made the instance this function goes on to use; {name}."
+                    f"{target.attr} keeps its default and the class is changed for every other user."))
+    return issues
+
+
+_SCAN_GUARDS = re.compile(r"isfinite|isinf|isnan|range_min|range_max|\binf\b|\bnan\b", re.I)
+_REDUCERS = {"min", "max", "sum", "sorted", "mean", "median", "array", "asarray", "amin", "amax",
+             "argmin", "argmax", "any", "all", "filter", "map", "enumerate", "zip", "list", "tuple"}
+
+
+def _scan_ranges(package: Package, path: Path, tree: ast.AST) -> list:
+    """LaserScan ranges are read as distances in a file that never excludes invalid readings."""
+    source = _read(path) or ""
+    imports_scan = any(isinstance(node, ast.ImportFrom) and node.module == "sensor_msgs.msg"
+                       and any(alias.name == "LaserScan" for alias in node.names)
+                       for node in _nodes(tree))
+    if not imports_scan or _SCAN_GUARDS.search(source):
+        return []
+    parents = {child: parent for parent in _nodes(tree) for child in ast.iter_child_nodes(parent)}
+    for function in _nodes(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        spec = function.args
+        parameters = {arg.arg for arg in spec.posonlyargs + spec.args + spec.kwonlyargs} - {"self"}
+        for node in sorted(ast.walk(function), key=lambda item: getattr(item, "lineno", 0)):
+            if not (isinstance(node, ast.Attribute) and node.attr == "ranges"
+                    and isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name)
+                    and node.value.id in parameters):
+                continue
+            parent = parents.get(node)
+            measured = (
+                (isinstance(parent, ast.Subscript) and parent.value is node)
+                or (isinstance(parent, (ast.For, ast.comprehension)) and parent.iter is node)
+                or (isinstance(parent, ast.Call) and node in parent.args
+                    and _call_name(parent) in _REDUCERS))
+            if not measured:
+                continue
+            return [_issue(
+                package, path, node.lineno, "warning", "scan-ranges",
+                f"{node.value.id}.ranges is read as distances and this file never excludes "
+                "invalid readings. A LaserScan holds +inf where nothing returned, -inf where a "
+                "return was too close and NaN for a failed measurement, and a value outside "
+                "range_min..range_max is not a distance (REP 117): use only finite values "
+                "within range_min..range_max.")]
+    return []
 
 
 def check_imports(roots: tuple, package: Package, path: Path) -> list:

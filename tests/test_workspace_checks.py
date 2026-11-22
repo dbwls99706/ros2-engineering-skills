@@ -1617,3 +1617,196 @@ class TestImportOfAMissingModule:
         monkeypatch.delenv("PYTHONPATH", raising=False)
         make_package(tmp_path, files={"demo/tools.py": "from rclpy.executor import X\n"})
         assert found(tmp_path, "import-name") == []
+
+
+class TestThirdPartyDependencies:
+    def findings(self, tmp_path, imports, depends=("rclpy", "std_msgs"), **options):
+        make_package(tmp_path, depends=depends, files={"demo/tools.py": imports}, **options)
+        return found(tmp_path, "dependencies")
+
+    def test_module_whose_rosdep_key_is_not_declared(self, tmp_path):
+        issue, = self.findings(tmp_path, "import serial\nfrom cv2 import imread\n")
+        assert issue["severity"] == "warning" and issue["file"] == "demo/package.xml"
+        assert "imports cv2 (rosdep key python3-opencv), serial (rosdep key python3-serial)" in issue["message"]
+        assert "declares no dependency that provides them" in issue["message"]
+
+    @pytest.mark.parametrize("imports,depends", [
+        ("import serial\n", ("rclpy", "std_msgs", "python3-serial")),
+        ("import cv2\n", ("rclpy", "std_msgs", "cv_bridge")),
+        ("import cv2\n", ("rclpy", "std_msgs", "libopencv-dev")),
+        ("from PIL import Image\n", ("rclpy", "std_msgs", "python3-pil")),
+        ("import sklearn\n", ("rclpy", "std_msgs", "python3-scikit-learn")),
+    ])
+    def test_declared_under_any_key_that_provides_it_is_silent(self, tmp_path, imports, depends):
+        assert self.findings(tmp_path, imports, depends) == []
+
+    @pytest.mark.parametrize("imports", [
+        "import yaml\nimport numpy as np\n",                       # rclpy brings both
+        "try:\n    import serial\nexcept ImportError:\n    serial = None\n",
+        "def read():\n    import serial\n    return serial\n",
+        "import importlib\nserial = importlib.import_module('serial')\n",
+        "import toml\nimport attrs\n",                              # not in the table
+        "from . import serial\n",
+    ])
+    def test_what_is_brought_in_or_cannot_be_decided_is_silent(self, tmp_path, imports):
+        assert self.findings(tmp_path, imports) == []
+
+    def test_yaml_without_rclpy_is_reported(self, tmp_path):
+        issues = self.findings(tmp_path, "import yaml\n", depends=("std_msgs",))
+        issue, = [item for item in issues if "rosdep key" in item["message"]]
+        assert "imports yaml (rosdep key python3-yaml)" in issue["message"]
+        assert "provides it" in issue["message"]
+
+    def test_module_the_package_ships_and_packages_without_setup_are_not_judged(self, tmp_path):
+        make_package(tmp_path, files={"demo/tools.py": "import serial\n", "serial/__init__.py": ""})
+        assert found(tmp_path, "dependencies") == []
+        package = make_package(tmp_path / "second", setup=False, files={"demo/tools.py": "import serial\n"})
+        (package / "CMakeLists.txt").write_text("project(demo)\nament_package()\n")
+        assert found(tmp_path / "second", "dependencies") == []
+
+
+class TestStringMethods:
+    SOURCE = "class Flags:\n    def __init__(self, flags):\n        self.flags = flags\n\n    {method}\n"
+
+    def findings(self, tmp_path, method):
+        make_package(tmp_path, files={"demo/tools.py": plain_module(self.SOURCE.format(method=method))})
+        return found(tmp_path, "returns-none")
+
+    @pytest.mark.parametrize("name,shown", [("__str__", "str()"), ("__repr__", "repr()")])
+    def test_path_that_returns_none(self, tmp_path, name, shown):
+        issue, = self.findings(
+            tmp_path, f"def {name}(self):\n        if not self.flags:\n            return\n        return self.flags\n")
+        assert issue["severity"] == "error" and issue["line"] == 10
+        assert f"Flags.{name}() returns None here; {shown}, print()" in issue["message"]
+
+    def test_explicit_none_is_reported_once_per_method(self, tmp_path):
+        issue, = self.findings(
+            tmp_path, "def __str__(self):\n        if not self.flags:\n            return None\n        return None\n")
+        assert issue["line"] == 10
+
+    @pytest.mark.parametrize("method", [
+        "def __str__(self):\n        if not self.flags:\n            return ''\n        return self.flags\n",
+        "def __str__(self):\n        raise NotImplementedError\n",
+        "def __str__(self):\n        def inner():\n            return\n        inner()\n        return 'x'\n",
+        "def describe(self):\n        return\n",
+        "@property\n    def __str__(self):\n        return\n",
+        "def __bool__(self):\n        return\n",
+    ])
+    def test_what_returns_a_string_or_is_not_that_method_is_silent(self, tmp_path, method):
+        assert self.findings(tmp_path, method) == []
+
+
+class TestOtherClient:
+    SOURCE = ("class Navigator:\n    def __init__(self, node):\n        self.backup_client = node.a\n"
+              "        self.drive_client = node.b\n\n    def drive(self, goal):\n{body}\n")
+
+    def findings(self, tmp_path, body):
+        text = self.SOURCE.format(body=textwrap.indent(textwrap.dedent(body).strip("\n"), " " * 8))
+        make_package(tmp_path, files={"demo/tools.py": plain_module(text)})
+        return found(tmp_path, "other-client")
+
+    def test_request_through_a_client_that_was_not_waited_for(self, tmp_path):
+        issue, = self.findings(tmp_path, """
+            while not self.backup_client.wait_for_server(timeout_sec=1.0):
+                pass
+            return self.drive_client.send_goal_async(goal)
+        """)
+        assert issue["severity"] == "warning" and issue["line"] == 12
+        assert "drive() waits for self.backup_client at line 10" in issue["message"]
+        assert "sends its request through self.drive_client, which it never waits for" in issue["message"]
+
+    def test_service_client_is_read_the_same_way(self, tmp_path):
+        issue, = self.findings(tmp_path, """
+            self.backup_client.wait_for_service()
+            return self.drive_client.call_async(goal)
+        """)
+        assert "self.drive_client" in issue["message"]
+
+    @pytest.mark.parametrize("body", [
+        "self.drive_client.wait_for_server()\nreturn self.drive_client.send_goal_async(goal)",
+        "self.backup_client.wait_for_server()\nself.drive_client.wait_for_server()\n"
+        "return self.drive_client.send_goal_async(goal)",
+        "self.backup_client.wait_for_server()\nself.backup_client.send_goal_async(goal)\n"
+        "return self.drive_client.send_goal_async(goal)",
+        "client = self.pick()\nclient.wait_for_server()\nreturn self.drive_client.send_goal_async(goal)",
+        "self.backup_client.wait_for_server()\nreturn self.clients[0].send_goal_async(goal)",
+        "self.drive_client = self.backup_client\nself.backup_client.wait_for_server()\n"
+        "return self.drive_client.send_goal_async(goal)",
+        "self.backup_client.wait_for_server()\nreturn lambda: self.drive_client.send_goal_async(goal)",
+        "return self.drive_client.send_goal_async(goal)",
+        "self.backup_client.wait_for_server()",
+    ])
+    def test_what_is_consistent_or_cannot_be_decided_is_silent(self, tmp_path, body):
+        assert self.findings(tmp_path, body) == []
+
+
+class TestClassAttribute:
+    SOURCE = "{imports}\n\n{classes}\ndef build(name, value):\n{body}\n    return parameter\n"
+
+    def findings(self, tmp_path, body, imports="from rcl_interfaces.msg import Parameter", classes=""):
+        text = self.SOURCE.format(imports=imports, classes=classes,
+                                  body=textwrap.indent(textwrap.dedent(body).strip("\n"), "    "))
+        make_package(tmp_path, depends=("rclpy", "std_msgs", "rcl_interfaces"), files={"demo/tools.py": text})
+        return found(tmp_path, "class-attribute")
+
+    def test_attribute_set_on_the_class_after_an_instance_was_made(self, tmp_path):
+        issue, = self.findings(tmp_path, "parameter = Parameter()\nParameter.name = name\nparameter.value = value")
+        assert issue["severity"] == "warning" and issue["line"] == 6
+        assert "Parameter.name is assigned on the class" in issue["message"]
+        assert "`parameter = Parameter()` at line 5" in issue["message"]
+
+    @pytest.mark.parametrize("body,imports,classes", [
+        ("parameter = Parameter()\nparameter.name = name", "from rcl_interfaces.msg import Parameter", ""),
+        ("Parameter.name = name\nparameter = Parameter()", "from rcl_interfaces.msg import Parameter", ""),
+        ("Parameter.name = name\nparameter = make()", "from rcl_interfaces.msg import Parameter", ""),
+        ("parameter = Parameter(name=name)\nParameter.count = 1", "from rcl_interfaces.msg import Parameter", ""),
+        ("parameter = Parameter()\nParameter.count = 1", "import os",
+         "class Parameter:\n    count = 0\n\n"),
+        ("parameter = msg.Parameter()\nmsg.Parameter.name = name", "from rcl_interfaces import msg", ""),
+        ("parameter = settings()\nsettings.name = name", "from demo.config import settings", ""),
+    ])
+    def test_what_sets_the_instance_or_cannot_be_decided_is_silent(self, tmp_path, body, imports, classes):
+        assert self.findings(tmp_path, body, imports, classes) == []
+
+
+class TestScanRanges:
+    SOURCE = ("import rclpy\nfrom rclpy.node import Node\nfrom sensor_msgs.msg import LaserScan\n"
+              "from std_msgs.msg import Bool\n\n\nclass Guard(Node):\n    def __init__(self):\n"
+              "        super().__init__('guard')\n        self.pub = self.create_publisher(Bool, 'blocked', 10)\n"
+              "        self.sub = self.create_subscription(LaserScan, 'scan', self.on_scan, 10)\n\n"
+              "    def on_scan(self, scan):\n{body}\n")
+
+    def findings(self, tmp_path, body, source=None):
+        text = (source or self.SOURCE).format(body=textwrap.indent(textwrap.dedent(body).strip("\n"), " " * 8))
+        make_package(tmp_path, depends=("rclpy", "std_msgs", "sensor_msgs"), files={"demo/guard.py": text})
+        return found(tmp_path, "scan-ranges")
+
+    @pytest.mark.parametrize("body", [
+        "self.pub.publish(Bool(data=min(scan.ranges) < 0.5))",
+        "for distance in scan.ranges:\n    if distance < 0.5:\n        self.pub.publish(Bool(data=True))",
+        "self.pub.publish(Bool(data=any(r < 0.5 for r in scan.ranges)))",
+        "self.pub.publish(Bool(data=scan.ranges[0] < 0.5))",
+    ])
+    def test_ranges_read_as_distances_without_excluding_invalid_readings(self, tmp_path, body):
+        issue, = self.findings(tmp_path, body)
+        assert issue["severity"] == "warning" and issue["line"] == 14
+        assert "scan.ranges is read as distances and this file never excludes invalid readings" in issue["message"]
+        assert "REP 117" in issue["message"]
+
+    @pytest.mark.parametrize("body", [
+        "valid = [r for r in scan.ranges if scan.range_min <= r <= scan.range_max]\n"
+        "self.pub.publish(Bool(data=bool(valid) and min(valid) < 0.5))",
+        "import math\nvalid = [r for r in scan.ranges if math.isfinite(r)]\n"
+        "self.pub.publish(Bool(data=bool(valid) and min(valid) < 0.5))",
+        "close = [r for r in scan.ranges if r == r and r != float('inf')]\nself.pub.publish(Bool(data=bool(close)))",
+        "self.last = scan.ranges",
+        "self.pub.publish(Bool(data=len(scan.ranges) > 0))",
+        "self.forward(scan.ranges)",
+        "ranges = self.latest.ranges\nself.pub.publish(Bool(data=min(ranges) < 0.5))",
+    ])
+    def test_filtered_or_passed_on_or_undecidable_is_silent(self, tmp_path, body):
+        assert self.findings(tmp_path, body) == []
+
+    def test_file_that_does_not_import_laserscan_is_not_judged(self, tmp_path):
+        source = self.SOURCE.replace("from sensor_msgs.msg import LaserScan\n", "from demo.types import LaserScan\n")
+        assert self.findings(tmp_path, "self.pub.publish(Bool(data=min(scan.ranges) < 0.5))", source) == []
