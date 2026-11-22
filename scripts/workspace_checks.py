@@ -1119,7 +1119,45 @@ def check_python(roots: tuple, package: Package, path: Path) -> list:
     return (_invariant_loops(package, path, tree) + _environment_numbers(package, path, tree)
             + check_imports(roots, package, path) + _string_methods(package, path, tree)
             + _other_clients(package, path, tree) + _class_attributes(package, path, tree)
-            + _scan_ranges(package, path, tree))
+            + _scan_ranges(package, path, tree) + _local_keywords(package, path, tree))
+
+
+def _local_keywords(package: Package, path: Path, tree: ast.AST) -> list:
+    """A function of this module is called with a keyword it does not take: TypeError at the call."""
+    body = getattr(tree, "body", [])
+    bound: dict = {}
+    for node in _nodes(tree):
+        names = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [node.name]
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [(alias.asname or alias.name).split(".")[0] for alias in node.names]
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names = [node.id]
+        elif isinstance(node, ast.arg):
+            names = [node.arg]
+        for name in names:
+            bound[name] = bound.get(name, 0) + 1
+    functions = {node.name: node for node in body
+                 if isinstance(node, ast.FunctionDef) and not node.decorator_list
+                 and bound.get(node.name) == 1 and node.args.kwarg is None}
+    issues = []
+    for call in _nodes(tree):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                and call.func.id in functions) or _opaque(call):
+            continue
+        spec = functions[call.func.id].args
+        accepted = {arg.arg for arg in spec.args + spec.kwonlyargs}
+        for keyword in call.keywords:
+            if keyword.arg not in accepted:
+                close = sorted(name for name in accepted if _distance(name, keyword.arg or "") <= 2)
+                hint = f" It takes `{close[0]}`." if len(close) == 1 else ""
+                issues.append(_issue(
+                    package, path, call.lineno, "error", "keyword-argument",
+                    f"{call.func.id}() is defined at line {functions[call.func.id].lineno} of this "
+                    f"file and has no parameter `{keyword.arg}`; the call raises TypeError "
+                    f"(unexpected keyword argument).{hint}"))
+    return issues
 
 
 def _own_nodes(function: ast.AST) -> list:

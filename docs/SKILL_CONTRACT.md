@@ -142,7 +142,7 @@ their Python launch files:
 | `missing-qos` | `create_publisher` or `create_subscription` is called without the QoS argument |
 | `timer-period` | A literal `create_timer` period contradicts the rate written in the comment on that call |
 | `blocking-call` | A synchronous service call or `rclpy.spin*` is inside a subscription, timer or service callback |
-| `keyword-argument` | `create_timer`, `create_publisher`, `create_subscription`, `create_service`, `create_client` or `declare_parameter` is given a keyword that the method has in no supported distribution |
+| `keyword-argument` | `create_timer`, `create_publisher`, `create_subscription`, `create_service`, `create_client` or `declare_parameter` is given a keyword that the method has in no supported distribution. Also a function defined once at module level in the same file, called by its name with a keyword it has no parameter for |
 | `callback-signature` | A callback defined in the same module cannot be called with what rclpy passes in any supported distribution |
 | `name-mismatch` | A topic, service or action is used under a name nothing in the workspace offers, one or two characters from a name offered with the same type |
 | `interface-field` | A callback reads or writes a field its message or service does not have, when the `.msg` or `.srv` file is in the workspace or under `AMENT_PREFIX_PATH` |

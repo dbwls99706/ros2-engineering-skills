@@ -1810,3 +1810,53 @@ class TestScanRanges:
     def test_file_that_does_not_import_laserscan_is_not_judged(self, tmp_path):
         source = self.SOURCE.replace("from sensor_msgs.msg import LaserScan\n", "from demo.types import LaserScan\n")
         assert self.findings(tmp_path, "self.pub.publish(Bool(data=min(scan.ranges) < 0.5))", source) == []
+
+
+class TestLocalKeywords:
+    SOURCE = ("def spawners(controller_names, controller_params_files=None, extra_spawner_args=None):\n"
+              "    return controller_names, controller_params_files, extra_spawner_args\n\n\n"
+              "def load(name, params_file):\n    files = [params_file] if params_file else None\n"
+              "    return {call}\n")
+
+    def findings(self, tmp_path, call, source=None, extra=""):
+        text = (source or self.SOURCE).format(call=call) + extra
+        make_package(tmp_path, files={"demo/tools.py": plain_module(text)})
+        return [issue for issue in found(tmp_path, "keyword-argument") if issue["file"].endswith("tools.py")]
+
+    def test_keyword_the_function_of_this_module_does_not_take(self, tmp_path):
+        issue, = self.findings(tmp_path, "spawners(controller_names=[name], controller_params_file=files)")
+        assert issue["severity"] == "error" and issue["line"] == 10
+        assert "spawners() is defined at line 4 of this file and has no parameter `controller_params_file`" in (
+            issue["message"])
+        assert "It takes `controller_params_files`." in issue["message"]
+
+    def test_keyword_far_from_every_parameter_carries_no_hint(self, tmp_path):
+        issue, = self.findings(tmp_path, "spawners([name], timeout=3)")
+        assert "no parameter `timeout`" in issue["message"] and "It takes" not in issue["message"]
+
+    @pytest.mark.parametrize("call,extra", [
+        ("spawners(controller_names=[name], controller_params_files=files)", ""),
+        ("spawners([name], files, extra_spawner_args=None)", ""),
+        ("spawners([name], **{{'controller_params_file': files}})", ""),
+        ("spawners(*[name], controller_params_file=files)", ""),
+        ("helper.spawners([name], controller_params_file=files)", ""),
+        ("spawners([name], controller_params_file=files)", "\n\nspawners = None\n"),
+        ("spawners([name], controller_params_file=files)",
+         "\n\ndef spawners(names, controller_params_file=None):\n    return names\n"),
+        ("spawners([name], controller_params_file=files)", "\n\nfrom demo.other import spawners\n"),
+        ("unknown([name], controller_params_file=files)", ""),
+    ])
+    def test_what_is_accepted_or_cannot_be_decided_is_silent(self, tmp_path, call, extra):
+        assert self.findings(tmp_path, call, extra=extra) == []
+
+    @pytest.mark.parametrize("signature", [
+        "def spawners(controller_names, **options):", "@wraps\ndef spawners(controller_names):",
+        "async def spawners(controller_names):"])
+    def test_function_that_may_take_anything_is_not_judged(self, tmp_path, signature):
+        source = signature + "\n    return controller_names\n\n\ndef load(name, files):\n    return {call}\n"
+        assert self.findings(tmp_path, "spawners([name], controller_params_file=files)", source) == []
+
+    def test_parameter_or_local_of_the_same_name_is_not_the_function(self, tmp_path):
+        source = ("def spawners(controller_names):\n    return controller_names\n\n\n"
+                  "def load(name, spawners):\n    return {call}\n")
+        assert self.findings(tmp_path, "spawners([name], controller_params_file=1)", source) == []

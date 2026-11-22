@@ -58,8 +58,13 @@ Workspace check (`scripts/workspace_checks.py`, new):
   `None`; a function that waits for one client and sends its only request
   through another; and an attribute assigned on an imported class in a
   function that has just made an instance of it. They report three of those
-  seven. Most logic defects are not decidable without running the code, and
-  the check leaves them alone.
+  seven.
+- On a third set of eight real bug fixes, taken from repositories not used
+  before, the check as it then stood reported none. One of the eight has a
+  form that can be decided in general and is now reported: a function defined
+  in the same module and called with a keyword it has no parameter for. Most
+  logic defects are not decidable without running the code, and the check
+  leaves them alone; the handover names the package's tests for that reason.
 - `LaserScan.ranges` read as distances (indexed, iterated, passed to `min`
   and the like) in a file that never mentions `isfinite`, `isinf`, `isnan`,
   `range_min`, `range_max`, `inf` or `nan` (REP 117). The same convention
