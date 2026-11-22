@@ -186,6 +186,42 @@ class TestInstallRules:
         make_package(tmp_path, setup=False, files={"launch/demo.launch.py": LAUNCH})
         assert found(tmp_path) == []
 
+    def setup_with(self, tmp_path, data_files, before="", extra=""):
+        package = make_package(tmp_path, setup=False, files={"launch/demo.launch.py": LAUNCH})
+        (package / "setup.py").write_text(
+            "import glob\nimport os\nfrom setuptools import find_packages, setup\n\n"
+            f"package_name = 'demo'\n{before}\nsetup(\n    name=package_name,\n"
+            "    packages=find_packages(exclude=['launch']),\n"
+            f"    data_files={data_files},\n    install_requires=['launch', 'setuptools'],\n"
+            "    entry_points={'console_scripts': ['driver = demo.driver:main']},\n)\n" + extra)
+        return found(tmp_path, "install-rules")
+
+    def test_the_word_elsewhere_in_setup_is_not_an_install_rule(self, tmp_path):
+        # `launch` in install_requires and in find_packages(exclude=...) installs nothing.
+        issue, = self.setup_with(tmp_path, "[('share/' + package_name, ['package.xml'])]")
+        assert "launch/ is not installed" in issue["message"]
+
+    @pytest.mark.parametrize("data_files", [
+        "[('share/' + package_name + '/launch', glob.glob(os.path.join('launch', '*.launch.py')))]",
+        "[(os.path.join('share', package_name, 'launch'), glob.glob('launch/*'))]",
+        "[('share/' + package_name, ['package.xml']), (target, sources)]",
+    ])
+    def test_data_files_that_install_the_directory_are_silent(self, tmp_path, data_files):
+        before = "target = 'share/demo/launch'\nsources = glob.glob('launch/*.py')\n"
+        assert self.setup_with(tmp_path, data_files, before) == []
+
+    @pytest.mark.parametrize("data_files,before,extra", [
+        ("[('share/demo', ['package.xml'])] + launch_entries()", "", ""),
+        ("DATA", "DATA = [('share/demo', ['package.xml'])]\nDATA.append(('share/demo/launch', []))\n", ""),
+        ("[('share/demo', ['package.xml']), *more]", "more = collect('launch')\n", ""),
+        ("[('share/demo', files_under('launch'))]", "", ""),
+        ("[('share/demo', found)]", "found = files_under('launch')\n", ""),
+        ("[(share, [name]) for share, name in pairs]", "pairs = [('share/demo/launch', 'x')]\n", ""),
+        ("[('share/demo', ['package.xml'])]", "", "# data_files gains launch/ in setup.cfg\n"),
+    ])
+    def test_data_files_not_written_out_are_not_read_as_empty(self, tmp_path, data_files, before, extra):
+        assert self.setup_with(tmp_path, data_files, before, extra) == []
+
 
 class TestExecutables:
     def test_launch_names_an_executable_setup_does_not_define(self, tmp_path):
@@ -288,6 +324,41 @@ class TestParameterFiles:
         assert issue["severity"] == "warning" and issue["file"] == "demo/launch/demo.launch.py"
         assert "node 'driver' is given config/params.yaml" in issue["message"]
         assert "sections: driver_node" in issue["message"]
+
+    ARGUMENT = ("from launch.actions import DeclareLaunchArgument\n"
+                "from launch.substitutions import LaunchConfiguration\n"
+                "import os\nshare = '/opt/demo/share/demo'\n"
+                "default_file = os.path.join(share, 'config', 'params.yaml')\n")
+
+    def from_argument(self, tmp_path, declared, section="driver_node", used="LaunchConfiguration('params_file')"):
+        text = launch(*declared, f"Node(package='demo', executable='driver', name='driver', parameters=[{used}])",
+                      extra=self.ARGUMENT)
+        make_package(tmp_path, files={
+            "launch/demo.launch.py": text,
+            "config/params.yaml": f"{section}:\n  ros__parameters:\n    rate: 20.0\n"})
+        return found(tmp_path, "parameter-section")
+
+    def test_file_that_is_the_default_of_a_launch_argument(self, tmp_path):
+        issue, = self.from_argument(tmp_path, ["DeclareLaunchArgument('params_file', default_value=default_file)"])
+        assert "node 'driver' is given config/params.yaml" in issue["message"]
+        assert "(the default of the launch argument 'params_file')" in issue["message"]
+
+    def test_default_of_a_launch_argument_with_a_matching_section_is_silent(self, tmp_path):
+        declared = ["DeclareLaunchArgument('params_file', default_value=default_file)"]
+        assert self.from_argument(tmp_path, declared, section="driver") == []
+
+    @pytest.mark.parametrize("declared,used", [
+        ([], "LaunchConfiguration('params_file')"),
+        (["DeclareLaunchArgument('params_file')"], "LaunchConfiguration('params_file')"),
+        (["DeclareLaunchArgument('params_file', default_value=default_file)",
+          "DeclareLaunchArgument('params_file', default_value='other.yaml')"], "LaunchConfiguration('params_file')"),
+        (["DeclareLaunchArgument('params_file', default_value=default_file)"], "LaunchConfiguration(chosen)"),
+        (["DeclareLaunchArgument('params_file', default_value=default_file)"], "LaunchConfiguration('other')"),
+        (["DeclareLaunchArgument(*spec)"], "LaunchConfiguration('params_file')"),
+        (["DeclareLaunchArgument('params_file', default_value=pick())"], "LaunchConfiguration('params_file')"),
+    ])
+    def test_launch_argument_whose_default_is_not_known_is_silent(self, tmp_path, declared, used):
+        assert self.from_argument(tmp_path, declared, used=used) == []
 
     @pytest.mark.parametrize("section", ["driver", "/driver", "/**", "robot1/driver", "/*/driver"])
     def test_section_that_applies_to_the_node_is_silent(self, tmp_path, section):

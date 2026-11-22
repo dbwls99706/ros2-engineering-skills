@@ -113,10 +113,10 @@ their Python launch files:
 
 | Check | Reported when |
 |---|---|
-| `install-rules` | A `launch/`, `config/` or similar directory that a launch file needs has no entry in `setup.py` or `CMakeLists.txt` |
+| `install-rules` | A `launch/`, `config/` or similar directory that a launch file needs has no entry in `setup.py` or `CMakeLists.txt`. A `data_files` list written out in `setup()` is read on its own, so the word elsewhere in `setup.py` (`install_requires`, `find_packages(exclude=...)`) does not count as an entry |
 | `launch-executable` | A launch `Node` of the package names an executable that is not one of its console scripts |
 | `entry-point` | A console script points at a module or function the package does not contain |
-| `parameter-section` | A parameter file given to a node has no section for that node's name |
+| `parameter-section` | A parameter file given to a node, directly or as the default of the launch argument it reads, has no section for that node's name |
 | `parameter-name` | A section sets a parameter the node's source does not declare |
 | `dependencies` | The code imports a ROS package that `package.xml` does not declare |
 | `missing-qos` | `create_publisher` or `create_subscription` is called without the QoS argument |

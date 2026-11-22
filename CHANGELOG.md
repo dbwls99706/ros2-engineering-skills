@@ -22,9 +22,12 @@ Workspace check (`scripts/workspace_checks.py`, new):
 - Reported: a launch `Node` whose executable is not a console script of its
   package; a console script that points at a module or function the package
   does not contain; a `launch/`, `config/` or similar directory that a launch
-  file needs and `setup.py` or `CMakeLists.txt` never installs; a parameter
-  file with no section for the node it is given to, including sections under a
-  namespace key; a parameter that a section sets and the node does not declare;
+  file needs and `setup.py` or `CMakeLists.txt` never installs, where a
+  `data_files` list written out in `setup()` is read on its own and the word
+  elsewhere in `setup.py` is not an entry; a parameter file with no section
+  for the node it is given to, including sections under a namespace key and a
+  file that is the default of the launch argument the node reads; a parameter
+  that a section sets and the node does not declare;
   an imported ROS package missing from `package.xml`; `create_publisher` or
   `create_subscription` without the QoS argument; a keyword that
   `create_timer`, `create_publisher`, `create_subscription`, `create_service`,

@@ -279,6 +279,50 @@ def _console_scripts(setup_text: str) -> tuple:
     return None, 1
 
 
+def _literal_strings(node: ast.AST, names: dict, depth: int = 4) -> Optional[list]:
+    """Every string *node* is built from, or None when part of it is not written out."""
+    called = {id(item.func) for item in ast.walk(node) if isinstance(item, ast.Call)}
+    owners = {id(item.value) for item in ast.walk(node) if isinstance(item, ast.Attribute)}
+    found = []
+    for item in ast.walk(node):
+        if isinstance(item, (ast.Starred, ast.ListComp, ast.GeneratorExp, ast.IfExp, ast.Lambda)):
+            return None
+        if isinstance(item, ast.Call) and (_call_name(item) not in ("glob", "iglob", "join") or _opaque(item)):
+            return None
+        if isinstance(item, ast.Name) and id(item) not in called and id(item) not in owners:
+            if item.id not in names or not depth:
+                return None
+            inner = _literal_strings(names[item.id], names, depth - 1)
+            if inner is None:
+                return None
+            found.extend(inner)
+        text = _text(item)
+        if text is not None:
+            found.append(text)
+    return found
+
+
+def _installed_text(setup_text: str) -> str:
+    """The text that says what setup.py installs.
+
+    The strings of `data_files` when it is a list written out in the call to
+    `setup()` and the file mentions `data_files` nowhere else; the whole file
+    otherwise, so that a list built elsewhere is never read as empty.
+    """
+    tree = _parse(setup_text)
+    if tree is None or len(re.findall(r"\bdata_files\b", setup_text)) != 1:
+        return setup_text
+    for call in _nodes(tree):
+        if not (isinstance(call, ast.Call) and _call_name(call) == "setup") or _opaque(call):
+            continue
+        listed = _keyword(call, "data_files")
+        if not isinstance(listed, (ast.List, ast.Tuple)):
+            return setup_text
+        strings = _literal_strings(listed, _assignments(tree))
+        return setup_text if strings is None else "\n".join(strings)
+    return setup_text
+
+
 def launch_files(package: Package) -> list:
     return [path for path in package.files
             if path.name.endswith(".launch.py")
@@ -309,6 +353,28 @@ def _constants(node: Optional[ast.AST], names: dict, depth: int = 3) -> list:
     return found
 
 
+def _configuration(node: ast.AST) -> Optional[str]:
+    """The launch argument a `LaunchConfiguration('name')` reads, else None."""
+    if isinstance(node, ast.Call) and _call_name(node) == "LaunchConfiguration" and not _opaque(node):
+        name = _argument(node, 0, "variable_name")
+        return _text(name) if name is not None else None
+    return None
+
+
+def _argument_defaults(tree: ast.AST) -> dict:
+    """name -> default value for launch arguments the file declares exactly once."""
+    seen: dict = {}
+    for call in _nodes(tree):
+        if not isinstance(call, ast.Call) or _call_name(call) != "DeclareLaunchArgument" or _opaque(call):
+            continue
+        name = _argument(call, 0, "name")
+        text = _text(name) if name is not None else None
+        if text is not None:
+            seen.setdefault(text, []).append(_keyword(call, "default_value"))
+    return {name: values[0] for name, values in seen.items()
+            if len(values) == 1 and values[0] is not None}
+
+
 def launch_nodes(package: Package) -> list:
     """Every Node(...) action written in the package's launch files."""
     nodes = []
@@ -317,6 +383,7 @@ def launch_nodes(package: Package) -> list:
         if tree is None:
             continue
         names = _assignments(tree)
+        defaults = _argument_defaults(tree)
         for call in _nodes(tree):
             if not isinstance(call, ast.Call) or _call_name(call) not in ("Node", "LifecycleNode"):
                 continue
@@ -334,7 +401,8 @@ def launch_nodes(package: Package) -> list:
                 executable=_text(_keyword(call, "executable") or ast.Constant(None)),
                 name=_text(name) if name is not None else None,
                 name_given=name is not None,
-                parameters=[(element, _constants(element, names)) for element in parameters.elts]
+                parameters=[(element, _constants(defaults.get(_configuration(element), element), names))
+                            for element in parameters.elts]
                 if isinstance(parameters, (ast.List, ast.Tuple)) else [],
                 remappings=[tuple(_text(part) for part in pair.elts)
                             for pair in remappings.elts
@@ -373,7 +441,7 @@ def _issue(package: Package, path: Path, line: int, severity: str, check: str, m
 def check_install_rules(package: Package) -> list:
     """A directory a launch file needs is never installed."""
     if package.setup_text is not None:
-        installer, text = package.root / "setup.py", package.setup_text
+        installer, text = package.root / "setup.py", _installed_text(package.setup_text)
     elif package.cmake_text is not None:
         installer, text = package.root / "CMakeLists.txt", package.cmake_text
     else:
@@ -541,9 +609,11 @@ def check_parameter_files(package: Package, nodes: list) -> tuple:
                     continue
                 matching = [key for key in sections if _section_matches(key, name)]
                 if not matching:
+                    argument = _configuration(element)
+                    origin = f" (the default of the launch argument '{argument}')" if argument else ""
                     issues.append(_issue(
                         package, node.file, node.line, "warning", "parameter-section",
-                        f"node '{name}' is given {path.relative_to(package.root)}, which has no "
+                        f"node '{name}' is given {path.relative_to(package.root)}{origin}, which has no "
                         f"section for that name (sections: {', '.join(sorted(sections))}); its "
                         "parameters stay at the defaults in the code."))
                     continue
