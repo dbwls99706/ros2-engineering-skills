@@ -89,8 +89,10 @@ Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
   resumed, compacted or forked session keeps the record it has.
 - At Stop the adapter runs the check again and hands over what is still
   reported and has not been shown in this session, with `decision: "block"`:
-  the model continues the turn once, fixes what falls within its task and
-  mentions the rest. A finding that was not there when the conversation
+  the model continues the turn once. A request to fix or debug the code that
+  names no file covers every finding it verifies; a request for one specific
+  change leaves the other files alone and lists the findings in the reply. A
+  finding that was not there when the conversation
   started is marked, so a package the session has just made is checked like
   any other. A repeated Stop never continues the turn, and the same finding is
   not handed over twice in a session. This changes an earlier rule of this

@@ -424,7 +424,8 @@ def test_findings_are_handed_over_once(state):
     reason = output['reason']
     assert reason.startswith('Before you finish: a static check of the ROS 2 workspace still reports')
     assert 'an addition to your own work, not a summary of it' in reason
-    assert 'Fix those that fall within what you were asked to do and mention the others' in reason
+    assert 'A request to fix or debug the code that names no file covers every finding you verify' in reason
+    assert 'A request for one specific change does not: leave the other files alone' in reason
     assert "[error] demo/launch/demo.launch.py:7: executable 'other' is not a console script\n" in reason
     # The second finding appeared during the session and is marked as such.
     assert ('[warning] demo/setup.py:1: launch/ is not installed'

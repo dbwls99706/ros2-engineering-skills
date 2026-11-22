@@ -95,8 +95,10 @@ errors of the launch validator. Nothing is built, imported or run.
 The plugin runs it twice. When a new conversation starts it records what is
 reported and says nothing. When the model is about to finish it runs again and
 hands over what is still reported and has not been shown in this session: the
-turn continues once, with the findings and the instruction to fix those within
-the task and mention the others. A finding that was not there when the
+turn continues once, with the findings and what to do with them: a request to
+fix or debug the code that names no file covers every finding the model
+verifies, and a request for one specific change leaves the other files alone
+and lists the findings in the reply. A finding that was not there when the
 conversation started is marked as such, so a package the session has just made
 is checked like any other. A repeated Stop never continues the turn, and the
 same finding is not handed over twice in a session.
