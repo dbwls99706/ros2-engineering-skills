@@ -51,6 +51,9 @@ def test_only_what_depends_on_the_machine_is_replaced(tmp_path):
     ('cyclonedds', False, '1.2 [0] python3: failed to increase socket receive buffer size to at least 10485760 '
      'bytes, current is 425984 bytes\n', 'precondition'),
     ('cyclonedds', False, 'wg0: does not match an available interface.\n', 'failed'),
+    ('cyclonedds', False, "[ERROR] [1.0] [rcl]: Error getting RMW implementation identifier / RMW implementation "
+     "not installed, with error message 'failed to load shared library 'librmw_cyclonedds_cpp.so' due to dlopen "
+     "error: libddsc.so.11: cannot open shared object file'\n", 'unavailable'),
     ('fastdds', True, "\x1b[37;1m2026-01-01 00:00:00.000 \x1b[31;1m[\x1b[37;1mXMLPARSER\x1b[31;1m Error] "
      "\x1b[37mNode 'kind' with bad content\x1b[34;1m -> Function \x1b[36mgetXMLReliabilityQos\x1b[m\nNODE_OK\n",
      'rejected'),
@@ -61,6 +64,24 @@ def test_what_the_middleware_printed_decides_the_verdict(kind, started, output, 
     got, lines = check.classify(kind, started, output)
     assert got == verdict
     assert bool(lines) is (verdict != 'loaded')
+
+
+def test_what_the_middleware_said_is_kept_ahead_of_the_traceback():
+    output = ('1795410530.339112 [83]    python3: add_peer_address: robot_a: unknown address\n'
+              '[ERROR] [1795410530.4] [rmw_cyclonedds_cpp]: rmw_create_node: failed to create domain, error Error\n'
+              'Traceback (most recent call last):\n  File "<string>", line 4, in <module>\n'
+              'rclpy._rclpy_pybind11.RCLError: error creating node\n')
+    verdict, lines = check.classify('cyclonedds', False, output)
+    assert verdict == 'failed' and lines[0].endswith('add_peer_address: robot_a: unknown address')
+    assert not any('Traceback' in line for line in lines)
+
+
+def test_a_peer_given_by_host_name_is_replaced_and_an_address_is_kept(tmp_path):
+    text = ('<CycloneDDS><Domain><Discovery><Peers><Peer address="robot_a"/><Peer address="10.0.0.2" />'
+            '<Peer address="[::1]:7400"/></Peers></Discovery></Domain></CycloneDDS>')
+    local = check.localised('cyclonedds', text, str(tmp_path))
+    assert '<Peer address="127.0.0.1"/>' in local and 'robot_a' not in local
+    assert '<Peer address="10.0.0.2" />' in local and '<Peer address="[::1]:7400"/>' in local
 
 
 @pytest.mark.parametrize('kind,text,have,expected', [

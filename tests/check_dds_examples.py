@@ -69,13 +69,17 @@ def localised(kind, text, scratch):
         return text
     text = re.sub(r'(<NetworkInterface\s+name=")[^"]+(")', r'\1lo\2', text)
     text = re.sub(r'<OutputFile>[^<]*</OutputFile>', '<OutputFile>%s/trace.log</OutputFile>' % scratch, text)
+    # a peer given by host name resolves only on the network the example is written for
+    text = re.sub(r'(<Peer\s+address=")(?![\d.:\[\]]+")[^"]+(")', r'\g<1>127.0.0.1\2', text)
     return re.sub(r'(<SharedMemory>\s*<Enable>)true(</Enable>)', r'\1false\2', text)
 
 
 def classify(kind, started, output):
-    """(verdict, lines): loaded, rejected, precondition (kernel buffer limit) or failed."""
+    """(verdict, lines): loaded, rejected, precondition (kernel buffer limit), unavailable or failed."""
     output = re.sub(r'\x1b\[[0-9;]*m', '', output)
-    lines = [line.strip() for line in output.splitlines()]
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not started and any('failed to load shared library' in line for line in lines):
+        return 'unavailable', ['the middleware library cannot be loaded in this environment']
     if kind == 'cyclonedds':
         rejected = [line.split('config: ', 1)[1] for line in lines if 'config: ' in line]
         if rejected:
@@ -87,7 +91,11 @@ def classify(kind, started, output):
         rejected = [line.split('Error] ', 1)[1] for line in lines if 'XMLPARSER Error]' in line]
         if rejected:
             return 'rejected', rejected
-    return ('loaded', []) if started else ('failed', lines[-3:])
+    if started:
+        return 'loaded', []
+    # what the middleware itself printed comes before the Python traceback
+    own = [line for line in lines if re.match(r'\d+\.\d+ \[\d+\]', line) or line.startswith('[ERROR]')]
+    return 'failed', (own or lines)[-6:]
 
 
 def installed(distro):
