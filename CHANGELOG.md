@@ -103,9 +103,15 @@ Workspace check (`scripts/workspace_checks.py`, new):
     `ROS_DISCOVERY_SERVER`, which works on both. The profile variable is
     `FASTRTPS_DEFAULT_PROFILES_FILE` up to Jazzy and
     `FASTDDS_DEFAULT_PROFILES_FILE` from Kilted.
+  - The corrected `Threads/Thread/Scheduling` example sets a real-time
+    class. Without `CAP_SYS_NICE` or an `rtprio` limit the thread cannot be
+    created and the process aborts at start-up, which the text now says.
   - `tests/check_dds_examples.py` reads these examples from the references
-    and loads each with the installed middleware; the ROS container job runs
-    it, failing on Jazzy and Kilted and reporting on the other distributions.
+    and loads each with the installed middleware. The ROS container job runs
+    it on Humble, Jazzy, Kilted and Lyrical (Fast DDS 2.x and 3.x, CycloneDDS
+    0.10 and 11.0), where every example loads or names the kernel limit or
+    privilege it needs; Rolling is left out with the other gates that create
+    a node.
 - Three more of the same kind, written from that second set and kept only
   where they hold in general: `__str__` or `__repr__` with a path that returns
   `None`; a function that waits for one client and sends its only request

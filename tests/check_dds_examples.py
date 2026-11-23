@@ -16,9 +16,11 @@ What depends on the machine is replaced before loading: interface names become
 generation of the middleware ("Fast DDS 2.x", "Fast DDS 3.x", "CycloneDDS
 0.10") is skipped where that generation is not installed.
 
-Exit status 1 when an example is rejected on Jazzy or Kilted, where the
-examples were loaded before they were written down. On other distributions
-the result is printed and the status stays 0.
+Exit status 1 when an example is rejected or does not load on Humble, Jazzy,
+Kilted or Lyrical, where every example has been loaded. On another
+distribution the result is printed and the status stays 0. An example that
+needs a kernel limit or a privilege the machine does not grant is reported as
+a precondition and does not fail the check.
 """
 
 import argparse
@@ -30,7 +32,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-ENFORCED = ('jazzy', 'kilted')
+ENFORCED = ('humble', 'jazzy', 'kilted', 'lyrical')
 PROBE = (
     "import rclpy\n"
     "from std_msgs.msg import String\n"
