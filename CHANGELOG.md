@@ -53,6 +53,22 @@ Workspace check (`scripts/workspace_checks.py`, new):
   packages: of ten such defects the check reported none at first and reports
   three now. On a second set of seven, not used to write these rules, it
   reported none.
+- With an installed distribution in the environment (`AMENT_PREFIX_PATH`,
+  `PYTHONPATH`), run against ROS 2 Kilted and source of a newer release: a
+  module the workspace provides is read from the workspace and not from the
+  installed copy of the same name, since packages of an overlay override
+  those of the underlay; before, the two copies left the import undecided. A
+  workspace package whose Python is generated at build time, or kept under
+  `python/` or `src/`, is no longer judged by an installed copy of another
+  release, and its interface definitions are read from the workspace only. A
+  name or submodule missing from an installed module is a warning that names
+  the installed release and its prefix and says the code may be written for
+  another release; it is made once per package with the number of further
+  imports, where one missing module used to give a finding for every import
+  line. The message says whether the import fails when the file is loaded or
+  when the line runs. A subscription created with `raw` is no longer checked
+  for message fields, because its callback receives bytes; a field finding
+  from an installed definition names the file it was read from.
 - Three more of the same kind, written from that second set and kept only
   where they hold in general: `__str__` or `__repr__` with a path that returns
   `None`; a function that waits for one client and sends its only request
@@ -197,7 +213,9 @@ References and sources:
   installation, parameter file sections, wildcards and the namespace form, the
   unconfigured state of a managed node, `package.xml` as the source of rosdep's
   dependencies, the slots of generated message classes, and the SessionStart
-  and Stop hook contracts.
+  and Stop hook contracts. Two more were read on 2026-11-23: that packages of
+  an overlay override those of the underlay, and the `raw` parameter of
+  `create_subscription`.
 
 ## 1.8.1 - 2026-11-12
 

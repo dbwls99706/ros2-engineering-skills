@@ -1069,7 +1069,7 @@ def _module_names(path: Path) -> Optional[frozenset]:
 
 
 def _python_roots(packages: list) -> tuple:
-    """(package roots, installed roots): where a top-level import can resolve."""
+    """(package roots, installed roots, package names): where a top-level import can resolve."""
     installed = []
     for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
         if entry and os.path.isdir(entry):
@@ -1078,7 +1078,8 @@ def _python_roots(packages: list) -> tuple:
         if prefix:
             installed.extend(sorted(Path(prefix).glob("lib/python3*/site-packages")))
             installed.extend(sorted(Path(prefix).glob("local/lib/python3*/dist-packages")))
-    return tuple(package.root for package in packages), tuple(installed)
+    return (tuple(package.root for package in packages), tuple(installed),
+            frozenset(package.name for package in packages))
 
 
 # Directories of a package that are installed as data or run as tests. A
@@ -1090,34 +1091,76 @@ _NOT_MODULES = set(RESOURCE_DIRS) | {"test", "tests", "scripts", "doc", "docs", 
 def _resolve_module(roots: tuple, module: str) -> Optional[Path]:
     """The one file *module* names; None when there is none or it cannot be read here.
 
-    *roots* is (package roots, other roots). Under a package root only a real
-    module directory counts, not a data directory that happens to share the
-    name of an installed module.
+    *roots* is (package roots, installed roots, names of the workspace
+    packages). Under a package root only a real module directory counts, not a
+    data directory that happens to share the name of an installed module.
+
+    A module the workspace provides is read from the workspace, also when an
+    installed distribution has one of the same name: packages of an overlay
+    override those of the underlay. A package of the workspace whose Python
+    is generated at build time, or kept where it cannot be found from the
+    package root, is not judged by an installed copy of another release.
     """
-    workspace, installed = roots
+    workspace, installed = roots[0], roots[1]
+    names = roots[2] if len(roots) > 2 else frozenset()
     top = module.split(".")[0]
     found = []
-    for root in (() if top in _NOT_MODULES else workspace) + installed:
+    for root in () if top in _NOT_MODULES else workspace:
         base = root.joinpath(*module.split("."))
         if base.with_suffix(".py").is_file():
             found.append(base.with_suffix(".py"))
         elif (base / "__init__.py").is_file():
             found.append(base / "__init__.py")
-        elif root in installed and (
-                base.is_dir() or list(base.parent.glob(base.name + ".*.so"))
-                or base.with_suffix(".pyi").is_file()):
+    if not found and top not in _NOT_MODULES and (top in names or any(
+            (root / folder / top).is_dir() for root in workspace for folder in ("python", "src"))):
+        return None
+    for root in () if found else installed:
+        base = root.joinpath(*module.split("."))
+        if base.with_suffix(".py").is_file():
+            found.append(base.with_suffix(".py"))
+        elif (base / "__init__.py").is_file():
+            found.append(base / "__init__.py")
+        elif (base.is_dir() or list(base.parent.glob(base.name + ".*.so"))
+              or base.with_suffix(".pyi").is_file()):
             return None  # a namespace package or a compiled module: not readable here
     unique = {str(path.resolve()) for path in found}
     return found[0] if len(unique) == 1 else None
 
 
-def check_python(roots: tuple, package: Package, path: Path) -> list:
+def _installed_release(roots: tuple, target: Path, top: str) -> Optional[str]:
+    """'name version (prefix)' when *target* lies in an installed root; None inside the workspace."""
+    for root in roots[1]:
+        if root not in target.parents:
+            continue
+        for prefix in list(root.parents)[1:4]:
+            manifest = _read(prefix / "share" / top / "package.xml") or ""
+            version = re.search(r"<version>\s*([^<\s]+)\s*</version>", manifest)
+            if version:
+                return f"{top} {version.group(1)} ({prefix})"
+        return f"{top} ({root})"
+    return None
+
+
+_OTHER_RELEASE = (" Either the name is wrong here or this code is written for another release of "
+                  "{top}; in the second case it is the installation that differs, not this file.")
+
+
+def _note_repeats(seen: dict) -> None:
+    """Say on the one finding kept for an installed module how many more imports repeat it."""
+    for issue, repeats in seen.values():
+        if repeats:
+            issue["message"] += (f" The same import is in {repeats} more "
+                                 f"place{'s' if repeats > 1 else ''} of this package.")
+    seen.clear()
+
+
+def check_python(roots: tuple, package: Package, path: Path, seen: Optional[dict] = None) -> list:
     """Defects of plain Python that can be read off one file and stop a node at run time."""
     tree = _parse(_read(path))
     if tree is None:
         return []
     return (_invariant_loops(package, path, tree) + _environment_numbers(package, path, tree)
-            + check_imports(roots, package, path) + _string_methods(package, path, tree)
+            + check_imports(roots, package, path, seen) + _string_methods(package, path, tree)
             + _other_clients(package, path, tree) + _class_attributes(package, path, tree)
             + _scan_ranges(package, path, tree) + _local_keywords(package, path, tree))
 
@@ -1345,8 +1388,14 @@ def _scan_ranges(package: Package, path: Path, tree: ast.AST) -> list:
     return []
 
 
-def check_imports(roots: tuple, package: Package, path: Path) -> list:
-    """`from module import name` where the module's own source defines no such name."""
+def check_imports(roots: tuple, package: Package, path: Path, seen: Optional[dict] = None) -> list:
+    """`from module import name` where the module's own source defines no such name.
+
+    A module read from an installed distribution may be of another release
+    than the one the code is written for. Such a finding is a warning that
+    says so, and it is made once per package: *seen* carries what has been
+    said from one file of the package to the next.
+    """
     tree = _parse(_read(path))
     if tree is None:
         return []
@@ -1355,7 +1404,29 @@ def check_imports(roots: tuple, package: Package, path: Path) -> list:
         return []
     guarded = {id(node) for block in _nodes(tree) if isinstance(block, (ast.Try, ast.If))
                for node in ast.walk(block) if isinstance(node, ast.ImportFrom)}
+    loaded = {id(node) for node in getattr(tree, "body", [])}
+    own = seen is None
+    seen = {} if seen is None else seen
     issues = []
+
+    def report(node: ast.ImportFrom, target: Path, key: str, workspace: str, installed: str, error: str) -> None:
+        when = "when this file is loaded" if id(node) in loaded else "when this line runs"
+        top = (node.module or "").split(".")[0]
+        release = None if node.level else _installed_release(roots, target, top)
+        if release is None:
+            issues.append(_issue(package, path, node.lineno, "error", "import-name",
+                                 f"{workspace}; the import raises {error} {when}."))
+            return
+        if (node.module, key) in seen:
+            seen[(node.module, key)][1] += 1
+            return
+        issue = _issue(package, path, node.lineno, "warning", "import-name",
+                       installed.format(release=release)
+                       + f"; under that installation the import raises {error} {when}."
+                       + _OTHER_RELEASE.format(top=top))
+        seen[(node.module, key)] = [issue, 0]
+        issues.append(issue)
+
     for node in imports:
         if id(node) in guarded or not node.module:
             continue  # inside try or if: an optional import is the author's choice
@@ -1374,10 +1445,11 @@ def check_imports(roots: tuple, package: Package, path: Path) -> list:
                     and leaf not in (_module_names(parent) or ())
                     and not (parent.parent / leaf).exists()
                     and not list(parent.parent.glob(leaf + ".*"))):
-                issues.append(_issue(
-                    package, path, node.lineno, "error", "import-name",
-                    f"`from {node.module} import ...`: the package {parent_name} has no module "
-                    f"`{leaf}`; the import raises ModuleNotFoundError when this file is loaded."))
+                shown = f"`from {node.module} import ...`"
+                report(node, parent, "", f"{shown}: the package {parent_name} has no module `{leaf}`",
+                       f"{shown}: the installed {{release}} has no module `{leaf}`"
+                       + ("" if "." not in parent_name else f" in {parent_name}"),
+                       "ModuleNotFoundError")
             continue
         if target is None or target.resolve() == path.resolve():
             continue
@@ -1392,11 +1464,13 @@ def check_imports(roots: tuple, package: Package, path: Path) -> list:
                                        or (folder / alias.name).is_dir()
                                        or list(folder.glob(alias.name + ".*"))):
                 continue  # a submodule
-            issues.append(_issue(
-                package, path, node.lineno, "error", "import-name",
-                f"`from {'.' * node.level}{node.module} import {alias.name}`: "
-                f"{target.name if target.name != '__init__.py' else target.parent.name + '/__init__.py'} "
-                f"defines no `{alias.name}`; the import raises ImportError when this file is loaded."))
+            shown = f"`from {'.' * node.level}{node.module} import {alias.name}`"
+            module_file = target.name if target.name != "__init__.py" else target.parent.name + "/__init__.py"
+            report(node, target, alias.name, f"{shown}: {module_file} defines no `{alias.name}`",
+                   f"{shown}: {module_file} of the installed {{release}} defines no `{alias.name}`",
+                   "ImportError")
+    if own:
+        _note_repeats(seen)
     return issues
 
 
@@ -1732,18 +1806,23 @@ def _interface_fields(definition: str) -> list:
     return sections
 
 
-def _find_interface(packages: list, package_name: str, kind: str, name: str) -> Optional[list]:
-    """Sections of the interface definition, from the workspace or an installed ROS."""
-    candidates = [package.root / kind / f"{name}.{kind}" for package in packages
+def _find_interface(packages: list, package_name: str, kind: str, name: str) -> tuple:
+    """(sections of the interface definition, the installed file it was read from or None).
+
+    A package of the workspace is read from the workspace only: an installed
+    copy of it may be of another release.
+    """
+    candidates = [(package.root / kind / f"{name}.{kind}", False) for package in packages
                   if package.name == package_name]
-    for prefix in os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep):
+    for prefix in () if candidates else os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep):
         if prefix:
-            candidates.append(Path(prefix) / "share" / package_name / kind / f"{name}.{kind}")
-    for candidate in candidates:
+            candidates.append((Path(prefix) / "share" / package_name / kind / f"{name}.{kind}", True))
+    for candidate, installed in candidates:
         if candidate.is_file():
             text = _read(candidate)
-            return _interface_fields(text) if text is not None else None
-    return None
+            return (_interface_fields(text) if text is not None else None,
+                    candidate if installed else None)
+    return None, None
 
 
 def _field_uses(function: ast.AST, parameter: str) -> Optional[list]:
@@ -1786,6 +1865,10 @@ def check_interface_fields(packages: list, package: Package, path: Path) -> list
                     "create_subscription", "create_service"):
                 continue
             kind = "msg" if _call_name(call) == "create_subscription" else "srv"
+            if any(keyword.arg in (None, "raw") and not (
+                    isinstance(keyword.value, ast.Constant) and keyword.value.value is False)
+                   for keyword in call.keywords):
+                continue  # a raw subscription hands the callback bytes, not the message
             type_node = _argument(call, 0, "msg_type" if kind == "msg" else "srv_type")
             known = imported.get(type_node.id, []) if isinstance(type_node, ast.Name) else []
             if len(known) != 1 or known[0][1] != kind:
@@ -1793,7 +1876,7 @@ def check_interface_fields(packages: list, package: Package, path: Path) -> list
             found = methods.get(_self_attribute(_argument(call, 2, "callback")) or "", [])
             if len(found) != 1 or found[0].decorator_list or found[0].args.vararg:
                 continue
-            sections = _find_interface(packages, known[0][0], kind, known[0][2])
+            sections, origin = _find_interface(packages, known[0][0], kind, known[0][2])
             parameters = [arg.arg for arg in found[0].args.posonlyargs + found[0].args.args][1:]
             if sections is None or len(sections) != (1 if kind == "msg" else 2) or len(
                     parameters) < len(sections):
@@ -1810,7 +1893,7 @@ def check_interface_fields(packages: list, package: Package, path: Path) -> list
                         package, path, line, "error", "interface-field",
                         f"'{parameter}.{attribute}': {what} has no field '{attribute}' "
                         f"(it has: {', '.join(sorted(fields)) or 'none'}); this line raises "
-                        "AttributeError."))
+                        "AttributeError." + (f" The definition was read from {origin}." if origin else "")))
     return issues
 
 
@@ -1841,13 +1924,15 @@ def check_workspace(root, deadline: Optional[float] = None) -> tuple:
         issues.extend(check_dependencies(package))
         issues.extend(check_launch_against_source(package, nodes))
         launch = set(launch_files(package))
+        seen: dict = {}
         for path in package.files:
             if path.suffix == ".py" and path not in launch and path.name != "setup.py":
                 issues.extend(check_node_source(package, path))
                 issues.extend(check_interface_fields(packages, package, path))
             if path.suffix == ".py" and path.name != "setup.py" and not _is_test(
                     path.relative_to(package.root)):
-                issues.extend(check_python(roots, package, path))
+                issues.extend(check_python(roots, package, path, seen))
+        _note_repeats(seen)
     if checked < len(packages):
         skipped.append(f"time limit reached: {checked} of {len(packages)} packages were checked")
     elif packages and not _expired(deadline):

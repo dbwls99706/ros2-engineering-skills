@@ -1298,6 +1298,21 @@ class TestInterfaceFields:
                 service_body="response.total = request.a", message_body="pass")})
         issue, = found(tmp_path / "ws", "interface-field")
         assert "has no field 'total'" in issue["message"]
+        assert issue["message"].endswith(f"The definition was read from {share / 'srv' / 'AddTwo.srv'}.")
+
+    def test_definition_in_the_workspace_names_no_file(self, tmp_path):
+        issue, = service_workspace(tmp_path, "response.total = request.a + request.b")
+        assert issue["message"].endswith("this line raises AttributeError.")
+
+    @pytest.mark.parametrize("option,reported", [
+        ("raw=True", False), ("raw=self.raw", False), ("**self.options", False), ("raw=False", True)])
+    def test_raw_subscription_hands_over_bytes(self, tmp_path, option, reported):
+        node = SERVICE_NODE.format(service_body="response.sum = request.a", message_body="print(msg.decode())")
+        assert "self.on_status, 10)" in node
+        make_package(tmp_path, depends=("rclpy", "std_msgs", "demo_interfaces"), files={
+            "demo/driver.py": node.replace("self.on_status, 10)", f"self.on_status, 10, {option})")})
+        make_package(tmp_path, name="demo_interfaces", setup=False, files=INTERFACES)
+        assert bool(found(tmp_path, "interface-field")) is reported
 
     def test_definition_that_cannot_be_found_is_silent(self, tmp_path, monkeypatch):
         monkeypatch.delenv("AMENT_PREFIX_PATH", raising=False)
@@ -1483,7 +1498,13 @@ class TestImportNames:
         make_package(tmp_path / "ws", files={
             "demo/tools.py": "from launch_ros.substitutions import FileContent, FindPackageShare\n"})
         issue, = found(tmp_path / "ws", "import-name")
-        assert "substitutions/__init__.py defines no `FileContent`" in issue["message"]
+        site_packages = tmp_path / "opt" / "lib" / "python3.12" / "site-packages"
+        assert issue["severity"] == "warning"
+        assert (f"substitutions/__init__.py of the installed launch_ros ({site_packages}) "
+                "defines no `FileContent`") in issue["message"]
+        assert "under that installation the import raises ImportError when this file is loaded" in issue["message"]
+        assert "written for another release of launch_ros" in issue["message"]
+        assert "more place" not in issue["message"]
 
     @pytest.mark.parametrize("importer", [
         "from demo.helpers import scale, LIMIT\n",
@@ -1585,9 +1606,19 @@ class TestImportOfAMissingModule:
         make_package(tmp_path / "ws", files={
             "demo/tools.py": "from rclpy.executor import ExternalShutdownException\n"})
         issue, = found(tmp_path / "ws", "import-name")
+        assert issue["severity"] == "warning"
+        assert "`from rclpy.executor import ...`: the installed rclpy (" in issue["message"]
+        assert ") has no module `executor`; under" in issue["message"]
+        assert "ModuleNotFoundError when this file is loaded" in issue["message"]
+
+    def test_submodule_a_workspace_package_does_not_have(self, tmp_path):
+        make_package(tmp_path, name="shared", files={"shared/units.py": "A = 1\n"})
+        make_package(tmp_path, files={"demo/tools.py": "from shared.scales import A\n"})
+        issue, = found(tmp_path, "import-name")
         assert issue["severity"] == "error"
-        assert "the package rclpy has no module `executor`" in issue["message"]
-        assert "ModuleNotFoundError" in issue["message"]
+        assert "the package shared has no module `scales`; the import raises ModuleNotFoundError" in (
+            issue["message"])
+        assert "installed" not in issue["message"]
 
     @pytest.mark.parametrize("importer", [
         "from rclpy.executors import ExternalShutdownException\n",
@@ -1617,6 +1648,146 @@ class TestImportOfAMissingModule:
         monkeypatch.delenv("PYTHONPATH", raising=False)
         make_package(tmp_path, files={"demo/tools.py": "from rclpy.executor import X\n"})
         assert found(tmp_path, "import-name") == []
+
+
+class TestInstalledRelease:
+    """A module read from an installed distribution may be of another release than the code."""
+
+    def site(self, tmp_path, monkeypatch, version="0.38.2"):
+        prefix = tmp_path / "opt" / "ros" / "kilted"
+        package = prefix / "lib" / "python3.12" / "site-packages" / "ros2cli"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "helpers.py").write_text("def wait_for(seconds):\n    return seconds\n")
+        if version:
+            (prefix / "share" / "ros2cli").mkdir(parents=True)
+            (prefix / "share" / "ros2cli" / "package.xml").write_text(
+                f"<package><name>ros2cli</name><version>{version}</version></package>")
+        monkeypatch.setenv("AMENT_PREFIX_PATH", str(prefix))
+        return prefix
+
+    def test_release_and_prefix_are_named(self, tmp_path, monkeypatch):
+        prefix = self.site(tmp_path, monkeypatch)
+        make_package(tmp_path / "ws", files={"demo/tools.py": "from ros2cli.helpers import interactive_select\n"})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert issue["severity"] == "warning"
+        assert f"helpers.py of the installed ros2cli 0.38.2 ({prefix}) defines no `interactive_select`" in (
+            issue["message"])
+        assert "it is the installation that differs, not this file" in issue["message"]
+
+    def test_one_finding_for_a_package_that_repeats_the_import(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch)
+        make_package(tmp_path / "ws", files={
+            "demo/first.py": "from ros2cli.qos import profile\n\n\ndef later():\n"
+                             "    from ros2cli.qos import depth\n    return depth\n",
+            "demo/second.py": "def call():\n    from ros2cli.qos import profile\n    return profile\n",
+            "demo/third.py": "from ros2cli.helpers import interactive_select\n"})
+        issues = found(tmp_path / "ws", "import-name")
+        assert [(issue["file"], issue["line"]) for issue in issues] == [
+            ("demo/demo/first.py", 1), ("demo/demo/third.py", 1)]
+        assert "the installed ros2cli 0.38.2 (" in issues[0]["message"]
+        assert ") has no module `qos`; under" in issues[0]["message"]
+        assert issues[0]["message"].endswith("The same import is in 2 more places of this package.")
+        assert "more place" not in issues[1]["message"]
+
+    def test_each_package_says_it_once(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch)
+        for name in ("first", "second"):
+            make_package(tmp_path / "ws", name=name, files={
+                f"{name}/a.py": "from ros2cli.qos import profile\n",
+                f"{name}/b.py": "from ros2cli.qos import profile\n"})
+        issues = found(tmp_path / "ws", "import-name")
+        assert [issue["file"] for issue in issues] == ["first/first/a.py", "second/second/a.py"]
+        assert all(issue["message"].endswith("1 more place of this package.") for issue in issues)
+
+    def test_import_inside_a_function_fails_when_the_line_runs(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch)
+        make_package(tmp_path / "ws", files={
+            "demo/tools.py": "def call():\n    from ros2cli.helpers import interactive_select\n"
+                             "    return interactive_select\n",
+            "demo/helpers.py": "A = 1\n",
+            "demo/other.py": "def call():\n    from demo.helpers import B\n    return B\n"})
+        installed, local = sorted(found(tmp_path / "ws", "import-name"), key=lambda issue: issue["severity"],
+                                  reverse=True)
+        assert "raises ImportError when this line runs" in installed["message"]
+        assert local["severity"] == "error" and local["message"].endswith(
+            "helpers.py defines no `B`; the import raises ImportError when this line runs.")
+
+    def test_without_a_manifest_the_directory_is_named(self, tmp_path, monkeypatch):
+        prefix = self.site(tmp_path, monkeypatch, version=None)
+        make_package(tmp_path / "ws", files={"demo/tools.py": "from ros2cli.helpers import interactive_select\n"})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert f"the installed ros2cli ({prefix / 'lib' / 'python3.12' / 'site-packages'})" in issue["message"]
+
+    def test_module_missing_from_a_subpackage_names_the_subpackage(self, tmp_path, monkeypatch):
+        prefix = self.site(tmp_path, monkeypatch)
+        verb = prefix / "lib" / "python3.12" / "site-packages" / "ros2cli" / "verb"
+        verb.mkdir()
+        (verb / "__init__.py").write_text("")
+        make_package(tmp_path / "ws", files={"demo/tools.py": "from ros2cli.verb.daemon import Start\n"})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert f"the installed ros2cli 0.38.2 ({prefix}) has no module `daemon` in ros2cli.verb; under" in (
+            issue["message"])
+
+    def test_name_the_installed_module_defines_is_silent(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch)
+        make_package(tmp_path / "ws", files={"demo/tools.py": "from ros2cli.helpers import wait_for\n"})
+        assert found(tmp_path / "ws", "import-name") == []
+
+
+class TestWorkspaceBeforeInstallation:
+    """Packages of an overlay override those of the underlay."""
+
+    def site(self, tmp_path, monkeypatch, files):
+        packages = tmp_path / "opt" / "lib" / "python3.12" / "site-packages"
+        for name, text in files.items():
+            (packages / name).parent.mkdir(parents=True, exist_ok=True)
+            (packages / name).write_text(text)
+        monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path / "opt"))
+
+    def test_module_is_read_from_the_workspace_copy(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch, {"shared/__init__.py": "", "shared/units.py": "OLD = 1\n"})
+        make_package(tmp_path / "ws", name="shared", files={"shared/units.py": "NEW = 1\n"})
+        make_package(tmp_path / "ws", files={"demo/tools.py": "from shared.units import NEW, OLD\n"})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert issue["severity"] == "error" and "units.py defines no `OLD`" in issue["message"]
+        assert "installed" not in issue["message"]
+
+    def test_name_only_the_workspace_copy_has_is_silent(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch, {"shared/__init__.py": "", "shared/units.py": "OLD = 1\n"})
+        make_package(tmp_path / "ws", name="shared", files={"shared/units.py": "NEW = 1\n"})
+        make_package(tmp_path / "ws", files={"demo/tools.py": "from shared.units import NEW\n"})
+        assert found(tmp_path / "ws", "import-name") == []
+
+    @pytest.mark.parametrize("layout", ["generated", "python", "src"])
+    def test_workspace_package_without_readable_python_is_not_judged_by_the_installation(
+            self, tmp_path, monkeypatch, layout):
+        # Interfaces are generated at build time; ament_cmake packages keep Python under python/ or src/.
+        self.site(tmp_path, monkeypatch, {
+            "demo_interfaces/__init__.py": "", "demo_interfaces/action/__init__.py": "from ._old import Old\n",
+            "demo_interfaces/action/_old.py": "class Old:\n    pass\n"})
+        root = tmp_path / "ws" / ("demo_interfaces" if layout == "generated" else "bindings")
+        (root / "action").mkdir(parents=True)
+        (root / "package.xml").write_text(
+            f"<package><name>{root.name}</name><export><build_type>ament_cmake</build_type></export></package>")
+        if layout != "generated":
+            (root / layout / "demo_interfaces").mkdir(parents=True)
+        make_package(tmp_path / "ws", files={
+            "demo/tools.py": "from demo_interfaces.action import New\nfrom demo_interfaces.action._new import New\n"})
+        assert found(tmp_path / "ws", "import-name") == []
+
+    def test_interface_of_a_workspace_package_is_not_read_from_the_installation(self, tmp_path, monkeypatch):
+        share = tmp_path / "opt" / "share" / "demo_interfaces"
+        (share / "srv").mkdir(parents=True)
+        (share / "srv" / "AddTwo.srv").write_text("int64 a\n---\nint64 old_sum\n")
+        monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path / "opt"))
+        # The workspace package keeps its definitions where they are not found from its root.
+        root = tmp_path / "ws" / "demo_interfaces"
+        (root / "interfaces" / "srv").mkdir(parents=True)
+        (root / "package.xml").write_text("<package><name>demo_interfaces</name></package>")
+        make_package(tmp_path / "ws", depends=("rclpy", "std_msgs", "demo_interfaces"), files={
+            "demo/driver.py": SERVICE_NODE.format(service_body="response.sum = request.a", message_body="pass")})
+        assert found(tmp_path / "ws", "interface-field") == []
 
 
 class TestThirdPartyDependencies:
