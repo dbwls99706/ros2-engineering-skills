@@ -133,6 +133,9 @@ def other_generation(kind, text, have):
 
 def load(kind, path, generation):
     env = dict(os.environ, ROS_DOMAIN_ID=os.environ.get('ROS_DOMAIN_ID', '97'))
+    # The example selects its interface itself. On Humble ROS_LOCALHOST_ONLY=1 makes rmw_cyclonedds_cpp
+    # select the loopback as well, and CycloneDDS refuses an interface that is selected twice.
+    env.pop('ROS_LOCALHOST_ONLY', None)
     if kind == 'cyclonedds':
         env.update(RMW_IMPLEMENTATION='rmw_cyclonedds_cpp', CYCLONEDDS_URI='file://%s' % path)
     else:
