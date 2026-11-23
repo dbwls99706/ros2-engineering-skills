@@ -101,7 +101,10 @@ verifies, and a request for one specific change leaves the other files alone
 and lists the findings in the reply. A finding that was not there when the
 conversation started is marked as such, so a package the session has just made
 is checked like any other. A repeated Stop never continues the turn, and the
-same finding is not handed over twice in a session.
+same finding is not handed over twice in a session. The check of the files
+the session changed runs at the same Stop: its advisory goes to the user as
+before, and when the turn continues it is added to what the model is handed,
+so neither check hides the other.
 
 The same handover names the tests of packages the session changed. The
 workspace report carries, for each package, a fingerprint of its files (path,
@@ -111,9 +114,14 @@ fingerprint differs from the one recorded when the conversation started, or
 that did not exist then, counts as changed, and so does a package that holds a
 finding handed over now: the turn continues only once, so the tests of what is
 about to be fixed are named in the same handover. If such a package has tests
-and no command of the session ran `pytest`, `colcon test`, `launch_test` or
-`unittest`, the handover names the tests the way colcon runs them, with pytest
-started in the package directory:
+and no test command of the session reached it, the handover names the tests
+the way colcon runs them, with pytest started in the package directory. A
+test command is `pytest`, `python -m pytest`, `python -m unittest`,
+`launch_test` or `colcon test` as the command of a shell line, not as a word
+in `echo` or `grep`; it reaches a package when it is started in the package,
+given a path in or above it, or selects it by name. The record is made when
+the command is issued: whether it was allowed to run, and what it showed, is
+not known to the hook. The command named is
 `cd <package> && python3 -m pytest test -q`. From there the package is on the
 import path with every pytest release, and the ament lint tests, which check
 the directory they are started in, check the package and not the whole
@@ -142,7 +150,7 @@ their Python launch files:
 | `install-rules` | A `launch/`, `config/` or similar directory that a launch file needs has no entry in `setup.py` or `CMakeLists.txt`. A `data_files` list written out in `setup()` is read on its own, so the word elsewhere in `setup.py` (`install_requires`, `find_packages(exclude=...)`) does not count as an entry |
 | `launch-executable` | A launch `Node` of the package names an executable that is not one of its console scripts |
 | `entry-point` | A console script points at a module or function the package does not contain |
-| `parameter-section` | A parameter file given to a node, directly or as the default of the launch argument it reads, has no section for that node's name |
+| `parameter-section` | A parameter file given to a node, directly or as the default of the launch argument it reads, has no section that applies to the node. A section applies to the node whose fully qualified name it matches: `demo` is `/demo` and does not apply to `/robot1/demo`, `*` stands for one token and `**` for any number. A `namespace` written with a leading slash is taken as the whole namespace; a relative one, or none, may sit under namespaces pushed around the node, which is allowed for |
 | `parameter-name` | A section sets a parameter the node's source does not declare |
 | `dependencies` | The code imports a ROS package that `package.xml` does not declare, or an `ament_python` package imports, unconditionally at module level, one of a fixed list of third-party modules (`serial`, `cv2`, `scipy`, `requests` and others) and declares nothing that provides it. `yaml` and `numpy` are not reported for a package that declares `rclpy`, which brings both |
 | `missing-qos` | `create_publisher` or `create_subscription` is called without the QoS argument |

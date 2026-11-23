@@ -162,6 +162,7 @@ class LaunchNode:
     executable: Optional[str]
     name: Optional[str]
     name_given: bool
+    namespace: Optional[str]
     parameters: list
     remappings: list
     lifecycle_action: bool
@@ -432,6 +433,7 @@ def launch_nodes(package: Package) -> list:
                 executable=_text(_keyword(call, "executable") or ast.Constant(None)),
                 name=_text(name) if name is not None else None,
                 name_given=name is not None,
+                namespace=_text(namespace) if namespace is not None else None,
                 parameters=[(element, _constants(defaults.get(_configuration(element), element), names))
                             for element in parameters.elts]
                 if isinstance(parameters, (ast.List, ast.Tuple)) else [],
@@ -638,7 +640,7 @@ def check_parameter_files(package: Package, nodes: list) -> tuple:
                 sections = _sections(data)
                 if not sections:
                     continue
-                matching = [key for key in sections if _section_matches(key, name)]
+                matching = [key for key in sections if _section_matches(key, name, node.namespace)]
                 if not matching:
                     argument = _configuration(element)
                     origin = f" (the default of the launch argument '{argument}')" if argument else ""
@@ -686,9 +688,31 @@ def _sections(data: dict, prefix: str = "", depth: int = 4) -> dict:
     return found
 
 
-def _section_matches(key: str, name: str) -> bool:
-    key = key.strip("/")
-    return "*" in key or key == name or key.endswith("/" + name)
+def _tokens_match(pattern: list, path: list) -> bool:
+    """A parameter file node name against a node path: `*` is one token, `**` any number."""
+    if not pattern:
+        return not path
+    head, rest = pattern[0], pattern[1:]
+    if head == "**":
+        return any(_tokens_match(rest, path[skip:]) for skip in range(len(path) + 1))
+    return bool(path) and (head == "*" or path[0] is None or head == path[0]) and _tokens_match(
+        rest, path[1:])
+
+
+def _section_matches(key: str, name: str, namespace: Optional[str] = None) -> bool:
+    """Whether the section *key* can apply to the node *name* in *namespace*.
+
+    A section applies to a node whose fully qualified name it matches: `demo`
+    is `/demo` and does not apply to `/robot1/demo`. A namespace written with a
+    leading slash is the whole namespace. A relative one, or none, may be
+    preceded by namespaces pushed around the node, which a launch file does
+    not show at the node, so none to six unknown tokens are tried in front.
+    """
+    pattern = [token for token in key.split("/") if token]
+    tail = [token for token in (namespace or "").split("/") if token] + [name]
+    if namespace is not None and namespace.startswith("/"):
+        return _tokens_match(pattern, tail)
+    return any(_tokens_match(pattern, [None] * pushed + tail) for pushed in range(7))
 
 
 def _is_test(path: Path) -> bool:

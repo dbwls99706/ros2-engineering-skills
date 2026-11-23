@@ -367,6 +367,50 @@ class TestParameterFiles:
             "config/params.yaml": f'"{section}":\n  ros__parameters:\n    rate: 20.0\n'})
         assert found(tmp_path) == []
 
+    # Measured on Kilted with a node in /, /robot1 and /fleet/robot1: a section applies to the node
+    # whose fully qualified name it matches, `*` stands for one token and `**` for any number.
+    @pytest.mark.parametrize("namespace,section,reported", [
+        ("/robot1", "/robot2/driver", True),
+        ("/robot1", "robot2/driver", True),
+        ("/robot1", "driver", True),              # `driver` is /driver
+        ("/robot1", "/*", True),                  # one token, the node has two
+        ("/robot1", "/fleet/robot1/driver", True),
+        ("/robot1", "/robot1/driver", False),
+        ("/robot1", "robot1/driver", False),
+        ("/robot1", "/**", False),
+        ("/robot1", "/**/driver", False),
+        ("/robot1", "/*/driver", False),
+        ("/robot1", "/robot1/*", False),
+        ("robot1", "/robot2/driver", True),
+        ("robot1", "driver", True),
+        ("robot1", "/robot1/driver", False),
+        ("robot1", "/fleet/robot1/driver", False),  # a relative namespace may sit under a pushed one
+        ("robot1", "/*/robot1/driver", False),
+        ("/", "driver", False),
+        ("/", "/robot1/driver", True),
+        ("/", "/*/driver", True),
+        ("/", "/**/driver", False),
+        ("", "/robot1/driver", False),            # empty: whatever is pushed around the node
+    ])
+    def test_section_is_compared_with_the_full_name_of_the_node(self, tmp_path, namespace, section, reported):
+        make_package(tmp_path, files={
+            "launch/demo.launch.py": with_parameters(name=f"name='driver', namespace='{namespace}', "),
+            "config/params.yaml": f'"{section}":\n  ros__parameters:\n    rate: 20.0\n'})
+        assert bool(found(tmp_path, "parameter-section")) is reported
+
+    def test_parameters_of_another_robot_are_not_compared_with_this_node(self, tmp_path):
+        text = ('"/robot1/driver":\n  ros__parameters:\n    rate: 20.0\n'
+                '"/robot2/driver":\n  ros__parameters:\n    gain: 1.0\n')
+        make_package(tmp_path, files={
+            "launch/demo.launch.py": with_parameters(name="name='driver', namespace='/robot1', "),
+            "config/params.yaml": text})
+        assert found(tmp_path) == []
+        make_package(tmp_path / "second", files={
+            "launch/demo.launch.py": with_parameters(name="name='driver', namespace='/robot1', "),
+            "config/params.yaml": text.replace("gain", "rate").replace("rate: 20.0", "gain: 2.0")})
+        issue, = found(tmp_path / "second", "parameter-name")
+        assert "section '/robot1/driver' sets 'gain'" in issue["message"]
+
     def test_section_under_a_namespace_key_is_read(self, tmp_path):
         nested = "robot1:\n  driver:\n    ros__parameters:\n      rate: 20.0\n"
         other = "camera:\n  ros__parameters:\n    fps: 30\n"

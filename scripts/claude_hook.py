@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -47,12 +48,18 @@ HANDOVER_NEW = ' (not reported when this conversation started)'
 # Tests are named, never run by the hook: running them is the model's step, under the client's
 # permission rules and the actuation check, and a test bench may be wired to hardware.
 HANDOVER_TESTS = (
-    'No test was run in this conversation. For each package below that you changed, or change '
-    'now, run its tests before you finish, unless they would move connected hardware (then say '
+    'No test of these packages was run in this conversation. For each package below that you '
+    'changed, or change now, run its tests before you finish, unless they would move connected hardware (then say '
     'so in your reply instead), and fix what they show. Each command starts in the workspace '
     'root and leaves the shell in the package directory:\n')
 HANDOVER_TEST_PACKAGES = 5
-TEST_COMMAND = re.compile(r'(?:^|[\s;&|(])(pytest|py\.test|colcon\s+test|launch_test|unittest)(?=$|[\s;&|)])')
+# Words that may stand in front of a command without being it, and pytest or
+# unittest options whose next word is a value, not a path to test.
+COMMAND_PREFIXES = ('sudo', 'time', 'nice', 'env', 'exec', 'command', 'timeout', 'stdbuf')
+TEST_OPTION_VALUES = ('-k', '-m', '-o', '-c', '-p', '-n', '-W', '-t', '--rootdir', '--deselect', '--ignore',
+                      '--timeout', '--maxfail', '--junitxml', '--cov', '--cov-report', '--durations')
+PACKAGE_SELECTORS = ('--packages-select', '--packages-up-to', '--packages-above')
+MAX_TEST_RUNS = 200
 # "handover" (default) continues the turn once with the findings; "advise"
 # only shows them to the user; "off" does not run the check. Unknown values
 # mean "handover".
@@ -256,11 +263,106 @@ def _package_states(report):
     return states
 
 
+def test_runs(command, cwd):
+    """[{'cwd', 'kind', 'args'}] for the test commands of one shell line.
+
+    Only a word in command position counts: `echo pytest` and `grep pytest`
+    run no test. A `cd` earlier in the line moves the directory the test is
+    started in. A line that cannot be split into words is not read.
+    """
+    lexer = shlex.shlex(command.replace('\n', ' ; '), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    runs, words = [], []
+    for token in tokens + [';']:
+        if token and not token.strip(';&|()'):
+            found, cwd = _test_run(words, cwd)
+            runs.extend(found)
+            words = []
+        else:
+            words.append(token)
+    return runs
+
+
+def _test_run(words, cwd):
+    """([run], cwd) for one simple command: the test it starts, if any, and where the shell is after it."""
+    words = list(words)
+    while words and (re.fullmatch(r'[A-Za-z_]\w*=.*', words[0]) or words[0] in COMMAND_PREFIXES
+                     or words[0].startswith('-') or re.fullmatch(r'\d+(\.\d+)?[smhd]?', words[0])):
+        words.pop(0)  # VAR=value, sudo, timeout 30, env -i and the like
+    if not words:
+        return [], cwd
+    name = os.path.basename(words[0])
+    if name == 'cd' and len(words) > 1 and isinstance(cwd, str):
+        return [], os.path.normpath(os.path.join(cwd, words[1]))
+    kind, args = None, words[1:]
+    if name in ('pytest', 'py.test', 'launch_test'):
+        kind = 'pytest'
+    elif name == 'colcon' and args[:1] == ['test']:
+        kind, args = 'colcon', args[1:]
+    elif re.fullmatch(r'python[\d.]*', name) and '-m' in args:
+        module = args[args.index('-m') + 1:args.index('-m') + 2]
+        if module in (['pytest'], ['unittest']):
+            kind, args = 'pytest', args[args.index('-m') + 2:]
+    if kind is None:
+        return [], cwd
+    return [{'cwd': cwd if isinstance(cwd, str) else None, 'kind': kind,
+             'args': [word[:300] for word in args[:60]]}], cwd
+
+
 def note_test_run(payload):
-    """PreToolUse: remember that this session has run tests, so they are not asked for again."""
+    """PreToolUse: record the test commands this session issues, with their directory.
+
+    The record is made when the command is issued. Whether it was allowed to
+    run, and what it showed, is not known to this hook.
+    """
     command = payload.get('tool_input', {}).get('command')
-    if isinstance(command, str) and TEST_COMMAND.search(command):
-        _log_append(_session_log(payload, '.tests'), ['run'])
+    if not isinstance(command, str):
+        return
+    runs = test_runs(command[:20000], payload.get('cwd'))
+    log = _session_log(payload, '.tests')
+    if runs and len(_log_lines(log)) < MAX_TEST_RUNS:
+        _log_append(log, [json.dumps(run, sort_keys=True) for run in runs])
+
+
+def _covers(run, root, package_path, name):
+    """Whether a recorded test command reaches the package: by its directory, a path, or its name."""
+    if run == 'run':
+        return True  # the record of an earlier release: some test command was issued
+    try:
+        run = json.loads(run)
+        kind, args, cwd = run['kind'], [str(word) for word in run['args']], run.get('cwd')
+    except (ValueError, TypeError, KeyError):
+        return False
+    if kind == 'colcon':
+        selected, chosen = [], False
+        for word in args:
+            if word in PACKAGE_SELECTORS:
+                chosen = True
+                continue
+            if word.startswith('-'):
+                chosen = False
+            elif chosen:
+                selected.append(word)
+        return name in selected if any(word in PACKAGE_SELECTORS for word in args) else True
+    base = cwd if isinstance(cwd, str) else root
+    if not isinstance(base, str) or not isinstance(root, str):
+        return True  # nothing to place the command with: do not ask again
+    package = os.path.normpath(os.path.join(root, package_path))
+    targets, skip = [], False
+    for word in args:
+        if skip or word.startswith('-') or word == 'discover':
+            skip = word in TEST_OPTION_VALUES
+            continue
+        targets.append(os.path.normpath(os.path.join(base, word.split('::')[0])))
+    for target in targets or [os.path.normpath(base)]:
+        if target == package or target.startswith(package + os.sep) or package.startswith(
+                target.rstrip(os.sep) + os.sep):
+            return True
+    return False
 
 
 def untested_packages(payload, state, report, pending=()):
@@ -268,18 +370,22 @@ def untested_packages(payload, state, report, pending=()):
 
     A package also counts when a finding that is handed over now lies in it:
     the turn continues only once, so the tests of what is about to be fixed
-    have to be named in the same handover. Changed packages come first.
+    have to be named in the same handover. Changed packages come first. A
+    package is taken as tested when a test command the session issued reaches
+    it: started in it, given a path in it or above it, or selecting it by name.
     Without the record made when the conversation started there is nothing to
     compare with, and nothing is claimed.
     """
     before = state.get('packages')
-    if not isinstance(before, dict) or _log_lines(_session_log(payload, '.tests')):
+    if not isinstance(before, dict):
         return []
+    runs = _log_lines(_session_log(payload, '.tests'))
+    root = state.get('root')
     told = state.get('tests_shown') if isinstance(state.get('tests_shown'), list) else []
     touched = {str(issue.get('file', '')).split('/')[0] for issue in pending}
     changed, fixing = [], []
     for path, (name, fingerprint, tests) in sorted(_package_states(report).items()):
-        if not tests or path in told:
+        if not tests or path in told or any(_covers(run, root, path, name) for run in runs):
             continue
         if before.get(path) != fingerprint:
             changed.append((path, name, tests))
@@ -523,14 +629,16 @@ def run_hook(event, payload):
     if event == 'Stop' and payload.get('stop_hook_active') is True:
         return notice('repeated Stop skipped; use the manual validator for '
                       'remaining findings.'), '', 0
-    note = ''
+    note, handover = '', None
     if event == 'PreToolUse':
         note_test_run(payload)
     if event == 'Stop' and workspace_mode() != 'off':
-        output, note = workspace_handover(payload)
-        if output is not None:
-            return output, '', 0
+        handover, note = workspace_handover(payload)
     output, error, status = run_validator(event, payload)
+    if handover is not None:
+        # A repeated Stop is skipped, so this is the only Stop of the turn that
+        # checks anything: the changed-file check must not be lost to the handover.
+        return with_changed_files(handover, output), '', 0
     if note and status == 0 and isinstance(output, dict):
         # The changed-file advisory and the note that the workspace check did
         # not run are both for the user; neither replaces the other.
@@ -539,6 +647,28 @@ def run_hook(event, payload):
         if earlier:
             output['systemMessage'] = earlier + '\n' + output['systemMessage']
     return output, error, status
+
+
+CHANGED_FILES_PREFACE = ('The check of the files this session changed also reports the following; '
+                         'treat it like the findings above:\n')
+
+
+def with_changed_files(handover, checked):
+    """The workspace handover together with what the changed-file check reports at this Stop.
+
+    The advisory stays a message to the user, as it is without a handover. When
+    the turn continues anyway, the model is given the same text, since it is
+    about files it has just written.
+    """
+    advisory = checked.get('systemMessage') if isinstance(checked, dict) else None
+    if not isinstance(advisory, str) or not advisory:
+        return handover
+    merged = dict(handover)
+    merged['systemMessage'] = '\n'.join(part for part in (advisory, handover.get('systemMessage')) if part)
+    if 'reason' in handover:
+        text = advisory[len('ROS 2 validation: '):] if advisory.startswith('ROS 2 validation: ') else advisory
+        merged['reason'] = handover['reason'] + '\n' + CHANGED_FILES_PREFACE + text
+    return merged
 
 
 def run_validator(event, payload):

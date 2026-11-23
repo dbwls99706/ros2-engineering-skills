@@ -53,6 +53,11 @@ Workspace check (`scripts/workspace_checks.py`, new):
   packages: of ten such defects the check reported none at first and reports
   three now. On a second set of seven, not used to write these rules, it
   reported none.
+- A parameter file section is compared with the fully qualified name of the
+  node, as a running node does it (measured on Kilted): `demo` applies to
+  `/demo` only, `*` stands for one token and `**` for any number. Before, a
+  section for `/robot2/demo` counted as one for `/robot1/demo`, and its
+  parameters were compared with that node's declarations.
 - With an installed distribution in the environment (`AMENT_PREFIX_PATH`,
   `PYTHONPATH`), run against ROS 2 Kilted and source of a newer release: a
   module the workspace provides is read from the workspace and not from the
@@ -177,8 +182,10 @@ Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
   started is marked, so a package the session has just made is checked like
   any other. A repeated Stop never continues the turn, and the same finding is
   not handed over twice in a session. This changes an earlier rule of this
-  adapter, which never continued a turn; the changed-file check at Stop stays
-  advisory.
+  adapter, which never continued a turn. The changed-file check runs at the
+  same Stop and stays advisory to the user; when the turn continues, its
+  findings are added to what the model is handed, so a workspace finding does
+  not hide a broken `package.xml`.
 - The handover also names the tests of packages the session changed and did
   not test: `cd <package> && python3 -m pytest test -q`, pytest started in
   the package directory as colcon starts it. Run from the workspace root with
@@ -188,9 +195,14 @@ Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
   with the instruction not to run tests that move connected hardware. The hook runs
   nothing itself. A package counts as changed when the fingerprint of its
   files differs from the one recorded at SessionStart, or when a finding
-  handed over now lies in it; a session that ran `pytest`, `colcon test`,
-  `launch_test` or `unittest` is not asked again. The static check does not
-  see most logic defects; a package's own tests are where they show.
+  handed over now lies in it. A package is not asked for when a test command
+  of the session reached it: `pytest`, `python -m pytest`, `python -m
+  unittest`, `launch_test` or `colcon test` in command position, started in
+  the package, given a path in or above it, or selecting it by name. `echo
+  pytest` is not a test run, and tests of one package do not answer for
+  another. The record is made when the command is issued, not from its
+  result. The static check does not see most logic defects; a package's own
+  tests are where they show.
 - Why at the end. Given the findings when the conversation starts, a model
   fixes what is listed and stops reading the rest of the workspace. In
   informal trials with a small model at low effort this held for every wording
@@ -260,11 +272,11 @@ References and sources:
   installation, parameter file sections, wildcards and the namespace form, the
   unconfigured state of a managed node, `package.xml` as the source of rosdep's
   dependencies, the slots of generated message classes, and the SessionStart
-  and Stop hook contracts. Six more were read on 2026-11-23: that packages of
-  an overlay override those of the underlay, the `raw` parameter of
+  and Stop hook contracts. Seven more were read on 2026-11-23: that packages
+  of an overlay override those of the underlay, the `raw` parameter of
   `create_subscription`, the CycloneDDS 0.10 configuration reference, the
-  Fast DDS rule for past samples, the QoS design of `rmw_zenoh_cpp`, and the
-  XML profile rules of `rmw_fastrtps`.
+  Fast DDS rule for past samples, the QoS design of `rmw_zenoh_cpp`, the XML
+  profile rules of `rmw_fastrtps`, and the wildcards of parameter files.
 
 ## 1.8.1 - 2026-11-12
 

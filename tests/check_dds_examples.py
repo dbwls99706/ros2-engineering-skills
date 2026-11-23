@@ -16,8 +16,10 @@ What depends on the machine is replaced before loading: interface names become
 generation of the middleware ("Fast DDS 2.x", "Fast DDS 3.x", "CycloneDDS
 0.10") is skipped where that generation is not installed.
 
-Exit status 1 when an example is rejected or does not load on Humble, Jazzy,
-Kilted or Lyrical, where every example has been loaded. On another
+Exit status 1 on Humble, Jazzy, Kilted or Lyrical, where every example has
+been loaded, when an example is rejected or does not load, when Fast DDS or
+CycloneDDS is not installed or cannot be loaded, or when no example of one of
+them loaded: a run that checked nothing is not a pass. On another
 distribution the result is printed and the status stays 0. An example that
 needs a kernel limit or a privilege the machine does not grant is reported as
 a precondition and does not fail the check.
@@ -166,10 +168,11 @@ def main(argv=None):
     have = installed(distro)
     print('ROS_DISTRO=%s  Fast DDS %s  CycloneDDS %s' % (
         distro or '(unset)', have['fastdds'] or 'not installed', have['cyclonedds'] or 'not installed'))
-    bad = 0
+    results = []
     with tempfile.TemporaryDirectory() as scratch:
         for index, (source, kind, text) in enumerate(found):
             if have[kind] is None:
+                results.append((kind, 'missing'))
                 print('%-24s %-10s not checked: middleware not installed' % (source, kind))
                 continue
             other = other_generation(kind, text, have[kind])
@@ -182,12 +185,37 @@ def main(argv=None):
                 body = '<CycloneDDS><Domain>%s</Domain></CycloneDDS>' % body
             path.write_text(body, encoding='utf-8')
             verdict, lines = load(kind, path, have[kind])
-            bad += verdict in ('rejected', 'failed')
+            results.append((kind, verdict))
             print('%-24s %-10s %s%s' % (source, kind, verdict, ''.join('\n    ' + line[:300] for line in lines)))
-    if bad and distro not in ENFORCED:
-        print('%d example(s) not loaded; reported only, %s is not one of %s' % (bad, distro or 'this', ENFORCED))
+    problems = unmet(results)
+    for problem in problems:
+        print(problem)
+    if problems and distro not in ENFORCED:
+        print('reported only: %s is not one of %s' % (distro or 'this environment', ENFORCED))
         return 0
-    return 1 if bad else 0
+    return 1 if problems else 0
+
+
+def unmet(results):
+    """What keeps the run from being a check of both middlewares: [] when every example was decided.
+
+    An example that was rejected or did not load is a failure. So is a
+    middleware that is not installed or cannot be loaded, and one of which no
+    example loaded: a run that looked at nothing has shown nothing.
+    """
+    problems = []
+    bad = sum(verdict in ('rejected', 'failed') for _kind, verdict in results)
+    if bad:
+        problems.append('%d example(s) rejected or not loaded' % bad)
+    for kind in ('cyclonedds', 'fastdds'):
+        verdicts = [verdict for found_kind, verdict in results if found_kind == kind]
+        if 'missing' in verdicts:
+            problems.append('%s: the middleware is not installed, its examples were not checked' % kind)
+        elif 'unavailable' in verdicts:
+            problems.append('%s: the middleware cannot be loaded, its examples were not checked' % kind)
+        elif 'loaded' not in verdicts:
+            problems.append('%s: no example was loaded' % kind)
+    return problems
 
 
 if __name__ == '__main__':

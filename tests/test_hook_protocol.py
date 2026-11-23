@@ -387,7 +387,16 @@ def state(monkeypatch, tmp_path):
     monkeypatch.delenv(hook.DISABLE_ENV, raising=False)
 
     def run(event, payload, *reports):
-        calls = Mock(side_effect=list(reports))
+        # At Stop the changed-file check runs after the workspace check. A test that scripts
+        # only the workspace report gets a changed-file check with nothing to say.
+        scripted = list(reports)
+
+        def answer(*_args, **_kwargs):
+            item = scripted.pop(0) if scripted else completed()
+            if isinstance(item, BaseException) or (isinstance(item, type) and issubclass(item, BaseException)):
+                raise item
+            return item
+        calls = Mock(side_effect=answer)
         monkeypatch.setattr(hook.subprocess, 'run', calls)
         return hook.run_hook(event, payload), calls
     return run
@@ -400,6 +409,64 @@ def test_session_start_records_and_says_nothing(state):
     assert args[0][-1].endswith('/scripts/skill_workspace_hook.py') and args[0][1] == '-B'
     assert kwargs['timeout'] == 12 and 'shell' not in kwargs
     assert json.loads(kwargs['input'])['cwd'] == '/workspace'
+
+
+BROKEN_MANIFEST = {'file': '/workspace/src/second/package.xml', 'line': 0, 'severity': 'error',
+                   'message': 'Failed to parse package.xml: no element found'}
+
+
+def changed_files(*issues):
+    """What the changed-file check prints at Stop."""
+    return completed(1 if issues else 0, status='fail' if issues else 'pass', issues=list(issues))
+
+
+def test_handover_and_changed_file_check_are_returned_at_the_same_stop(state):
+    # A repeated Stop is skipped, so the first one has to carry both checks.
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    (output, error, status), calls = state('Stop', stop_payload(), workspace([ISSUE]),
+                                           changed_files(BROKEN_MANIFEST))
+    assert status == 0 and not error and set(output) == {'decision', 'reason', 'systemMessage'}
+    assert output['decision'] == 'block'
+    # the user is told as before, and the model is given the same text with the handover
+    assert output['systemMessage'].startswith('ROS 2 validation: [error] /workspace/src/second/package.xml:0: ')
+    assert "executable 'other' is not a console script" in output['reason']
+    assert 'The check of the files this session changed also reports the following' in output['reason']
+    assert output['reason'].endswith(
+        '[error] /workspace/src/second/package.xml:0: Failed to parse package.xml: no element found')
+    assert 'ROS 2 validation: ' not in output['reason']
+    assert calls.call_count == 2
+    assert 'decision' not in state('Stop', stop_payload(stop_hook_active=True))[0][0]
+
+
+def test_handover_alone_is_unchanged_when_the_changed_files_are_clean(state):
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE]), changed_files())
+    assert set(output) == {'decision', 'reason'}
+    assert 'files this session changed' not in output['reason']
+
+
+def test_changed_file_check_alone_stays_advisory(state):
+    state('SessionStart', start_payload(), workspace())
+    result, _calls = state('Stop', stop_payload(), workspace(), changed_files(BROKEN_MANIFEST))
+    output = result[0]
+    assert set(output) == {'systemMessage'} and 'Failed to parse package.xml' in output['systemMessage']
+
+
+def test_advise_mode_shows_both_checks_to_the_user(state, monkeypatch):
+    monkeypatch.setenv(hook.WORKSPACE_ENV, 'advise')
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    result, _calls = state('Stop', stop_payload(), workspace([ISSUE]), changed_files(BROKEN_MANIFEST))
+    output = result[0]
+    assert set(output) == {'systemMessage'}
+    assert 'Failed to parse package.xml' in output['systemMessage']
+    assert "executable 'other' is not a console script" in output['systemMessage']
+
+
+def test_a_changed_file_check_that_cannot_run_does_not_drop_the_handover(state):
+    state('SessionStart', start_payload(), workspace([ISSUE]))
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE]), OSError('gone'))
+    assert output['decision'] == 'block' and "executable 'other'" in output['reason']
+    assert 'validator could not run' in output['systemMessage']
 
 
 @pytest.mark.parametrize('source', ['resume', 'compact', 'fork'])
@@ -430,7 +497,8 @@ def test_findings_are_handed_over_once(state):
     # The second finding appeared during the session and is marked as such.
     assert ('[warning] demo/setup.py:1: launch/ is not installed'
             ' (not reported when this conversation started)') in reason
-    assert calls.call_count == 1  # the changed-file check is left for the next Stop
+    assert calls.call_count == 2  # the workspace check, then the changed-file check
+    assert calls.call_args_list[1][0][0][-1].endswith('/scripts/skill_stop_hook.py')
 
     # The same findings are not handed over again; the ordinary Stop check runs instead.
     (output, _error, _status), calls = state('Stop', stop_payload(), workspace([ISSUE, SECOND]),
@@ -477,11 +545,11 @@ def test_the_check_reads_where_the_session_started_not_where_cd_left_it(state, t
     inside = root / 'src' / 'one_package'
     inside.mkdir(parents=True)
     _result, calls = state('SessionStart', start_payload(cwd=str(root)), workspace([ISSUE]))
-    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(root)
+    assert calls.call_args_list[0][1]['env']['SKILL_WORKSPACE'] == str(root)
     # The model has changed directory into one package. A check of that
     # package alone would be handed over as if it were the workspace.
     _result, calls = state('Stop', stop_payload(cwd=str(inside)), workspace([ISSUE]))
-    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(root)
+    assert calls.call_args_list[0][1]['env']['SKILL_WORKSPACE'] == str(root)
     assert json.loads(calls.call_args[1]['input'])['cwd'] == str(inside)
 
 
@@ -491,7 +559,7 @@ def test_project_directory_is_used_when_there_is_no_record(state, tmp_path, monk
     (project / 'src' / 'pkg').mkdir(parents=True)
     monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(project))
     _result, calls = state('Stop', stop_payload(cwd=str(project / 'src' / 'pkg')), workspace([ISSUE]))
-    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(project)
+    assert calls.call_args_list[0][1]['env']['SKILL_WORKSPACE'] == str(project)
 
 
 @pytest.mark.parametrize('case', ['session left the recorded directory', 'recorded directory is gone',
@@ -509,14 +577,14 @@ def test_a_record_that_does_not_fit_is_not_used(state, tmp_path, monkeypatch, ca
         path = hook._workspace_state_path('session-1')
         path.write_text(json.dumps({'baseline': [], 'root': 5, 'shown': []}))
     _result, calls = state('Stop', stop_payload(cwd=str(other)), workspace([ISSUE]))
-    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(other)
+    assert calls.call_args_list[0][1]['env']['SKILL_WORKSPACE'] == str(other)
 
 
 def test_an_explicit_workspace_is_left_alone(state, tmp_path, monkeypatch):
     monkeypatch.setenv('SKILL_WORKSPACE', str(tmp_path / 'chosen'))
     monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
     _result, calls = state('Stop', stop_payload(cwd=str(tmp_path)), workspace([ISSUE]))
-    assert calls.call_args[1]['env']['SKILL_WORKSPACE'] == str(tmp_path / 'chosen')
+    assert calls.call_args_list[0][1]['env']['SKILL_WORKSPACE'] == str(tmp_path / 'chosen')
 
 
 def test_session_without_a_record_is_handed_the_findings(state):
@@ -766,7 +834,8 @@ def test_changed_package_with_tests_that_were_not_run_is_handed_over_once(state)
     (output, error, status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')))
     assert status == 0 and not error and output['decision'] == 'block'
     reason = output['reason']
-    assert reason.startswith('No test was run in this conversation. For each package below that you changed')
+    assert reason.startswith('No test of these packages was run in this conversation. For each package below '
+                             'that you changed')
     assert 'unless they would move connected hardware' in reason
     assert ('demo: `cd src/demo && python3 -m pytest test -q` (in a built workspace: '
             '`colcon test --packages-select demo`)') in reason
@@ -781,12 +850,18 @@ def test_tests_follow_the_findings_in_one_handover(state):
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], package_state=states('bbbb')))
     reason = output['reason']
     assert reason.index('Before you finish: a static check') < reason.index("executable 'other'") < reason.index(
-        'No test was run in this conversation')
+        'No test of these packages was run in this conversation')
 
 
 @pytest.mark.parametrize('command', [
     'python3 -m pytest src/demo/test -q', 'cd src/demo && pytest', 'colcon test --packages-select demo',
-    'colcon  test', 'python -m unittest discover', 'launch_test test/launch.py', 'py.test -x'])
+    'colcon  test', 'python -m unittest discover', 'launch_test src/demo/test/launch.py', 'py.test -x',
+    'cd src/demo && python3 -m pytest test -q', '(cd src/demo && python3 -m pytest test -q 2>&1 | tail -5)',
+    'python3 -m pytest src -q', 'python3 -m pytest src/demo/test/test_driver.py::test_it -k fast',
+    'PYTHONPATH=src/demo timeout 120 python3 -m pytest src/demo/test', 'sudo -E env A=1 pytest src/demo',
+    'colcon test --packages-select other demo --event-handlers console_direct+',
+    'colcon build\ncolcon test --packages-up-to demo', 'cd /workspace/src/demo; python3.12 -m pytest',
+    'echo start && /usr/bin/python3 -m pytest -o cache_dir=/tmp/c src/demo/test'])
 def test_tests_the_session_ran_are_not_asked_for(state, command):
     state('SessionStart', start_payload(), workspace(package_state=states()))
     state('PreToolUse', tool_payload('Bash', command=command), completed())
@@ -796,12 +871,53 @@ def test_tests_the_session_ran_are_not_asked_for(state, command):
 
 
 @pytest.mark.parametrize('command', [
-    'ls test', 'cat pytest.ini', 'colcon build', 'echo my-pytest-notes', 'grep unittests x'])
+    'ls test', 'cat pytest.ini', 'colcon build', 'echo my-pytest-notes', 'grep unittests x',
+    # the word is an argument, not the command
+    'echo pytest', 'echo "done; pytest src/demo"', 'grep -rn pytest src/demo', 'pip install pytest',
+    'which pytest colcon', 'cat notes | grep unittest', 'colcon test-result --verbose', 'python3 -m pip show pytest',
+    # a test command that reaches another package only
+    'python3 -m pytest src/other/test -q', 'cd src/other && python3 -m pytest test -q',
+    'colcon test --packages-select other', 'cd /elsewhere && pytest', 'launch_test test/launch.py',
+    # a line that cannot be split into words is not read
+    'pytest "src/demo'])
 def test_other_commands_are_not_a_test_run(state, command):
     state('SessionStart', start_payload(), workspace(package_state=states()))
     state('PreToolUse', tool_payload('Bash', command=command), completed())
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')))
     assert output['decision'] == 'block'
+
+
+def test_a_test_run_of_one_package_leaves_the_other_asked_for(state):
+    both = states() + [{'package': 'other', 'path': 'src/other', 'fingerprint': 'x', 'tests': 'src/other/test'}]
+    state('SessionStart', start_payload(), workspace(packages=2, package_state=both))
+    state('PreToolUse', tool_payload('Bash', command='cd src/other && python3 -m pytest test -q'), completed())
+    now = [dict(both[0], fingerprint='bbbb'), dict(both[1], fingerprint='y')]
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(packages=2, package_state=now))
+    assert 'demo: `cd src/demo && python3 -m pytest test -q`' in output['reason']
+    assert 'other:' not in output['reason']
+
+
+def test_the_record_of_an_earlier_release_still_counts(state):
+    state('SessionStart', start_payload(), workspace(package_state=states()))
+    hook._log_append(hook._session_log(stop_payload(), '.tests'), ['run'])
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')),
+                                              completed())
+    assert output == {}
+
+
+@pytest.mark.parametrize('line', ['not json', '{"kind": "pytest"}', '[1, 2]', '{"kind": 3, "args": 4}'])
+def test_a_damaged_record_is_not_a_test_run(state, line):
+    state('SessionStart', start_payload(), workspace(package_state=states()))
+    hook._log_append(hook._session_log(stop_payload(), '.tests'), [line])
+    (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')))
+    assert output['decision'] == 'block'
+
+
+def test_test_commands_are_read_with_the_directory_a_cd_leaves():
+    runs = hook.test_runs('cd src/demo && ls; cd test\npytest -q . ; cd /tmp && echo pytest', '/workspace')
+    assert runs == [{'cwd': '/workspace/src/demo/test', 'kind': 'pytest', 'args': ['-q', '.']}]
+    assert hook.test_runs('pytest', None) == [{'cwd': None, 'kind': 'pytest', 'args': []}]
+    assert hook.test_runs('', '/workspace') == [] and hook.test_runs('timeout 30', '/workspace') == []
 
 
 @pytest.mark.parametrize('at_start,at_stop', [

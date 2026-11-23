@@ -116,6 +116,35 @@ def test_versions_are_read_from_the_installation(tmp_path, monkeypatch):
     assert check.installed('missing') == {'fastdds': None, 'cyclonedds': None}
 
 
+LOADED = [('cyclonedds', 'loaded'), ('fastdds', 'loaded')]
+
+
+@pytest.mark.parametrize('results,problems', [
+    (LOADED, 0),
+    (LOADED + [('cyclonedds', 'precondition')], 0),
+    (LOADED + [('cyclonedds', 'rejected')], 1),
+    (LOADED + [('fastdds', 'failed')], 1),
+    ([('cyclonedds', 'missing'), ('fastdds', 'loaded')], 1),
+    ([('cyclonedds', 'missing'), ('fastdds', 'missing')], 2),
+    ([('cyclonedds', 'unavailable'), ('fastdds', 'unavailable')], 2),
+    ([('cyclonedds', 'precondition'), ('fastdds', 'loaded')], 1),   # nothing of CycloneDDS loaded
+    ([('fastdds', 'loaded')], 1),                                   # no CycloneDDS example at all
+    ([], 2),
+])
+def test_a_run_that_checked_nothing_is_not_a_pass(results, problems):
+    assert len(check.unmet(results)) == problems
+
+
+@pytest.mark.parametrize('distro,expected', [('jazzy', 1), ('humble', 1), ('rolling', 0), ('', 0)])
+def test_missing_middleware_fails_where_the_check_is_enforced(monkeypatch, capsys, distro, expected):
+    monkeypatch.setenv('ROS_DISTRO', distro)
+    monkeypatch.setattr(check, 'installed', lambda _distro: {'fastdds': None, 'cyclonedds': None})
+    assert check.main([]) == expected
+    out = capsys.readouterr().out
+    assert 'cyclonedds: the middleware is not installed' in out
+    assert ('reported only' in out) is (expected == 0)
+
+
 def test_listing_needs_no_middleware(capsys):
     assert check.main(['--list']) == 0
     assert 'communication.md' in capsys.readouterr().out

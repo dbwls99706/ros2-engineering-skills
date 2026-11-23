@@ -124,7 +124,8 @@ matcher: for a new conversation the adapter records what the
 nothing. At Stop it hands the findings to the model once per session with
 `decision: "block"`, which continues the turn; a client that ignores that field
 simply ends the turn, and the check can be run by hand with
-`scripts/workspace_checks.py`. The changed-file check at Stop stays advisory.
+`scripts/workspace_checks.py`. The changed-file check runs at the same Stop and
+stays advisory to the user; its findings are added to a handover.
 For PreToolUse, `Bash` is the primary
 shell tool; extra matcher names are compatibility aliases, not a claim that every
 client exposes PowerShell or `cmd` as a native tool. A working `python3` command
