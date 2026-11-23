@@ -696,8 +696,7 @@ def test_handover_end_to_end(tmp_path, monkeypatch):
 
 def test_tests_of_a_changed_package_end_to_end(tmp_path):
     from tests.test_workspace_checks import make_package
-    package = make_package(tmp_path / 'src', files={'test/test_driver.py': 'def test_it():\n    assert True\n',
-                                                    'setup.cfg': '[develop]\nscript_dir=$base/lib/demo\n'})
+    package = make_package(tmp_path / 'src', files={'test/test_driver.py': 'def test_it():\n    assert True\n'})
     script = os.path.join(os.path.dirname(hook.__file__), 'claude_hook.py')
     env = {key: value for key, value in os.environ.items()
            if key not in (hook.DISABLE_ENV, hook.WORKSPACE_ENV, 'SKILL_WORKSPACE', 'CLAUDE_PROJECT_DIR')}
@@ -716,8 +715,9 @@ def test_tests_of_a_changed_package_end_to_end(tmp_path):
     driver.write_text(driver.read_text() + '\n# edited in the session\n')
     output = run('Stop')
     assert output['decision'] == 'block'
-    assert ('demo: `python3 -m pytest src/demo/test -q -c src/demo/setup.cfg -o pythonpath=.` '
+    assert ('demo: `cd src/demo && python3 -m pytest test -q` '
             '(in a built workspace: `colcon test --packages-select demo`)') in output['reason']
+    assert 'leaves the shell in the package directory' in output['reason']
     driver.write_text(driver.read_text() + '# again\n')
     assert 'decision' not in run('Stop')  # named once
 
@@ -768,7 +768,7 @@ def test_changed_package_with_tests_that_were_not_run_is_handed_over_once(state)
     reason = output['reason']
     assert reason.startswith('No test was run in this conversation. For each package below that you changed')
     assert 'unless they would move connected hardware' in reason
-    assert ('demo: `python3 -m pytest src/demo/test -q` (in a built workspace: '
+    assert ('demo: `cd src/demo && python3 -m pytest test -q` (in a built workspace: '
             '`colcon test --packages-select demo`)') in reason
     assert 'static check' not in reason  # no finding, so no finding preface
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('cccc')),
@@ -819,7 +819,7 @@ def test_a_package_made_in_the_session_counts_as_changed(state):
     state('SessionStart', start_payload(), workspace(package_state=states()))
     made = states() + [{'package': 'extra', 'path': 'src/extra', 'fingerprint': 'dddd', 'tests': 'src/extra/test'}]
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(packages=2, package_state=made))
-    assert 'extra: `python3 -m pytest src/extra/test -q`' in output['reason']
+    assert 'extra: `cd src/extra && python3 -m pytest test -q`' in output['reason']
     assert 'demo:' not in output['reason']
 
 
@@ -853,29 +853,17 @@ def test_only_a_few_packages_are_named(state):
     assert 'and 3 more packages with tests' in output['reason']
 
 
-@pytest.mark.parametrize('files,expected', [
-    # the package's own file anchors the import path; pytest's order, and the file that has its section, win
-    ({'setup.cfg': '[develop]\n'}, '-q -c src/demo/setup.cfg -o pythonpath=.'),
-    ({'setup.cfg': '[develop]\n', 'pytest.ini': '[pytest]\n'}, '-q -c src/demo/pytest.ini -o pythonpath=.'),
-    ({'setup.cfg': '[tool:pytest]\n', 'pyproject.toml': '[project]\n'}, '-q -c src/demo/setup.cfg -o pythonpath=.'),
-    ({'setup.cfg': '[develop]\n', 'pyproject.toml': '[tool.pytest.ini_options]\n'},
-     '-q -c src/demo/pyproject.toml -o pythonpath=.'),
-    ({'tox.ini': '[pytest]\n', 'setup.cfg': '[develop]\n'}, '-q -c src/demo/tox.ini -o pythonpath=.'),
-    ({'tox.ini': '[tox]\n'}, '-q -c src/demo/tox.ini -o pythonpath=.'),
-    ({}, '-q'),
+@pytest.mark.parametrize('path,tests,expected', [
+    ('src/demo', 'src/demo/test', 'cd src/demo && python3 -m pytest test -q'),
+    ('demo', 'demo/tests', 'cd demo && python3 -m pytest tests -q'),
+    ('src/group/demo', 'src/group/demo/test/unit', 'cd src/group/demo && python3 -m pytest test/unit -q'),
+    # tests that are not below the package are named as they are, from the workspace root
+    ('src/demo', 'src/demo_test', 'python3 -m pytest src/demo_test -q'),
+    ('src/demo', 'src/demo', 'python3 -m pytest src/demo -q'),
+    ('src/demo', 'elsewhere/test', 'python3 -m pytest elsewhere/test -q'),
 ])
-def test_pytest_command_is_anchored_on_the_configuration_file_of_the_package(tmp_path, files, expected):
-    (tmp_path / 'src' / 'demo').mkdir(parents=True)
-    for name, text in files.items():
-        (tmp_path / 'src' / 'demo' / name).write_text(text)
-    assert hook.pytest_command(str(tmp_path), 'src/demo', 'src/demo/test') == (
-        'python3 -m pytest src/demo/test ' + expected)
-
-
-def test_pytest_command_without_a_readable_workspace(tmp_path):
-    assert hook.pytest_command(None, 'src/demo', 'src/demo/test') == 'python3 -m pytest src/demo/test -q'
-    (tmp_path / 'src' / 'demo' / 'setup.cfg').mkdir(parents=True)  # a directory of that name is not a file
-    assert hook.pytest_command(str(tmp_path), 'src/demo', 'src/demo/test') == 'python3 -m pytest src/demo/test -q'
+def test_pytest_is_started_in_the_package_directory(path, tests, expected):
+    assert hook.pytest_command(path, tests) == expected
 
 
 def test_advise_mode_names_the_tests_to_the_user(state, monkeypatch):
@@ -883,7 +871,7 @@ def test_advise_mode_names_the_tests_to_the_user(state, monkeypatch):
     state('SessionStart', start_payload(), workspace(package_state=states()))
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace(package_state=states('bbbb')))
     assert set(output) == {'systemMessage'}
-    assert 'python3 -m pytest src/demo/test -q` (in a built workspace' in output['systemMessage']
+    assert 'cd src/demo && python3 -m pytest test -q` (in a built workspace' in output['systemMessage']
 
 
 def test_package_of_a_finding_handed_over_now_is_named_before_it_is_changed(state):
@@ -891,7 +879,7 @@ def test_package_of_a_finding_handed_over_now_is_named_before_it_is_changed(stat
     state('SessionStart', start_payload(), workspace([ISSUE], package_state=states()))
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], package_state=states()))
     assert "executable 'other'" in output['reason']
-    assert 'demo: `python3 -m pytest src/demo/test -q`' in output['reason']
+    assert 'demo: `cd src/demo && python3 -m pytest test -q`' in output['reason']
 
 
 def test_changed_packages_are_named_before_those_only_about_to_change(state):
@@ -899,4 +887,5 @@ def test_changed_packages_are_named_before_those_only_about_to_change(state):
     state('SessionStart', start_payload(), workspace([ISSUE], packages=2, package_state=both))
     now = [dict(both[0]), dict(both[1], fingerprint='y')]
     (output, _error, _status), _calls = state('Stop', stop_payload(), workspace([ISSUE], packages=2, package_state=now))
-    assert output['reason'].index('other: `python3 -m pytest src/other') < output['reason'].index('demo: `python3 -m')
+    reason = output['reason']
+    assert reason.index('other: `cd src/other && python3 -m pytest') < reason.index('demo: `cd src/demo')

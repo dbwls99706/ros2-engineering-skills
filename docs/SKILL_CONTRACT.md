@@ -112,17 +112,15 @@ that did not exist then, counts as changed, and so does a package that holds a
 finding handed over now: the turn continues only once, so the tests of what is
 about to be fixed are named in the same handover. If such a package has tests
 and no command of the session ran `pytest`, `colcon test`, `launch_test` or
-`unittest`, the handover gives one plain command, so that a permission rule for
-pytest matches it and the shell stays in the workspace root, with the package
-directory on the import path as it is when colcon runs the tests:
-`python3 -m pytest <package>/test -q -c <package>/setup.cfg -o pythonpath=.`.
-The file after `-c` is the package's own pytest configuration (`pytest.ini`,
-`pyproject.toml`, `tox.ini` or `setup.cfg`, in pytest's order, preferring the
-one that has a pytest section); the path is relative to it. Without such a
-file the command has no path option and the tests need the built workspace.
-`-o pythonpath=<package>` alone stops pytest 7.4 before any test runs when
-there is no configuration file, and pytest before 7.0 has no `pythonpath`
-option. It tells the model to run it for the packages it changed unless it would move connected
+`unittest`, the handover names the tests the way colcon runs them, with pytest
+started in the package directory:
+`cd <package> && python3 -m pytest test -q`. From there the package is on the
+import path with every pytest release, and the ament lint tests, which check
+the directory they are started in, check the package and not the whole
+workspace. The handover says that the command starts in the workspace root
+and leaves the shell in the package directory. Run from the workspace root,
+`-o pythonpath=<package>` stops pytest 7.4 before any test runs when there is
+no configuration file, and pytest before 7.0 has no such option. It tells the model to run the tests for the packages it changed unless they would move connected
 hardware. The hook itself runs
 nothing: the command is the model's step, under the client's permission rules
 and the PreToolUse checks. Without the record from the start of the

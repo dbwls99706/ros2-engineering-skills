@@ -137,11 +137,11 @@ Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
   adapter, which never continued a turn; the changed-file check at Stop stays
   advisory.
 - The handover also names the tests of packages the session changed and did
-  not test: `python3 -m pytest <package>/test -q -c <package>/setup.cfg -o
-  pythonpath=.`, one plain command run from the workspace root and anchored
-  on the package's own pytest configuration file, because `-o
-  pythonpath=<package>` alone stops pytest 7.4 (Ubuntu 24.04, ROS 2 Jazzy and
-  Kilted) before any test runs when the workspace has no configuration file;
+  not test: `cd <package> && python3 -m pytest test -q`, pytest started in
+  the package directory as colcon starts it. Run from the workspace root with
+  `-o pythonpath=<package>`, pytest 7.4 (Ubuntu 24.04, ROS 2 Jazzy and Kilted)
+  stops before any test when the workspace has no configuration file, and the
+  ament lint tests check the whole workspace instead of the package;
   with the instruction not to run tests that move connected hardware. The hook runs
   nothing itself. A package counts as changed when the fingerprint of its
   files differs from the one recorded at SessionStart, or when a finding
