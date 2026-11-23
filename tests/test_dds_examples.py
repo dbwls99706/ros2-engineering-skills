@@ -51,6 +51,8 @@ def test_only_what_depends_on_the_machine_is_replaced(tmp_path):
     ('cyclonedds', False, '1.2 [0] python3: failed to increase socket receive buffer size to at least 10485760 '
      'bytes, current is 425984 bytes\n', 'precondition'),
     ('cyclonedds', False, 'wg0: does not match an available interface.\n', 'failed'),
+    ('cyclonedds', False, '1.2 []    python3: os_threadCreate(recv): pthread_create failed with error 1\n'
+     '1.2 []    python3: create_thread: recv: ddsrt_thread_create failed\n', 'precondition'),
     ('cyclonedds', False, "[ERROR] [1.0] [rcl]: Error getting RMW implementation identifier / RMW implementation "
      "not installed, with error message 'failed to load shared library 'librmw_cyclonedds_cpp.so' due to dlopen "
      "error: libddsc.so.11: cannot open shared object file'\n", 'unavailable'),

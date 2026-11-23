@@ -441,8 +441,12 @@ This file was loaded with CycloneDDS 0.10.5 (Kilted). Earlier forms of it
 were rejected at start-up: `LeaseDuration` belongs under `Discovery`, not
 `Internal`, and there is no `Scheduling` element directly under `Domain`.
 CycloneDDS refuses the whole file for one wrong element and no node starts.
-A real-time class also needs the privilege for it (`CAP_SYS_NICE` or an
-`rtprio` limit); without it the thread stays in the default class.
+The real-time class needs the privilege for it (`CAP_SYS_NICE`, or an
+`rtprio` limit of at least the priority, `ulimit -r`). Without it the thread
+cannot be created and the process aborts at start-up (`os_threadCreate(recv):
+pthread_create failed with error 1`), measured as an unprivileged user and
+with the capability dropped. Grant the privilege to the service that starts
+the nodes (the `rtprio` limits of section 2) before this file is used.
 
 ### Minimize DDS overhead
 

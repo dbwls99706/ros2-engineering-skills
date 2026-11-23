@@ -75,7 +75,7 @@ def localised(kind, text, scratch):
 
 
 def classify(kind, started, output):
-    """(verdict, lines): loaded, rejected, precondition (kernel buffer limit), unavailable or failed."""
+    """(verdict, lines): loaded, rejected, precondition (a kernel limit or privilege), unavailable or failed."""
     output = re.sub(r'\x1b\[[0-9;]*m', '', output)
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not started and any('failed to load shared library' in line for line in lines):
@@ -87,6 +87,8 @@ def classify(kind, started, output):
         limit = [line for line in lines if 'failed to increase socket receive buffer size' in line]
         if limit:
             return 'precondition', ['net.core.rmem_max is too small for the buffer size the example requires']
+        if any('pthread_create failed with error 1' in line for line in lines):
+            return 'precondition', ['the real-time thread class the example sets needs CAP_SYS_NICE or an rtprio limit']
     else:
         rejected = [line.split('Error] ', 1)[1] for line in lines if 'XMLPARSER Error]' in line]
         if rejected:
