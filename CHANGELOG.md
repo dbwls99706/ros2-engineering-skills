@@ -2,7 +2,7 @@
 
 All notable changes are documented here.
 
-## 1.9.0 - 2026-11-21
+## 1.9.0 - 2026-11-23
 
 Source bundle version 1.9.0. One new capability: the Claude Code plugin checks
 the ROS 2 workspace as a whole and hands what it finds to the model when the
