@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 class DDSVendor(Enum):
@@ -25,6 +25,13 @@ class DDSVendor(Enum):
     FASTDDS = "fastdds"
     CYCLONEDDS = "cyclonedds"
     CONNEXT = "connext"
+    ZENOH = "zenoh"
+
+
+# The verdicts below are the request/offered rules of DDS. rmw_zenoh_cpp has no
+# incompatible QoS: any publisher matches any subscription.
+NO_CONNECTION = ("With a DDS middleware (Fast DDS, Cyclone DDS, Connext) the two do not connect "
+                 "and no data flows; rmw_zenoh_cpp matches them all the same.")
 
 
 class Reliability(Enum):
@@ -263,7 +270,7 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         issues.append(
             "INCOMPATIBLE RELIABILITY: Publisher is BEST_EFFORT but subscriber "
             "demands RELIABLE. The subscriber requires delivery guarantees that "
-            "the publisher cannot provide. Connection will silently fail."
+            "the publisher cannot provide. " + NO_CONNECTION
         )
         suggestions.append(
             "Fix: Either change the publisher to RELIABLE, or change the "
@@ -282,11 +289,21 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         issues.append(
             "INCOMPATIBLE DURABILITY: Publisher is VOLATILE but subscriber expects "
             "TRANSIENT_LOCAL. Late-joining subscribers will NOT receive the last "
-            "published message. Connection will silently fail."
+            "published message. " + NO_CONNECTION
         )
         suggestions.append(
             "Fix: Change the publisher to TRANSIENT_LOCAL (it will retain the "
             "last message for late subscribers), or change the subscriber to VOLATILE."
+        )
+
+    if (pub.durability == Durability.TRANSIENT_LOCAL and sub.durability == Durability.TRANSIENT_LOCAL
+            and sub.reliability == Reliability.BEST_EFFORT):
+        warnings.append(
+            "Subscriber is TRANSIENT_LOCAL but BEST_EFFORT. The connection is made, but "
+            "Fast DDS and Cyclone DDS deliver the retained samples only to a RELIABLE "
+            "subscriber of a RELIABLE publisher: a late-joining subscriber does not receive "
+            "the last sample (a map, static TF, a latched plan). Request RELIABLE on the "
+            "subscriber. rmw_zenoh_cpp delivers it."
         )
 
     if pub.durability == Durability.TRANSIENT_LOCAL and sub.durability == Durability.VOLATILE:
@@ -342,7 +359,7 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
             f"INCOMPATIBLE DEADLINE: Publisher has no deadline (infinite) but "
             f"subscriber requires {sub.deadline_ms}ms. DDS requires the publisher "
             f"to offer a deadline <= the subscriber's requested deadline. "
-            f"Connection will silently fail."
+            + NO_CONNECTION
         )
         suggestions.append(
             f"Fix: Set the publisher deadline to <= {sub.deadline_ms}ms, "
@@ -352,7 +369,7 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         issues.append(
             f"INCOMPATIBLE DEADLINE: Publisher offered deadline ({pub.deadline_ms}ms) "
             f"exceeds subscriber requested deadline ({sub.deadline_ms}ms). "
-            f"DDS requires offered <= requested. Connection will silently fail."
+            f"DDS requires offered <= requested. " + NO_CONNECTION
         )
         suggestions.append(
             f"Fix: Either decrease the publisher deadline to <= {sub.deadline_ms}ms, "
@@ -374,7 +391,7 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
             "INCOMPATIBLE LIVELINESS: Publisher uses AUTOMATIC liveliness but "
             "subscriber requires MANUAL_BY_TOPIC. The subscriber expects the "
             "publisher to manually assert its liveliness, which it will not do. "
-            "Connection will silently fail."
+            + NO_CONNECTION
         )
         suggestions.append(
             "Fix: Either change the publisher to MANUAL_BY_TOPIC, or change the "
@@ -389,7 +406,7 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
             f"INCOMPATIBLE LIVELINESS LEASE: Publisher has no lease duration "
             f"(infinite) but subscriber requires {sub.liveliness_lease_ms}ms. "
             f"DDS requires offered lease <= requested lease. "
-            f"Connection will silently fail."
+            + NO_CONNECTION
         )
         suggestions.append(
             f"Fix: Set the publisher liveliness lease to "
@@ -401,7 +418,7 @@ def check_compatibility(pub: QoSProfile, sub: QoSProfile) -> CompatibilityResult
         issues.append(
             f"INCOMPATIBLE LIVELINESS LEASE: Publisher lease ({pub.liveliness_lease_ms}ms) "
             f"exceeds subscriber lease ({sub.liveliness_lease_ms}ms). "
-            f"DDS requires offered lease <= requested lease. Connection will silently fail."
+            f"DDS requires offered lease <= requested lease. " + NO_CONNECTION
         )
         suggestions.append(
             f"Fix: Either decrease the publisher liveliness lease to "
@@ -499,6 +516,22 @@ def check_vendor_specific(pub: QoSProfile, sub: QoSProfile,
                 "reliability.max_blocking_time in QoS XML to avoid "
                 "indefinite blocking.")
 
+    if vendor == DDSVendor.ZENOH:
+        warnings.append(
+            "[Zenoh] rmw_zenoh_cpp has no incompatible QoS: this publisher and subscriber "
+            "match whatever the verdict above says, and no incompatible-QoS event is raised.")
+        if pub.deadline_ms or sub.deadline_ms:
+            warnings.append(
+                "[Zenoh] DEADLINE is not implemented in rmw_zenoh_cpp: no deadline-missed "
+                "event is raised. A watchdog that relies on it needs its own timer.")
+        if pub.lifespan_ms or sub.lifespan_ms:
+            warnings.append(
+                "[Zenoh] LIFESPAN is not implemented in rmw_zenoh_cpp: samples do not expire.")
+        if Liveliness.MANUAL_BY_TOPIC in (pub.liveliness, sub.liveliness):
+            warnings.append(
+                "[Zenoh] MANUAL_BY_TOPIC liveliness is not supported by rmw_zenoh_cpp; only "
+                "AUTOMATIC is.")
+
     return warnings
 
 
@@ -595,9 +628,10 @@ Presets: sensor, command, map, diagnostics, parameter_events, action_feedback, s
     parser.add_argument("--json", action="store_true", default=False,
                         help="Output results as JSON")
     parser.add_argument("--dds-vendor",
-                        choices=["auto", "fastdds", "cyclonedds", "connext"],
+                        choices=["auto", "fastdds", "cyclonedds", "connext", "zenoh"],
                         default="auto",
-                        help="DDS vendor for implementation-specific warnings "
+                        help="Middleware for implementation-specific warnings; zenoh is "
+                             "rmw_zenoh_cpp, which is not DDS and matches every pair "
                              "(default: auto = no vendor-specific checks)")
     args = parser.parse_args()
 

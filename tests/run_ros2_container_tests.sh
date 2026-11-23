@@ -25,6 +25,9 @@ python3 tests/check_offline_xml.py
 echo '=== Repository unit tests ==='
 python3 -m pytest tests/ -ra --tb=short --durations=15 -o faulthandler_timeout=45
 
+echo '=== DDS configuration examples of the references, loaded with the installed middleware ==='
+timeout --signal=TERM --kill-after=5s 300s python3 tests/check_dds_examples.py
+
 echo '=== Installed launch signal manager: deterministic negative and repaired controls ==='
 timeout --signal=TERM --kill-after=5s 40s python3 tests/check_launch_signals.py
 

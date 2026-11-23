@@ -69,6 +69,43 @@ Workspace check (`scripts/workspace_checks.py`, new):
   when the line runs. A subscription created with `raw` is no longer checked
   for message fields, because its callback receives bytes; a field finding
   from an installed definition names the file it was read from.
+- QoS verdicts and DDS configuration examples were run against the
+  middleware itself, on Jazzy (Fast DDS 2.14, CycloneDDS 0.10.5) and Kilted
+  (Fast DDS 3.2, CycloneDDS 0.10.5, rmw_zenoh_cpp 0.6):
+  - 339 publisher/subscription pairs of reliability, durability, deadline,
+    liveliness and lease connected on Fast DDS and on CycloneDDS exactly
+    where `qos_checker.py` says, each refusal with an incompatible-QoS event.
+    The checker's verdicts did not change.
+  - A BEST_EFFORT subscription that asks for TRANSIENT_LOCAL connects and
+    never receives the sample published before it started, on both DDS
+    middlewares. `qos_checker.py` now warns about it and the workspace check
+    reports it as `qos-late-joiner`, as it does a VOLATILE subscription.
+  - `rmw_zenoh_cpp` connected every pair, the incompatible ones included, and
+    served the retained sample whatever the reliability. The verdict texts
+    said "Connection will silently fail" without condition; they now name the
+    DDS middlewares and say that `rmw_zenoh_cpp` matches the pair.
+    `qos_checker.py --dds-vendor zenoh` (0.2.0) adds that DEADLINE and
+    LIFESPAN are not implemented there and MANUAL_BY_TOPIC is not supported.
+  - Of twelve configuration examples in the references, CycloneDDS rejected
+    four on both releases, and with one rejected file no node of the process
+    starts: `<LogLevel>warning` (the value is `warn`),
+    `MinimumSocketReceiveBufferSize` with `64KB` (now
+    `SocketReceiveBufferSize min="64kB"`), `LeaseDuration` under `Internal`
+    and a `Scheduling` element under `Domain` (now `Discovery/LeaseDuration`
+    and `Threads/Thread/Scheduling`), and a tracing category `security` that
+    does not exist. A fifth, `SocketReceiveBufferSize min="10MB"`, is valid
+    and stops every node where `net.core.rmem_max` is smaller, which the text
+    now says. The Fast DDS example for per-topic QoS was rejected on both
+    releases and described a mechanism `rmw_fastrtps` does not have; the
+    section is rewritten from its README and from a measurement. The
+    discovery-server profile was right for Fast DDS 2.x and is rejected by
+    3.x: both forms are given with the releases they belong to, after
+    `ROS_DISCOVERY_SERVER`, which works on both. The profile variable is
+    `FASTRTPS_DEFAULT_PROFILES_FILE` up to Jazzy and
+    `FASTDDS_DEFAULT_PROFILES_FILE` from Kilted.
+  - `tests/check_dds_examples.py` reads these examples from the references
+    and loads each with the installed middleware; the ROS container job runs
+    it, failing on Jazzy and Kilted and reporting on the other distributions.
 - Three more of the same kind, written from that second set and kept only
   where they hold in general: `__str__` or `__repr__` with a path that returns
   `None`; a function that waits for one client and sends its only request
@@ -217,9 +254,11 @@ References and sources:
   installation, parameter file sections, wildcards and the namespace form, the
   unconfigured state of a managed node, `package.xml` as the source of rosdep's
   dependencies, the slots of generated message classes, and the SessionStart
-  and Stop hook contracts. Two more were read on 2026-11-23: that packages of
-  an overlay override those of the underlay, and the `raw` parameter of
-  `create_subscription`.
+  and Stop hook contracts. Six more were read on 2026-11-23: that packages of
+  an overlay override those of the underlay, the `raw` parameter of
+  `create_subscription`, the CycloneDDS 0.10 configuration reference, the
+  Fast DDS rule for past samples, the QoS design of `rmw_zenoh_cpp`, and the
+  XML profile rules of `rmw_fastrtps`.
 
 ## 1.8.1 - 2026-11-12
 

@@ -23,8 +23,8 @@ def run_script(*args: str) -> subprocess.CompletedProcess:
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from qos_checker import (
     QoSProfile, Reliability, Durability, History, Liveliness,
-    check_compatibility, parse_qos_string, _expand_qos_shorthand,
-    QOS_SHORTHANDS, PRESETS,
+    check_compatibility, check_vendor_specific, parse_qos_string, _expand_qos_shorthand,
+    DDSVendor, QOS_SHORTHANDS, PRESETS,
 )
 
 
@@ -126,6 +126,50 @@ class TestCompatibilityChecks:
         assert result.compatible is True and result.issues == []
         assert any("late-joining subscriber receives no retained history" in w
                    for w in result.warnings)
+
+    @pytest.mark.parametrize("publisher", [Reliability.RELIABLE, Reliability.BEST_EFFORT])
+    def test_best_effort_transient_local_sub_gets_no_retained_sample(self, publisher):
+        # Measured on Fast DDS 3.2 and Cyclone DDS 0.10 (Kilted): the pair connects and a late
+        # joiner receives nothing published before it existed.
+        pub = QoSProfile(publisher, Durability.TRANSIENT_LOCAL, History.KEEP_LAST, 1)
+        sub = QoSProfile(Reliability.BEST_EFFORT, Durability.TRANSIENT_LOCAL, History.KEEP_LAST, 1)
+        result = check_compatibility(pub, sub)
+        assert result.compatible is True and result.issues == []
+        warning, = [w for w in result.warnings if "TRANSIENT_LOCAL but BEST_EFFORT" in w]
+        assert "does not receive the last sample" in warning and "rmw_zenoh_cpp delivers it" in warning
+
+    @pytest.mark.parametrize("pub_durability,sub_reliability,sub_durability", [
+        (Durability.TRANSIENT_LOCAL, Reliability.RELIABLE, Durability.TRANSIENT_LOCAL),
+        (Durability.TRANSIENT_LOCAL, Reliability.BEST_EFFORT, Durability.VOLATILE),
+        (Durability.VOLATILE, Reliability.BEST_EFFORT, Durability.VOLATILE),
+    ])
+    def test_other_pairs_carry_no_best_effort_late_joiner_warning(self, pub_durability, sub_reliability,
+                                                                  sub_durability):
+        pub = QoSProfile(Reliability.RELIABLE, pub_durability, History.KEEP_LAST, 1)
+        sub = QoSProfile(sub_reliability, sub_durability, History.KEEP_LAST, 1)
+        assert not any("TRANSIENT_LOCAL but BEST_EFFORT" in w for w in check_compatibility(pub, sub).warnings)
+
+    def test_an_incompatible_pair_names_the_middlewares_it_holds_for(self):
+        pub = QoSProfile(Reliability.BEST_EFFORT, Durability.VOLATILE, History.KEEP_LAST, 5,
+                         deadline_ms=0, liveliness=Liveliness.AUTOMATIC)
+        sub = QoSProfile(Reliability.RELIABLE, Durability.TRANSIENT_LOCAL, History.KEEP_LAST, 5,
+                         deadline_ms=100, liveliness=Liveliness.MANUAL_BY_TOPIC, liveliness_lease_ms=500)
+        result = check_compatibility(pub, sub)
+        assert len(result.issues) == 5
+        for issue in result.issues:
+            assert issue.endswith("With a DDS middleware (Fast DDS, Cyclone DDS, Connext) the two do not "
+                                  "connect and no data flows; rmw_zenoh_cpp matches them all the same.")
+
+    def test_zenoh_matches_every_pair_and_lacks_three_policies(self):
+        pub = QoSProfile(Reliability.BEST_EFFORT, Durability.VOLATILE, History.KEEP_LAST, 5,
+                         deadline_ms=100, lifespan_ms=200, liveliness=Liveliness.MANUAL_BY_TOPIC)
+        sub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 5)
+        warnings = check_vendor_specific(pub, sub, DDSVendor.ZENOH)
+        assert "no incompatible QoS" in warnings[0]
+        assert [w.split(" ")[1] for w in warnings[1:]] == ["DEADLINE", "LIFESPAN", "MANUAL_BY_TOPIC"]
+        plain = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 5)
+        assert len(check_vendor_specific(plain, plain, DDSVendor.ZENOH)) == 1
+        assert check_vendor_specific(plain, plain, DDSVendor.AUTO) == []
 
     def test_volatile_pub_transient_local_sub_incompatible(self):
         pub = QoSProfile(Reliability.RELIABLE, Durability.VOLATILE, History.KEEP_LAST, 1)
@@ -507,7 +551,7 @@ class TestVersion:
     def test_version_flag(self):
         result = run_script("--version")
         assert result.returncode == 0
-        assert "0.1.0" in result.stdout
+        assert "0.2.0" in result.stdout
 
 
 class TestQoSProfileDisplay:

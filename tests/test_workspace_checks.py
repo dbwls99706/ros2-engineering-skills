@@ -793,6 +793,8 @@ BEST_EFFORT = "QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)"
 RELIABLE = "QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)"
 LATCHED = "QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)"
 VOLATILE = "QoSProfile(depth=1, durability=DurabilityPolicy.VOLATILE)"
+LATCHED_BEST_EFFORT = ("QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, "
+                       "reliability=ReliabilityPolicy.BEST_EFFORT)")
 
 
 class TestQos:
@@ -805,6 +807,7 @@ class TestQos:
         assert (issue["check"], issue["severity"]) == ("qos-incompatible", "warning")
         assert (issue["file"], issue["line"]) == ("demo/demo/pair.py", 16)
         assert "topic 'chatter'" in issue["message"] and "no data arrives" in issue["message"]
+        assert issue["message"].endswith("Connext); rmw_zenoh_cpp connects them.")
 
     def test_matching_reliability_is_silent(self, tmp_path):
         assert self.workspace(tmp_path, RELIABLE, RELIABLE) == []
@@ -815,6 +818,19 @@ class TestQos:
         assert (issue["check"], issue["severity"]) == ("qos-late-joiner", "info")
         assert (issue["file"], issue["line"]) == ("demo/demo/pair.py", 16)
         assert "TRANSIENT_LOCAL" in issue["message"] and "never receives that sample" in issue["message"]
+
+    def test_best_effort_latched_subscription_to_a_latched_publisher(self, tmp_path):
+        issue, = self.workspace(tmp_path, LATCHED, LATCHED_BEST_EFFORT)
+        assert (issue["check"], issue["severity"]) == ("qos-late-joiner", "info")
+        assert "asks for it but is BEST_EFFORT" in issue["message"]
+        assert "only to a RELIABLE subscription" in issue["message"]
+        assert "never receives that sample" in issue["message"]
+
+    def test_best_effort_latched_subscription_without_a_latched_publisher_is_silent(self, tmp_path):
+        assert [issue["check"] for issue in self.workspace(tmp_path, RELIABLE, BEST_EFFORT)] == []
+        # a VOLATILE publisher cannot serve it at all: that is the incompatibility, said once
+        found_here = self.workspace(tmp_path / "second", VOLATILE, LATCHED_BEST_EFFORT)
+        assert [issue["check"] for issue in found_here] == ["qos-incompatible"]
 
     def test_latched_subscription_to_a_latched_publisher_is_silent(self, tmp_path):
         assert self.workspace(tmp_path, LATCHED, LATCHED) == []

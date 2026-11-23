@@ -162,7 +162,7 @@ their Python launch files:
 | `scan-ranges` | A file imports `LaserScan`, reads `.ranges` as distances (indexing, iteration, `min` and the like) and nowhere reads `range_min` or `range_max`. The message says whether the file excludes `inf` and `NaN` at all or only leaves out the range limits |
 | `remapping` | A launch file remaps a name the node's source never creates |
 | `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
-| `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect, or a VOLATILE subscription faces a TRANSIENT_LOCAL publisher |
+| `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect under the request/offered rules of DDS (the message says that `rmw_zenoh_cpp` connects them), or a subscription cannot receive the retained sample of a TRANSIENT_LOCAL publisher: it is VOLATILE, or it is TRANSIENT_LOCAL and BEST_EFFORT, which Fast DDS and Cyclone DDS serve no past samples |
 | `launch` | An error from `launch_validator.py`; its style warnings are left out |
 
 What it cannot see: most of logic. The last four rows of the table are plain

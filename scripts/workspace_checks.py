@@ -1667,14 +1667,22 @@ def check_qos(root: Path) -> tuple:
             "check": "qos-incompatible",
             "message": f"topic '{pair['topic']}': {'; '.join(pair['issues'])}. The publisher at "
                        f"{pair['publisher']} and this subscription do not connect{scope}, and "
-                       "no data arrives."})
+                       "no data arrives. This is the rule of the DDS middlewares (Fast DDS, "
+                       "Cyclone DDS, Connext); rmw_zenoh_cpp connects them."})
     for sub in report.endpoints:
         if sub.kind != "subscription" or sub.reasons or sub.qos is None or sub.msg_type is None:
             continue
-        if sub.qos.durability != qos_audit.VOLATILE or sub.topic_kind == "dynamic":
-            continue
-        if _is_test(Path(sub.file)):
+        if sub.topic_kind == "dynamic" or _is_test(Path(sub.file)):
             continue  # a test sets up its endpoints in a known order
+        if sub.qos.durability == qos_audit.VOLATILE:
+            why = "is VOLATILE and does not ask for it"
+        elif (sub.qos.durability == qos_audit.TRANSIENT_LOCAL
+              and sub.qos.reliability == qos_audit.BEST_EFFORT):
+            # Measured on Fast DDS and Cyclone DDS; Fast DDS documents it for the DataReader.
+            why = ("asks for it but is BEST_EFFORT, and Fast DDS and Cyclone DDS hand past "
+                   "samples only to a RELIABLE subscription")
+        else:
+            continue
         for pub in report.endpoints:
             if (pub.kind == "publisher" and not pub.reasons and pub.qos is not None
                     and (pub.topic_kind, pub.topic, pub.msg_type) == (
@@ -1683,9 +1691,9 @@ def check_qos(root: Path) -> tuple:
                 issues.append({
                     "file": sub.file, "line": sub.line, "severity": "info", "check": "qos-late-joiner",
                     "message": f"topic '{sub.topic}': the publisher at {pub.location} keeps its "
-                               "last sample for late joiners (TRANSIENT_LOCAL), but this "
-                               "subscription is VOLATILE and does not ask for it. If it can "
-                               "start after the publish, it never receives that sample."})
+                               f"last sample for late joiners (TRANSIENT_LOCAL), but this "
+                               f"subscription {why}. If it can start after the publish, it "
+                               "never receives that sample."})
                 break
     return issues, []
 

@@ -415,19 +415,34 @@ In the RT path, avoid mutexes entirely where possible:
       </Interfaces>
     </General>
     <Internal>
-      <!-- Pre-allocate receive buffers -->
+      <!-- A requirement, not a request: needs net.core.rmem_max >= 2 MB,
+           otherwise no node of the process starts -->
       <SocketReceiveBufferSize min="4MB"/>
+    </Internal>
+    <Discovery>
       <!-- Reduce discovery overhead -->
       <LeaseDuration>20s</LeaseDuration>
-    </Internal>
-    <Scheduling>
-      <!-- Set DDS thread priorities (below control loop) -->
-      <Class>Realtime</Class>
-      <Priority>40</Priority>
-    </Scheduling>
+    </Discovery>
+    <Threads>
+      <!-- Priority of the receive thread (below the control loop); one
+           <Thread> element per CycloneDDS thread name -->
+      <Thread name="recv">
+        <Scheduling>
+          <Class>realtime</Class>
+          <Priority>40</Priority>
+        </Scheduling>
+      </Thread>
+    </Threads>
   </Domain>
 </CycloneDDS>
 ```
+
+This file was loaded with CycloneDDS 0.10.5 (Kilted). Earlier forms of it
+were rejected at start-up: `LeaseDuration` belongs under `Discovery`, not
+`Internal`, and there is no `Scheduling` element directly under `Domain`.
+CycloneDDS refuses the whole file for one wrong element and no node starts.
+A real-time class also needs the privilege for it (`CAP_SYS_NICE` or an
+`rtprio` limit); without it the thread stays in the default class.
 
 ### Minimize DDS overhead
 

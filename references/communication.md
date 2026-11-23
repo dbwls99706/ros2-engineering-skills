@@ -589,8 +589,11 @@ public:
 
 ### QoS compatibility matrix
 
-Publisher and subscriber must have compatible QoS settings or the connection
-silently fails.
+With a DDS middleware (Fast DDS, Cyclone DDS, Connext) publisher and subscriber
+must have compatible QoS settings or the connection silently fails.
+`rmw_zenoh_cpp` is different: it has no incompatible QoS, any publisher
+matches any subscription, and no incompatible-QoS event is raised (see the
+note below the table).
 
 | Publisher | Subscriber | Compatible? |
 |---|---|---|
@@ -601,6 +604,30 @@ silently fails.
 | TRANSIENT_LOCAL | TRANSIENT_LOCAL | Yes |
 | TRANSIENT_LOCAL | VOLATILE | Yes — connects, but delivers no history. A late-joining subscriber that needs the last sample (map, static TF, a latched plan) must request TRANSIENT_LOCAL itself |
 | VOLATILE | TRANSIENT_LOCAL | **No** — subscriber expects history publisher does not retain |
+
+The table was checked on Kilted against the running middleware: 339 pairs of
+reliability, durability, deadline, liveliness and lease on Fast DDS 3.2 and on
+Cyclone DDS 0.10 connected exactly where the rules say, and every pair that
+did not connect raised the incompatible-QoS event on both sides. Three things
+the table does not show:
+
+- **A late joiner needs RELIABLE as well.** TRANSIENT_LOCAL on both sides
+  delivers the retained sample only when both are also RELIABLE. A
+  BEST_EFFORT + TRANSIENT_LOCAL subscription connects, receives new samples
+  and never receives the one published before it started, on Fast DDS and on
+  Cyclone DDS alike. A map, `/tf_static` or `/robot_description` subscribed
+  with a sensor-data profile is the usual way to hit this.
+- **On `rmw_zenoh_cpp` every pair connects**, including BEST_EFFORT →
+  RELIABLE and VOLATILE → TRANSIENT_LOCAL, and a TRANSIENT_LOCAL subscription
+  of a TRANSIENT_LOCAL publisher gets the retained sample whatever its
+  reliability. A graph that depends on an incompatibility to keep two
+  endpoints apart behaves differently after a switch of middleware.
+- **`rmw_zenoh_cpp` does not implement DEADLINE or LIFESPAN and supports only
+  AUTOMATIC liveliness.** A watchdog built on the deadline-missed or
+  liveliness event does not fire there; give it its own timer.
+
+`scripts/qos_checker.py --dds-vendor zenoh` prints these differences for a
+given pair.
 
 ### QoS profiles for common scenarios
 
@@ -779,6 +806,18 @@ distro that defaulted to CycloneDDS. Select a different vendor with
 export CYCLONEDDS_URI=file://$(pwd)/cyclonedds.xml
 ```
 
+`SocketReceiveBufferSize min=` is a requirement, not a request: when the
+kernel grants less, CycloneDDS refuses to create the participant and every
+node of the process fails at start-up (`failed to increase socket receive
+buffer size to at least ... bytes`, then `rmw_create_node: failed to create
+domain`). The kernel grants at most twice `net.core.rmem_max`, which is about
+208 kB on a stock Ubuntu, so raise it first (see "Linux kernel tuning for DDS"
+below) or use `max=` to ask without requiring. Sizes take the units `B`, `kB`,
+`KiB`, `MB`, `MiB`; `KB` is rejected. A wrong element or value in this file is
+equally fatal: CycloneDDS prints `config: //CycloneDDS/Domain/...` with the
+reason and no node starts, so load a changed file once with one node before a
+bring-up depends on it.
+
 ### Multi-machine communication
 
 ```bash
@@ -908,7 +947,7 @@ below as legacy-generation only.
   <Domain>
     <SharedMemory>
       <Enable>true</Enable>
-      <LogLevel>warning</LogLevel>
+      <LogLevel>warn</LogLevel>
     </SharedMemory>
   </Domain>
 </CycloneDDS>
@@ -925,30 +964,57 @@ ros2 launch my_robot bringup.launch.py
 
 ### Per-topic DDS configuration (FastDDS)
 
-FastDDS supports per-topic QoS profiles via XML configuration. CycloneDDS does not
-support topic-level QoS overrides in its XML config — set QoS programmatically in code instead.
+`rmw_fastrtps` finds a profile by name: a `<publisher>` or `<subscriber>`
+(`<data_writer>` / `<data_reader>` are the same) whose `profile_name` is the
+fully qualified topic name, such as `/map` or `/robot1/scan`. There is no
+wildcard and no `<topic><name>` matching. CycloneDDS has no topic-level QoS in
+its XML at all.
+
+What such a profile can change is limited. A QoS policy the code sets is
+always honoured, and a profile does not override it. Reliability and
+durability come from the XML only where the code leaves them at
+`SYSTEM_DEFAULT`; an ordinary `rclcpp::QoS(10)` or rclpy `QoSProfile(depth=10)`
+sets both, so the profile has no effect on them. Measured on Kilted with a
+profile asking for BEST_EFFORT and TRANSIENT_LOCAL on `/probe`: a publisher
+created with the default profile stayed RELIABLE and VOLATILE, with or without
+`RMW_FASTRTPS_USE_QOS_FROM_XML=1`; one created with both policies at
+`SYSTEM_DEFAULT` took the XML values. Without any profile such a publisher is
+RELIABLE and TRANSIENT_LOCAL on Jazzy and Kilted, which are the defaults of a
+Fast DDS writer and not those of ROS 2. In a profile the policy values are
+`RELIABLE`, `BEST_EFFORT`, `VOLATILE` and `TRANSIENT_LOCAL`; the C++ names
+ending in `_RELIABILITY_QOS` or `_DURABILITY_QOS` are rejected. Use the XML for what only Fast DDS
+knows (publish mode, history memory policy, data sharing; these need
+`RMW_FASTRTPS_USE_QOS_FROM_XML=1`), and change reliability or durability in
+the code or through QoS overrides in the parameters.
 
 ```xml
-<!-- FastDDS: Override QoS for specific topics via XML profile -->
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- fastdds_profiles.xml: the XML declaration has to be the first line -->
 <dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
   <profiles>
-    <data_writer profile_name="rt_writer" is_default_profile="false">
-      <topic><name>rt/*</name></topic>
+    <!-- applies to the publisher of /map only -->
+    <publisher profile_name="/map">
       <qos>
-        <reliability><kind>BEST_EFFORT_RELIABILITY_QOS</kind></reliability>
+        <publishMode><kind>ASYNCHRONOUS</kind></publishMode>
       </qos>
-    </data_writer>
-    <data_writer profile_name="map_writer" is_default_profile="false">
-      <topic><name>rt/map</name></topic>
-      <qos>
-        <reliability><kind>RELIABLE_RELIABILITY_QOS</kind></reliability>
-        <durability><kind>TRANSIENT_LOCAL_DURABILITY_QOS</kind></durability>
-      </qos>
-    </data_writer>
+      <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+    </publisher>
   </profiles>
 </dds>
 ```
+
+```bash
+# Humble and Jazzy read only this name; Kilted reads it too and warns that it is deprecated
+export FASTRTPS_DEFAULT_PROFILES_FILE=$(pwd)/fastdds_profiles.xml
+# Kilted and later (Jazzy ignores this name)
+export FASTDDS_DEFAULT_PROFILES_FILE=$(pwd)/fastdds_profiles.xml
+export RMW_FASTRTPS_USE_QOS_FROM_XML=1
+```
+
+A profile file that Fast DDS cannot parse does not stop the node: it logs
+`XMLPARSER Error` and continues with its defaults, so the configuration is
+silently not applied. Read the first lines a node prints after changing the
+file, and confirm the result with `ros2 topic info -v <topic>`.
 
 ### Localhost-only communication (for development)
 

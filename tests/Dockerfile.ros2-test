@@ -38,6 +38,8 @@ RUN apt-get update \
        python3-vcstool python3-yaml \
        ros-${ROS_DISTRO}-hardware-interface \
        ros-${ROS_DISTRO}-ros2-control \
+       ros-${ROS_DISTRO}-rmw-fastrtps-cpp \
+       ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
     && if [ "${ROS_DISTRO}" = "rolling" ]; then \
          echo "[apt] upgrading pre-baked ros-rolling-* packages to current"; \
          pkgs=$(dpkg-query -W -f='${Package}\n' | grep '^ros-rolling-' || true); \

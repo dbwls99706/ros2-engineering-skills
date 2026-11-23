@@ -265,7 +265,8 @@ colcon build --parallel-workers 2 \
 
 # Reduce DDS overhead (Jazzy+: use ROS_AUTOMATIC_DISCOVERY_RANGE instead of ROS_LOCALHOST_ONLY)
 export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST  # If single-machine
-export CYCLONEDDS_URI='<CycloneDDS><Domain><Internal><MinimumSocketReceiveBufferSize>64KB</MinimumSocketReceiveBufferSize></Internal></Domain></CycloneDDS>'
+# 'min' is a requirement: if the kernel grants less, no node starts (see references/communication.md §10)
+export CYCLONEDDS_URI='<CycloneDDS><Domain><Internal><SocketReceiveBufferSize min="64kB"/></Internal></Domain></CycloneDDS>'
 ```
 
 ### Resource optimization for embedded
