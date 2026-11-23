@@ -351,8 +351,23 @@ Reduces discovery from O(N^2) to O(N) by centralizing discovery.
 fastdds discovery -i 0 -l 192.168.1.1 -p 11811   # start server
 ```
 
+Point every node at the server. The environment variable is the same on
+Humble, Jazzy and Kilted and needs no file:
+
+```bash
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ROS_DISCOVERY_SERVER=192.168.1.1:11811
+```
+
+A node that cannot reach the server discovers nothing and logs nothing about
+it: check with `ros2 node list` from a shell that has the same variable.
+
+The same in a profile file differs between Fast DDS generations, and each
+rejects the other's form (`XMLPARSER Error`, after which the node runs with
+default discovery, that is, not as a client):
+
 ```xml
-<!-- fastdds_client_profile.xml -->
+<!-- fastdds_client_profile.xml, Fast DDS 2.x: Humble, Jazzy -->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
   <participant profile_name="ds_client" is_default_profile="true">
     <rtps><builtin><discovery_config>
@@ -371,9 +386,28 @@ fastdds discovery -i 0 -l 192.168.1.1 -p 11811   # start server
 </profiles>
 ```
 
+```xml
+<!-- fastdds_client_profile.xml, Fast DDS 3.x: Kilted and later -->
+<profiles xmlns="http://www.eprosima.com">
+  <participant profile_name="ds_client" is_default_profile="true">
+    <rtps><builtin><discovery_config>
+      <discoveryProtocol>CLIENT</discoveryProtocol>
+      <discoveryServersList>
+        <locator><udpv4>
+          <address>192.168.1.1</address><port>11811</port>
+        </udpv4></locator>
+      </discoveryServersList>
+    </discovery_config></builtin></rtps>
+  </participant>
+</profiles>
+```
+
 ```bash
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp  # Humble, Jazzy, Kilted, Rolling (name unchanged)
+# Humble and Jazzy read only this name; Kilted reads it too and warns that it is deprecated
 export FASTRTPS_DEFAULT_PROFILES_FILE=/path/to/fastdds_client_profile.xml
+# Kilted and later (Jazzy ignores this name)
+export FASTDDS_DEFAULT_PROFILES_FILE=/path/to/fastdds_client_profile.xml
 ```
 
 ### CycloneDDS unicast peer lists

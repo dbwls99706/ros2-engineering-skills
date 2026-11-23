@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" SessionStart",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|pwsh|cmd",
@@ -18,7 +29,7 @@
           {
             "type": "command",
             "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_hook.py\" Stop",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       }

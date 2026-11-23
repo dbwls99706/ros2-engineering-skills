@@ -182,7 +182,7 @@ echo "installed ros2-engineering-skills at $TARGET ($MODE)"
 if [[ "$MODE" == "link" ]]; then
   cat <<NOTE
 note: the linked checkout contains .claude-plugin/plugin.json and hooks/hooks.json,
-so a client that scans $TARGET for plugins may register its PreToolUse and Stop
+so a client that scans $TARGET for plugins may register its SessionStart, PreToolUse and Stop
 hooks. Whether that happens depends on the client and its version; this installer
 does not configure hooks. Restart running sessions after changing the link, and
 use scripts/install_skill.py for a hook-free knowledge-only copy.

@@ -676,7 +676,7 @@ export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterfac
 
 Pinning an interface is a change to every process that reads that variable,
 not a diagnostic. Before it: read each running process's DDS configuration
-(`/proc/<pid>/environ` for `CYCLONEDDS_URI` and `FASTRTPS_DEFAULT_PROFILES_FILE`,
+(`/proc/<pid>/environ` for `CYCLONEDDS_URI`, `FASTRTPS_DEFAULT_PROFILES_FILE` and, on Kilted and later, `FASTDDS_DEFAULT_PROFILES_FILE`,
 `references/runtime-provenance.md` §2); a launcher-exported URI is the live
 configuration, not the file in the repository. After it: verify with the full
 graph running and an A/B/A toggle, not with `ros2 topic list` alone. On a

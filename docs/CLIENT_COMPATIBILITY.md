@@ -61,7 +61,8 @@ its report names the resolved directory to verify instead.
 
 A `--link` install points the client at the whole checkout, including
 `.claude-plugin/plugin.json` and `hooks/hooks.json`. A client that scans the
-link's parent for plugins may therefore register the PreToolUse and Stop hooks;
+link's parent for plugins may therefore register the SessionStart, PreToolUse and
+Stop hooks;
 one field report observed this with a Claude Code 2.1.x build after a link was
 created under `~/.claude/skills`, with the plugin data directory appearing under
 `~/.claude/plugins/data/`. That observation is not reproduced by this
@@ -117,7 +118,15 @@ supported root `SKILL.md` discovery path, not a duplicated nested copy. Hooks st
 in `hooks/hooks.json`, outside portable frontmatter. After editing plugin hooks,
 reload plugins or restart the client. Skill-text live reload is a different path.
 
-The plugin matcher registers PreToolUse and advisory Stop. `Bash` is the primary
+The plugin registers SessionStart, PreToolUse and Stop. SessionStart has no
+matcher: for a new conversation the adapter records what the
+[workspace check](SKILL_CONTRACT.md#workspace-check) reports and returns
+nothing. At Stop it hands the findings to the model once per session with
+`decision: "block"`, which continues the turn; a client that ignores that field
+simply ends the turn, and the check can be run by hand with
+`scripts/workspace_checks.py`. The changed-file check runs at the same Stop and
+stays advisory to the user; its findings are added to a handover.
+For PreToolUse, `Bash` is the primary
 shell tool; extra matcher names are compatibility aliases, not a claim that every
 client exposes PowerShell or `cmd` as a native tool. A working `python3` command
 is required by this hook configuration. A Windows copy-installer test does not
@@ -129,8 +138,9 @@ agent in the same checkout is reported here too. An unchanged advisory is shown
 once per session and again only when a finding or one of its files changes; the
 per-session state lives under `$XDG_CACHE_HOME/ros2-engineering-skills/`
 (`~/.cache` by default) and any failure to read or write it shows the advisory
-as before. Set `ROS2_SKILL_DISABLE_HOOKS=Stop` (or `PreToolUse`, or `all`;
-comma-separated) in the client environment to turn an adapter off without
+as before. Set `ROS2_SKILL_WORKSPACE=advise` to keep the workspace findings
+user-facing so that no turn is ever continued, or `ROS2_SKILL_DISABLE_HOOKS=Stop`
+(or `PreToolUse`, `SessionStart`, or `all`; comma-separated) in the client environment to turn an adapter off without
 uninstalling the plugin. A directory whose `INSTALL_PROVENANCE.json` records
 the knowledge-only layout never runs hooks, even for a session that registered
 them before the reinstall. The hooks run Python with `-B` so they never leave
@@ -145,7 +155,9 @@ in `_launch.py` is not. Name real launch files `.launch.py` for the strict check
 prompt, and `policy.allow_implicit_invocation: true`. This advertises the skill;
 it does not grant shell, network, hardware, or write access. Explicit invocation
 and automatic selection must be evaluated separately. This repository does not
-ship a Codex hook adapter: use the portable validators manually. Do not rename
+ship a Codex hook adapter: use the portable validators manually, including
+`scripts/workspace_checks.py` for the cross-file check that the Claude Code
+plugin runs for each session. Do not rename
 Claude's hook JSON and assume that another client's event protocol is identical.
 
 ## Model upgrades: share intent, not client settings

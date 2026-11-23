@@ -206,8 +206,8 @@ def validate(root, installed=False, sources=False, today=None, portable=False,
                     or entries[0].get('source') != './'):
                 errors.append('Marketplace entry does not match the local plugin')
             hooks = json_object(bundled_file(root, 'hooks/hooks.json')).get('hooks')
-            if not isinstance(hooks, dict) or set(hooks) != {'PreToolUse', 'Stop'}:
-                raise ValueError('Expected PreToolUse and Stop hook groups')
+            if not isinstance(hooks, dict) or set(hooks) != {'SessionStart', 'PreToolUse', 'Stop'}:
+                raise ValueError('Expected SessionStart, PreToolUse and Stop hook groups')
             for event, groups in hooks.items():
                 if not isinstance(groups, list) or not groups:
                     raise ValueError('Missing hook groups: ' + event)
@@ -229,7 +229,8 @@ def validate(root, installed=False, sources=False, today=None, portable=False,
                         timeout = hook.get('timeout')
                         if type(timeout) not in (int, float) or not 0 < timeout <= 600:
                             raise ValueError('Invalid hook timeout: ' + event)
-            for script in ('claude_hook.py', 'skill_validate_hook.py', 'skill_stop_hook.py'):
+            for script in ('claude_hook.py', 'skill_workspace_hook.py', 'workspace_checks.py',
+                           'skill_validate_hook.py', 'skill_stop_hook.py'):
                 bundled_file(root, 'scripts/' + script)
         config = yaml_object(bundled_file(root, 'agents/openai.yaml').read_text(encoding='utf-8'))
         interface = config.get('interface')

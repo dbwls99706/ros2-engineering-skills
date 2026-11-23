@@ -720,7 +720,8 @@ export ROS_SECURITY_STRATEGY=Enforce
 <CycloneDDS>
   <Domain>
     <Tracing>
-      <Category>discovery,security</Category>
+      <!-- There is no "security" tracing category, and the file is rejected
+           for an unknown one; "fine" verbosity includes the handshake -->
       <OutputFile>/tmp/cyclonedds_security.log</OutputFile>
       <Verbosity>fine</Verbosity>
     </Tracing>

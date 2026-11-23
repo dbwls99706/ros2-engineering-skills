@@ -64,19 +64,195 @@ The adapter validates the JSON envelope, bounds UTF-8 input bytes and feedback,
 rejects duplicate keys, nonstandard JSON numbers, malformed working directories,
 and non-Boolean Stop flags, and invokes
 only fixed bundled validators with a timeout. It neither executes the inspected
-shell command nor grants permission with `permissionDecision: allow`.
+shell command nor grants permission with `permissionDecision: allow`. It
+continues a turn in one case only: once per session, to hand the model the
+findings of the workspace check when it is about to finish.
 
 | Event / result | Transport behavior |
 |---|---|
+| SessionStart, new conversation | Empty JSON object, exit 0; the workspace report is recorded for the session and nothing is said |
+| SessionStart for a resumed, compacted or forked session | Empty JSON object; the record the session has is kept |
 | PreToolUse, clean | JSON object, exit 0; ordinary host permission checks remain |
 | PreToolUse, warning | `hookSpecificOutput.additionalContext`, exit 0 |
+| PreToolUse, code that uses a message type with documented conventions | One `[info]` line per type in `additionalContext`, once per session |
 | PreToolUse, dangerous literal command | Exit 2, explanation on stderr, no stdout JSON |
 | PreToolUse, command that can move hardware | Warning in `additionalContext`, exit 0; never a block |
 | The same, with `ROS2_SKILL_ACTUATION=ask` | `permissionDecision: "ask"` with the reason, plus the same context; never `allow` |
 | PreToolUse, `ros2` command the analysis cannot read | `Skipped:` line in the context; in `ask` mode, a confirmation request |
-| Stop, findings | User-facing `systemMessage`, exit 0; never a stop block |
-| Repeated Stop | Advisory skip; does not rescan indefinitely |
+| Stop, workspace findings not yet handed over in this session | `decision: "block"` with the findings as the reason, once; the model continues the turn |
+| Stop, workspace findings with `ROS2_SKILL_WORKSPACE=advise`, or no usable session record | User-facing `systemMessage`, exit 0; the turn ends |
+| Stop, findings of the changed-file check | User-facing `systemMessage`, exit 0; never a stop block |
+| Repeated Stop (`stop_hook_active`) | Advisory skip; never continues the turn and does not rescan |
 | Invalid payload, timeout, malformed child output | Explicit skipped advisory, not a pass |
+
+### Workspace check
+
+PreToolUse sees what is about to be written, and the changed-file check at
+Stop sees which launch and package files were touched. Neither reads the
+workspace as a whole. `scripts/workspace_checks.py` does, together with the
+errors of the launch validator. Nothing is built, imported or run.
+
+The plugin runs it twice. When a new conversation starts it records what is
+reported and says nothing. When the model is about to finish it runs again and
+hands over what is still reported and has not been shown in this session: the
+turn continues once, with the findings and what to do with them: a request to
+fix or debug the code that names no file covers every finding the model
+verifies, and a request for one specific change leaves the other files alone
+and lists the findings in the reply. A finding that was not there when the
+conversation started is marked as such, so a package the session has just made
+is checked like any other. A repeated Stop never continues the turn, and the
+same finding is not handed over twice in a session. The check of the files
+the session changed runs at the same Stop: its advisory goes to the user as
+before, and when the turn continues it is added to what the model is handed,
+so neither check hides the other.
+
+The same handover names the tests of packages the session changed. The
+workspace report carries, for each package, a fingerprint of its files (path,
+size and modification time; nothing is read) and the directory of its own
+tests, if it has any besides the lint tests (`package_state`). A package whose
+fingerprint differs from the one recorded when the conversation started, or
+that did not exist then, counts as changed, and so does a package that holds a
+finding handed over now: the turn continues only once, so the tests of what is
+about to be fixed are named in the same handover. If such a package has tests
+and no test command of the session reached it, the handover names the tests
+the way colcon runs them, with pytest started in the package directory. A
+test command is `pytest`, `python -m pytest`, `python -m unittest`,
+`launch_test` or `colcon test` as the command of a shell line, not as a word
+in `echo` or `grep`, and not with an option that only collects or lists
+(`--collect-only`, `--help`, `--fixtures` and the like); it reaches a package
+when it is started in the package, given a path in or above it, or selects it
+by name, and not when it leaves the package out (`--packages-skip`,
+`--ignore`) or chooses packages in a way that is not worked out here, such as
+a pattern. The record is made when
+the command is issued: whether it was allowed to run, and what it showed, is
+not known to the hook. The command named is
+`cd <package> && python3 -m pytest test -q`. From there the package is on the
+import path with every pytest release, and the ament lint tests, which check
+the directory they are started in, check the package and not the whole
+workspace. The handover says that the command starts in the workspace root
+and leaves the shell in the package directory. Run from the workspace root,
+`-o pythonpath=<package>` stops pytest 7.4 before any test runs when there is
+no configuration file, and pytest before 7.0 has no such option. It tells the model to run the tests for the packages it changed unless they would move connected
+hardware. The hook itself runs
+nothing: the command is the model's step, under the client's permission rules
+and the PreToolUse checks. Without the record from the start of the
+conversation, or when the check ran out of time, no test is asked for. A
+package is named once in a session, and at most five in one handover.
+
+The check reads the directory the conversation started in, not the directory a
+`cd` has left the shell in: after `cd src/one_package` the client reports that
+package as the working directory, and a check of it alone would otherwise be
+handed over as if it were the workspace. The recorded directory is used while
+the session is still inside it, then the client's project directory, then the
+reported working directory.
+
+The check compares declarations between files of `ament_python` packages and
+their Python launch files:
+
+| Check | Reported when |
+|---|---|
+| `install-rules` | A `launch/`, `config/` or similar directory that a launch file needs has no entry in `setup.py` or `CMakeLists.txt`. A `data_files` list written out in `setup()` is read on its own, so the word elsewhere in `setup.py` (`install_requires`, `find_packages(exclude=...)`) does not count as an entry |
+| `launch-executable` | A launch `Node` of the package names an executable that is not one of its console scripts |
+| `entry-point` | A console script points at a module or function the package does not contain |
+| `parameter-section` | A parameter file given to a node, directly or as the default of the launch argument it reads, has no section that applies to the node. A section applies to the node whose fully qualified name it matches: `demo` is `/demo` and does not apply to `/robot1/demo`, `*` stands for one token and `**` for any number. A `namespace` written with a leading slash is taken as the whole namespace; a relative one, or none, may sit under namespaces pushed around the node, which is allowed for |
+| `parameter-name` | A section that applies to the node as it is written sets a parameter the node's source does not declare. A section that would apply only under a pushed namespace may belong to another robot and is not read for this |
+| `dependencies` | The code imports a ROS package that `package.xml` does not declare, or an `ament_python` package imports, unconditionally at module level, one of a fixed list of third-party modules (`serial`, `cv2`, `scipy`, `requests` and others) and declares nothing that provides it. `yaml` and `numpy` are not reported for a package that declares `rclpy`, which brings both |
+| `missing-qos` | `create_publisher` or `create_subscription` is called without the QoS argument |
+| `timer-period` | A literal `create_timer` period contradicts the rate written in the comment on that call |
+| `blocking-call` | A synchronous service call or `rclpy.spin*` is inside a subscription, timer or service callback |
+| `keyword-argument` | `create_timer`, `create_publisher`, `create_subscription`, `create_service`, `create_client` or `declare_parameter` is given a keyword that the method has in no supported distribution. Also a function defined once at module level in the same file, called by its name with a keyword it has no parameter for |
+| `callback-signature` | A callback defined in the same module cannot be called with what rclpy passes in any supported distribution |
+| `name-mismatch` | A topic, service or action is used under a name nothing in the workspace offers, one or two characters from a name offered with the same type |
+| `interface-field` | A callback reads or writes a field its message or service does not have, when the `.msg` or `.srv` file is in the workspace or under `AMENT_PREFIX_PATH`. A package of the workspace is read from the workspace only; a definition read from an installed distribution is named in the message. A subscription created with `raw` is left alone: its callback receives bytes |
+| `missing-self` | A method uses `self` and does not take it as a parameter |
+| `invariant-loop` | A `while` tests membership in a container that the function created and nothing else holds, and the body neither rebinds the names in the condition nor names the container |
+| `environment-number` | `int()` or `float()` of a `ROS_` or `RMW_` environment variable read with a default: the default is not used when the variable is set but empty |
+| `import-name` | `from module import name` where the module's source is in the workspace, or under `PYTHONPATH` or `AMENT_PREFIX_PATH`, and defines no such name, or where the package has no such submodule. A module the workspace provides is read from the workspace, also when an installed distribution has one of the same name, and a workspace package whose Python is generated at build time or kept under `python/` or `src/` is not judged by an installed copy. A finding against an installed module is a warning, not an error: it names the installed release and its prefix, says that the code may be written for another release, and is made once per package with the number of further imports |
+| `returns-none` | `__str__` or `__repr__` has a path that returns `None`: `str()`, `print()` and string formatting raise `TypeError` |
+| `other-client` | A function waits for one client attribute of `self` and sends its only request through another, which it never waits for |
+| `class-attribute` | A function makes an instance of an imported class and then assigns an attribute on the class itself |
+| `scan-ranges` | A file imports `LaserScan`, reads `.ranges` as distances (indexing, iteration, `min` and the like) and nowhere reads `range_min` or `range_max`. The message says whether the file excludes `inf` and `NaN` at all or only leaves out the range limits |
+| `remapping` | A launch file remaps a name the node's source never creates |
+| `lifecycle` | A lifecycle node is launched and nothing in that launch file configures and activates it |
+| `qos-incompatible`, `qos-late-joiner` | A declared publisher and subscription cannot connect under the request/offered rules of DDS (the message says that `rmw_zenoh_cpp` connects them), or a subscription cannot receive the retained sample of a TRANSIENT_LOCAL publisher: it is VOLATILE, or it is TRANSIENT_LOCAL and BEST_EFFORT, which Fast DDS and Cyclone DDS serve no past samples |
+| `launch` | An error from `launch_validator.py`; its style warnings are left out |
+
+What it cannot see: most of logic. The last four rows of the table are plain
+Python defects that can be read off one function or one import; they are a
+small part of what goes wrong in code, chosen because each can be decided
+without running anything. Units, timing, thresholds, what a value means, an
+edge case that is not handled, C++ nodes (only their QoS declarations are
+read), XML and YAML launch files and anything computed at run time are not
+seen. No finding is not a pass.
+
+Input the check cannot decide is left alone, never guessed: a computed name or
+namespace, `*args` or `**kwargs`, a node class with a base other than `Node` or
+`LifecycleNode` (rclpy's experimental `AsyncNode` has methods of the same names
+with other parameters), a callback group or `MultiThreadedExecutor` in the
+module, `entry_points` that is not a literal, a parameter file name that
+matches more than one file, a node that also receives inline parameters, and
+test code. Where distributions differ, only what fails in all of them is
+reported: a subscription callback with two parameters works from Jazzy on, and
+a timer callback with a parameter annotated `TimerInfo` works from Kilted on,
+so neither is a finding. A near-miss name is not reported when the name is
+written in any other file of the workspace, because a C++ node, a parameter
+file or a remapping may be its counterpart. A loop is not judged when a nested
+function names what its condition reads, when the container was passed to a
+call, given another name or came from outside the function, or when the body
+has a `break`, `return`, `raise` or `try`. An import is not judged inside `try`
+or `if`, when the module has a star import, `__getattr__` or writes to its own
+namespace, when it is compiled or a namespace package, or when two modules of
+that name are found. A `launch/` or `config/` directory with an `__init__.py`
+is not taken for the module of that name.
+
+Why at the end. Given the findings when the conversation starts, a model fixes
+what is listed and stops reading the rest of the workspace. In informal trials
+with a small model at low effort this held for every wording tried, including
+text that said what the check cannot see and asked for the code to be read
+first: defects outside the list were found far less often than with no check at
+all, and the sessions ended at a third of the cost. Handed over at the end, the
+findings follow the model's own work instead of replacing it. These were
+informal trials with one model, not a benchmark, and no figure is published.
+
+Modes. `ROS2_SKILL_WORKSPACE=advise` shows the findings to the user and never
+continues a turn; `off` does not run the check; anything else is the default.
+`ROS2_SKILL_DISABLE_HOOKS=Stop` turns off this and the changed-file check. A
+check that cannot run is reported as skipped, never as a clean workspace.
+The record of what a session has been shown lives under
+`$XDG_CACHE_HOME/ros2-engineering-skills/workspace/` (`~/.cache` by default).
+Without a usable session id or a writable cache the turn is never continued,
+because the same list would otherwise come back at every turn end.
+
+Limits. At most 200 packages, 300 files per package and 512 KiB per file are
+read, within 8 seconds. The report holds at most 40 findings, of which 24 and
+7000 characters reach the model. A run that stops at a limit says so in a
+`Skipped:` line; a partial result is labelled as partial. A home directory and
+the filesystem root are not searched. In a directory with no `package.xml`
+under it the check does nothing, so other projects are left alone.
+
+The same checks run by hand, in any client:
+
+```bash
+python3 scripts/workspace_checks.py path/to/workspace
+python3 scripts/workspace_checks.py path/to/workspace --json
+```
+
+The exit status is 1 when a finding has severity `error`, 2 when the path is
+not a directory, and 0 otherwise. The start report uses the hook-report
+contract (version 1.7.0): it adds `packages`, and each finding carries the
+`check` identifier from the table above.
+
+### Message conventions
+
+When code is written that imports `LaserScan`, `Imu`, `Image`, `JointState`,
+`PointCloud2`, `Odometry`, `OccupancyGrid` or `Quaternion`, the PreToolUse
+context carries one line with what the type means beyond its field list, as
+[message types](../references/message-types.md) documents it: which values of
+`ranges` are not distances, what a covariance of `-1` says, that `step`
+includes padding. Each type is shown once per session. It is information, not
+a finding: nothing is checked against it, and in informal trials a small model
+read it and left its code as it was. What can be decided from the code is
+reported by the workspace check instead, and a model acts on that.
 
 ### Destructive commands
 

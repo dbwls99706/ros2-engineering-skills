@@ -2,7 +2,7 @@
 
 ![ros2-engineering-skills cover](docs/assets/cover.svg)
 
-Source version: **1.8.1**. See [release notes](CHANGELOG.md#181---2026-11-12) and
+Source version: **1.9.0**. See [release notes](CHANGELOG.md#190---2026-11-23) and
 [release procedure](docs/RELEASING.md).
 
 [![Test](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml/badge.svg)](https://github.com/dbwls99706/ros2-engineering-skills/actions/workflows/test.yml)
@@ -134,8 +134,27 @@ Inside Claude Code the equivalent commands are:
 ```
 
 The plugin uses `.claude-plugin/plugin.json`, root `SKILL.md`, and
-`hooks/hooks.json`. It provides PreToolUse checks and advisory Stop reports.
-The hook command requires `python3`; it does not grant tool permissions.
+`hooks/hooks.json`. It provides a workspace check, PreToolUse checks and
+advisory Stop reports. The hook command requires `python3`; it does not grant
+tool permissions.
+
+In a ROS 2 workspace the plugin checks where the files disagree: a launch file
+that starts an executable `setup.py` does not define, a parameter file with no
+section for the node it is given to, a directory that is never installed, an
+undeclared dependency, a callback rclpy cannot call, a keyword `create_timer`
+does not have, a service name one character from the one that is offered, and
+similar defects that build cleanly and fail at bring-up. It records what it
+finds when a conversation starts and says nothing. When the model is about to
+finish, it hands over what is still reported, including what the session itself
+broke, and names the tests of packages the session changed and did not run;
+the model continues once to deal with it. The hook runs nothing itself. It is
+a mechanical check of declarations, not a review. While code is written, the PreToolUse hook
+also adds, once per session, what a message type such as `LaserScan` or `Imu`
+means beyond its fields. What is compared, what cannot be seen and why the
+findings come at the end are described in the
+[skill contract](docs/SKILL_CONTRACT.md#workspace-check). Set
+`ROS2_SKILL_WORKSPACE=advise` to have the findings shown to you instead, or
+`off` to turn the check off.
 
 The PreToolUse hook also reports `ros2` commands that can move hardware, such as
 `ros2 topic pub /cmd_vel ...`, a navigation goal, a controller switch, or an
@@ -195,6 +214,7 @@ Claude's skill directories. Prefer the new installer for that use.
 python3 scripts/validate_skill.py --check-sources
 python3 scripts/validate_skill.py --root /path/to/ros2-engineering-skills --installed --portable
 python3 scripts/install_skill.py --verify --client codex
+python3 scripts/workspace_checks.py /path/to/ros2_ws
 python3 scripts/skill_validate_hook.py --file src/my_node.py
 python3 scripts/skill_validate_hook.py --command 'ros2 topic list'
 python3 scripts/skill_validate_hook.py --command 'ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{}"'
@@ -236,10 +256,12 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `qos_audit.py` | Pair QoS declarations across a package by topic and type | Static; unresolved values are never guessed, and a Python profile modified after construction is not judged from its constructor |
 | `rosbag2_qos_checker.py` | Inspect bag metadata QoS | Static metadata analysis |
 | `launch_validator.py` | Detect selected Python launch defects | Does not start a graph |
+| `workspace_checks.py` | Compare declarations between files of Python packages: console scripts, install rules, parameter files, `package.xml`, remappings, QoS, rclpy keywords and callback signatures, endpoint names, interface fields, and a few plain Python defects (a method without `self`, a `while` that cannot end, a name a module does not define) | Static; reads literals only, never guesses, reports only what fails on every supported distribution, and no finding is not a pass |
 | `launch_supervisor.py` | Run an authorized launch with owned SIGINT handling | POSIX; starts processes, not a hardware stop |
 | `skill_validate_hook.py` | Inspect source and command strings, including `ros2` commands that can move hardware | Best-effort guard, not a security or safety boundary; automatic source advice only with confirmed ROS context |
+| `skill_workspace_hook.py` | Report the workspace check and launch errors for the whole workspace | A report, never a gate; bounded in size and time, and a partial run says so |
 | `skill_stop_hook.py` | Check changed launch/package/Nav2 files | Advisory, not a complete build; automatic runs skip launch-named files without ROS context |
-| `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions or blocks Stop; may ask for confirmation when `ROS2_SKILL_ACTUATION=ask` |
+| `claude_hook.py` | Adapt reports to Claude hook transport | Never grants permissions; continues a turn once per session to hand over the workspace findings and otherwise never blocks Stop; may ask for confirmation when `ROS2_SKILL_ACTUATION=ask` |
 | `validate_skill.py` | Validate metadata, local paths, packaging, source dates | Static checks, not client activation |
 | `install_skill.py` | Stage and validate knowledge-only installations | No settings changes or hook registration |
 | `eval_runner.py` | Check fixtures or lexically score supplied text | Does not invoke a model or prove semantics |
@@ -247,7 +269,7 @@ permission boundaries, protocol behavior, and context-budget limitations.
 | `benchmark_capture.py` | Fill the paired manifest, fix run order, build blinded grading sheets, score pairs | Orchestration only; runs no model and grades nothing |
 | `measure_context.py` | Count the selected body with named tokenizers | Excludes client wrappers and on-demand references |
 
-The JSON `version` emitted by the two validation hooks is the hook-report contract
+The JSON `version` emitted by the three hooks is the hook-report contract
 version, not the source bundle version. It changes only when that report contract
 changes; standalone utility versions follow the same independent-interface rule.
 

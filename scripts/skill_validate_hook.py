@@ -355,6 +355,71 @@ def _has_ros_context(filepath, content, cwd=''):
     return _has_ros_marker(_read_head(path), filepath)
 
 
+# What a message means beyond its field list, for the types whose misuse the
+# skill's reference documents (references/message-types.md). Shown once per
+# session when code that uses the type is written: a model working at low
+# effort does not open the reference, and these are the facts it gets wrong.
+MESSAGE_CONVENTIONS = {
+    ('sensor_msgs', 'LaserScan'): (
+        'ranges holds +inf where nothing returned, -inf where a return was too close and NaN '
+        'for a failed measurement (REP 117); only finite values within range_min..range_max '
+        'are distances. Reading i is at angle_min + i * angle_increment, and angle 0 is '
+        'straight ahead.'),
+    ('sensor_msgs', 'Imu'): (
+        'a covariance whose first element is -1 means that measurement is not provided: do '
+        'not use orientation when orientation_covariance[0] == -1. linear_acceleration '
+        'includes gravity, about +9.81 m/s^2 on z when level and at rest; angular_velocity is '
+        'in rad/s.'),
+    ('sensor_msgs', 'Image'): (
+        'step is the full row length in bytes including padding, and data holds step x height '
+        'bytes: index rows by step, not by width x channels. The encoding string defines the '
+        'channel type and order.'),
+    ('sensor_msgs', 'JointState'): (
+        'position, velocity and effort are indexed like name, and velocity and effort may be '
+        'empty. Joint order differs between publishers: look a joint up by name, never by a '
+        'fixed index.'),
+    ('sensor_msgs', 'PointCloud2'): (
+        'when is_dense is false, points can be NaN and must be checked before use. height 1 '
+        'means an unorganized cloud; the byte layout is given by point_step, row_step and '
+        'fields.'),
+    ('nav_msgs', 'Odometry'): (
+        'pose is the pose of child_frame_id in header.frame_id; twist is the velocity of '
+        'child_frame_id expressed in child_frame_id (the body frame), not in the odom frame.'),
+    ('nav_msgs', 'OccupancyGrid'): (
+        'data is row-major from the origin (index = y * width + x); -1 is unknown, 0 is free '
+        'and 100 is occupied.'),
+    ('geometry_msgs', 'Quaternion'): (
+        'the field order is x, y, z, w and the quaternion must be normalized; identity is '
+        'w = 1.0 with the rest 0, and a zero norm is invalid.'),
+}
+_PY_MSG_IMPORT = re.compile(
+    r'^[ \t]*from[ \t]+(\w+)\.msg[ \t]+import[ \t]+(\([^)]*\)|[^\n]+)', re.MULTILINE)
+_CPP_MSG_INCLUDE = re.compile(
+    r'^[ \t]*#[ \t]*include[ \t]*[<"](\w+)/msg/(\w+)\.hpp[>"]', re.MULTILINE)
+
+
+def message_conventions(text, filename='<input>'):
+    """One advisory per message type *text* imports that the skill has conventions for."""
+    found = {}
+    for match in _PY_MSG_IMPORT.finditer(text):
+        names = re.sub(r'#[^\n]*', '', match.group(2))  # a comment inside a parenthesized import
+        for name in re.findall(r'[A-Za-z_]\w*', re.sub(r'\bas\s+\w+', '', names)):
+            found.setdefault((match.group(1), name), match.start())
+    for match in re.finditer(r'\b(\w+)\.msg\.([A-Z]\w*)', text):
+        found.setdefault((match.group(1), match.group(2)), match.start())
+    for match in _CPP_MSG_INCLUDE.finditer(text):
+        camel = ''.join(part.capitalize() for part in match.group(2).split('_'))
+        found.setdefault((match.group(1), camel), match.start())
+    issues = []
+    for key, position in sorted(found.items(), key=lambda item: item[1]):
+        if key in MESSAGE_CONVENTIONS:
+            issues.append({
+                'file': filename, 'line': text.count('\n', 0, position) + 1, 'severity': 'info',
+                'category': 'convention', 'key': '/'.join(key),
+                'message': '%s/%s: %s' % (key[0], key[1], MESSAGE_CONVENTIONS[key])})
+    return issues
+
+
 def check_content(content, filename='<input>'):
     """Check content for ROS 2 anti-patterns.
 
@@ -2184,6 +2249,10 @@ def _event_mode_issues():
         if (content and (not filepath or ext in CHECKABLE_EXTENSIONS)
                 and _has_ros_context(filepath, content, cwd)):
             issues = check_content(content, filepath)
+            # An Edit fragment rarely repeats the imports: the head of the
+            # file on disk says which message types the code is about.
+            path = filepath if os.path.isabs(filepath) or not cwd else os.path.join(cwd, filepath)
+            issues.extend(message_conventions(content + '\n' + _read_head(path), filepath))
 
     # For shell-style tools, check for dangerous patterns. Includes PowerShell
     # variants so the same regex set protects Windows hosts where the agent's
@@ -2253,7 +2322,7 @@ def main(argv=None):
 
     result = {
         'hook': 'ros2-engineering-skills:pre-tool-use',
-        'version': '1.5.0',
+        'version': '1.7.0',
         'mode': 'manual' if manual_mode else 'event',
         'issues_count': len(issues),
         'issues': issues,

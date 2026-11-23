@@ -122,7 +122,7 @@ class TestPluginPackaging:
 
     def test_hook_schema_and_scripts(self):
         config = _load_json(HOOKS_JSON)['hooks']
-        assert set(config) == {'PreToolUse', 'Stop'}
+        assert set(config) == {'SessionStart', 'PreToolUse', 'Stop'}
         for event, groups in config.items():
             assert isinstance(groups, list) and groups
             for group in groups:
@@ -177,6 +177,7 @@ class TestVersionConsistency:
 
     def test_hook_report_versions_are_independent_but_consistent(self, tmp_path):
         hook_versions = {
+            self._hook_version('skill_workspace_hook.py', tmp_path),
             self._hook_version('skill_stop_hook.py', tmp_path),
             self._hook_version(
                 'skill_validate_hook.py', tmp_path,

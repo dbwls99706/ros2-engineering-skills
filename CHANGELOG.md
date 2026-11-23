@@ -2,6 +2,285 @@
 
 All notable changes are documented here.
 
+## 1.9.0 - 2026-11-23
+
+Source bundle version 1.9.0. One new capability: the Claude Code plugin checks
+the ROS 2 workspace as a whole and hands what it finds to the model when the
+model is about to finish. The hook-report contract moves to 1.7.0 because a
+third report is added and findings carry a `check` identifier; the two existing
+reports keep their fields. `workspace_checks.py` is 0.1.0. Not run for this
+release: the Docker ROS jobs locally (CI runs them), the preregistered model
+benchmark, and the `ask` confirmation prompt in a real client. The trials
+mentioned below were informal and are not a benchmark result.
+
+Workspace check (`scripts/workspace_checks.py`, new):
+
+- Reads the `ament_python` packages under a directory and compares
+  declarations between files. Nothing is imported, built or run. The other
+  validators read one file at a time; these defects sit between two files,
+  build cleanly and fail at bring-up.
+- Reported: a launch `Node` whose executable is not a console script of its
+  package; a console script that points at a module or function the package
+  does not contain; a `launch/`, `config/` or similar directory that a launch
+  file needs and `setup.py` or `CMakeLists.txt` never installs, where a
+  `data_files` list written out in `setup()` is read on its own and the word
+  elsewhere in `setup.py` is not an entry; a parameter file with no section
+  for the node it is given to, including sections under a namespace key and a
+  file that is the default of the launch argument the node reads; a parameter
+  that a section sets and the node does not declare;
+  an imported ROS package missing from `package.xml`; `create_publisher` or
+  `create_subscription` without the QoS argument; a keyword that
+  `create_timer`, `create_publisher`, `create_subscription`, `create_service`,
+  `create_client` or `declare_parameter` has in no supported distribution; a
+  callback that rclpy cannot call in any supported distribution; a literal
+  `create_timer` period that contradicts the rate in the comment on that call;
+  a synchronous service call or `rclpy.spin*` inside a callback; a remapping of
+  a name the node never creates; a topic, service or action used under a name
+  one or two characters from the one that is offered with the same type; a
+  field a callback reads or writes that its message or service does not have,
+  when the definition file can be found; a lifecycle node that nothing in its
+  launch file configures and activates; and, through `qos_audit.py`, a
+  publisher and subscription that cannot connect or a VOLATILE subscription
+  facing a TRANSIENT_LOCAL publisher.
+- Four defects of plain Python that can be read off one function or one import
+  and stop a node at run time: a method that uses `self` without taking it; a
+  `while` that tests membership in a container the function created, where the
+  body cannot change the answer; `int()` or `float()` of a `ROS_` or `RMW_`
+  environment variable read with a default, which raises when the variable is
+  set but empty; and `from module import name` where the module's source can
+  be read and defines no such name, or where the package has no such
+  submodule. These came from reverting real bug-fix commits of public ROS 2
+  packages: of ten such defects the check reported none at first and reports
+  three now. On a second set of seven, not used to write these rules, it
+  reported none.
+- A parameter file section is compared with the fully qualified name of the
+  node, as a running node does it (measured on Kilted): `demo` applies to
+  `/demo` only, `*` stands for one token and `**` for any number. Before, a
+  section for `/robot2/demo` counted as one for `/robot1/demo`, and its
+  parameters were compared with that node's declarations. A section that
+  would apply only under a pushed namespace still counts as a section for the
+  node, and its parameter names are left alone: it may be another robot's.
+- With an installed distribution in the environment (`AMENT_PREFIX_PATH`,
+  `PYTHONPATH`), run against ROS 2 Kilted and source of a newer release: a
+  module the workspace provides is read from the workspace and not from the
+  installed copy of the same name, since packages of an overlay override
+  those of the underlay; before, the two copies left the import undecided. A
+  workspace package whose Python is generated at build time, or kept under
+  `python/` or `src/`, is no longer judged by an installed copy of another
+  release, and its interface definitions are read from the workspace only. A
+  name or submodule missing from an installed module is a warning that names
+  the installed release and its prefix and says the code may be written for
+  another release; it is made once per package with the number of further
+  imports, where one missing module used to give a finding for every import
+  line. The message says whether the import fails when the file is loaded or
+  when the line runs. A subscription created with `raw` is no longer checked
+  for message fields, because its callback receives bytes; a field finding
+  from an installed definition names the file it was read from.
+- QoS verdicts and DDS configuration examples were run against the
+  middleware itself, on Jazzy (Fast DDS 2.14, CycloneDDS 0.10.5) and Kilted
+  (Fast DDS 3.2, CycloneDDS 0.10.5, rmw_zenoh_cpp 0.6):
+  - 339 publisher/subscription pairs of reliability, durability, deadline,
+    liveliness and lease connected on Fast DDS and on CycloneDDS exactly
+    where `qos_checker.py` says, each refusal with an incompatible-QoS event.
+    The checker's verdicts did not change.
+  - A BEST_EFFORT subscription that asks for TRANSIENT_LOCAL connects and
+    never receives the sample published before it started, on both DDS
+    middlewares. `qos_checker.py` now warns about it and the workspace check
+    reports it as `qos-late-joiner`, as it does a VOLATILE subscription.
+  - `rmw_zenoh_cpp` connected every pair, the incompatible ones included, and
+    served the retained sample whatever the reliability. The verdict texts
+    said "Connection will silently fail" without condition; they now name the
+    DDS middlewares and say that `rmw_zenoh_cpp` matches the pair.
+    `qos_checker.py --dds-vendor zenoh` (0.2.0) adds that DEADLINE and
+    LIFESPAN are not implemented there and MANUAL_BY_TOPIC is not supported.
+  - Of twelve configuration examples in the references, CycloneDDS rejected
+    four on both releases, and with one rejected file no node of the process
+    starts: `<LogLevel>warning` (the value is `warn`),
+    `MinimumSocketReceiveBufferSize` with `64KB` (now
+    `SocketReceiveBufferSize min="64kB"`), `LeaseDuration` under `Internal`
+    and a `Scheduling` element under `Domain` (now `Discovery/LeaseDuration`
+    and `Threads/Thread/Scheduling`), and a tracing category `security` that
+    does not exist. A fifth, `SocketReceiveBufferSize min="10MB"`, is valid
+    and stops every node where `net.core.rmem_max` is smaller, which the text
+    now says. The Fast DDS example for per-topic QoS was rejected on both
+    releases and described a mechanism `rmw_fastrtps` does not have; the
+    section is rewritten from its README and from a measurement. The
+    discovery-server profile was right for Fast DDS 2.x and is rejected by
+    3.x: both forms are given with the releases they belong to, after
+    `ROS_DISCOVERY_SERVER`, which works on both. The profile variable is
+    `FASTRTPS_DEFAULT_PROFILES_FILE` up to Jazzy and
+    `FASTDDS_DEFAULT_PROFILES_FILE` from Kilted.
+  - The corrected `Threads/Thread/Scheduling` example sets a real-time
+    class. Without `CAP_SYS_NICE` or an `rtprio` limit the thread cannot be
+    created and the process aborts at start-up, which the text now says.
+  - `tests/check_dds_examples.py` reads these examples from the references
+    and loads each with the installed middleware. The ROS container job runs
+    it on Humble, Jazzy, Kilted and Lyrical (Fast DDS 2.x and 3.x, CycloneDDS
+    0.10 and 11.0), where every example loads or names the kernel limit or
+    privilege it needs; Rolling is left out with the other gates that create
+    a node.
+- Three more of the same kind, written from that second set and kept only
+  where they hold in general: `__str__` or `__repr__` with a path that returns
+  `None`; a function that waits for one client and sends its only request
+  through another; and an attribute assigned on an imported class in a
+  function that has just made an instance of it. They report three of those
+  seven.
+- On a third set of eight real bug fixes, taken from repositories not used
+  before, the check as it then stood reported none. One of the eight has a
+  form that can be decided in general and is now reported: a function defined
+  in the same module and called with a keyword it has no parameter for. Most
+  logic defects are not decidable without running the code, and the check
+  leaves them alone; the handover names the package's tests for that reason.
+- `LaserScan.ranges` read as distances (indexed, iterated, passed to `min`
+  and the like) in a file that never reads `range_min` or `range_max`
+  (REP 117); the message says whether `inf` and `NaN` are excluded at all or
+  only the range limits are left out. The same convention
+  shown as a note while the code was written was read and changed nothing;
+  as a finding with a file and a line it can be acted on.
+- A third-party module imported unconditionally at module level by an
+  `ament_python` package whose `package.xml` declares nothing that provides
+  it, for a fixed list of modules with a rosdep key (`serial`, `cv2`, `scipy`,
+  `requests` and others). `yaml` and `numpy` are left alone when the package
+  declares `rclpy`, which brings both.
+- Input the check cannot decide is left alone, never guessed: a computed name
+  or namespace, `*args` or `**kwargs`, a node class with a base other than
+  `Node` or `LifecycleNode`, a callback group or `MultiThreadedExecutor` in the
+  module, `entry_points` that is not a literal, a parameter file name that
+  matches more than one file, a node that also receives inline parameters, and
+  a near-miss name that is written in any other file of the workspace.
+- Where distributions differ, only what fails in all of them is reported. A
+  subscription callback with two parameters works from Jazzy on and a timer
+  callback with a parameter annotated `TimerInfo` works from Kilted on, so
+  neither is a finding. rclpy's experimental `AsyncNode` has methods of the
+  same names with other parameters, so only classes that derive from `Node` or
+  `LifecycleNode` are judged.
+- Rules added after running it on public repositories, each pinned by a test:
+  the `tf2_ros` module is provided by `tf2_ros_py`; the interface packages
+  that come with `rclpy` are not separate dependencies; `test_depend` is a
+  declaration; a module the package ships itself is not a dependency; test
+  code is not read for dependencies or QoS pairs.
+- Run on eleven public ROS 2 repositories (174 packages): eight findings, each
+  read against the source: six endpoint calls without a QoS argument in one
+  test package and an undeclared interface dependency in two packages. None
+  of the Python checks above reports anything there. The whole set as one
+  workspace takes about four seconds. Ten package variants
+  from `create_package.py` produce no finding, and a test keeps it so.
+- `python3 scripts/workspace_checks.py <path> [--json]` runs it by hand in any
+  client. Exit status 1 for a finding of severity `error`, 2 when the path is
+  not a directory.
+
+Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
+`hooks/hooks.json`):
+
+- `hooks/hooks.json` registers SessionStart. For a new conversation the
+  adapter records what the workspace check reports and says nothing. A
+  resumed, compacted or forked session keeps the record it has.
+- At Stop the adapter runs the check again and hands over what is still
+  reported and has not been shown in this session, with `decision: "block"`:
+  the model continues the turn once. A request to fix or debug the code that
+  names no file covers every finding it verifies; a request for one specific
+  change leaves the other files alone and lists the findings in the reply. A
+  finding that was not there when the conversation
+  started is marked, so a package the session has just made is checked like
+  any other. A repeated Stop never continues the turn, and the same finding is
+  not handed over twice in a session. This changes an earlier rule of this
+  adapter, which never continued a turn. The changed-file check runs at the
+  same Stop and stays advisory to the user; when the turn continues, its
+  findings are added to what the model is handed, so a workspace finding does
+  not hide a broken `package.xml`.
+- The handover also names the tests of packages the session changed and did
+  not test: `cd <package> && python3 -m pytest test -q`, pytest started in
+  the package directory as colcon starts it. Run from the workspace root with
+  `-o pythonpath=<package>`, pytest 7.4 (Ubuntu 24.04, ROS 2 Jazzy and Kilted)
+  stops before any test when the workspace has no configuration file, and the
+  ament lint tests check the whole workspace instead of the package;
+  with the instruction not to run tests that move connected hardware. The hook runs
+  nothing itself. A package counts as changed when the fingerprint of its
+  files differs from the one recorded at SessionStart, or when a finding
+  handed over now lies in it. A package is not asked for when a test command
+  of the session reached it: `pytest`, `python -m pytest`, `python -m
+  unittest`, `launch_test` or `colcon test` in command position, started in
+  the package, given a path in or above it, or selecting it by name. `echo
+  pytest` and `pytest --collect-only` are not test runs, tests of one package
+  do not answer for another, and neither does a command that skips or
+  ignores the package. The record is made when the command is issued, not
+  from its result. The static check does not see most logic defects; a package's own
+  tests are where they show.
+- Why at the end. Given the findings when the conversation starts, a model
+  fixes what is listed and stops reading the rest of the workspace. In
+  informal trials with a small model at low effort this held for every wording
+  tried, including text that said what the check cannot see and asked for the
+  code to be read first: defects outside the list were found far less often
+  than with no check at all. Handed over at the end, the findings follow the
+  model's own work instead of replacing it.
+- The check reads the directory the conversation started in, not the one a
+  `cd` has left the shell in. The client reports the shell's directory as the
+  working directory, and a check of one package would otherwise be handed over
+  as if it were the workspace.
+- `ROS2_SKILL_WORKSPACE=advise` shows the findings to the user and never
+  continues a turn; `off` does not run the check.
+  `ROS2_SKILL_DISABLE_HOOKS=Stop` turns off this and the changed-file check.
+  Without a usable session id or a writable cache the turn is never continued.
+- Bounded: 200 packages, 300 files per package, 512 KiB per file, 8 seconds;
+  40 findings in the report, of which 24 and 7000 characters reach the model. A
+  run that stops at a limit says so in `checks_skipped`. A check that cannot
+  run is reported as skipped, never as a clean workspace.
+- Silent where it has nothing to say: a directory with no `package.xml` is
+  left alone, a home directory and the filesystem root are not searched, and a
+  knowledge-only installation never runs it.
+- Only errors from the launch validator are included. A Python file in a
+  `launch/` directory that is not named `*.launch.py` and does not mention
+  `generate_launch_description` is not validated as a launch file.
+- Message conventions. When code is written that imports `LaserScan`, `Imu`,
+  `Image`, `JointState`, `PointCloud2`, `Odometry`, `OccupancyGrid` or
+  `Quaternion`, the PreToolUse context carries one line from
+  `references/message-types.md` on what the type means beyond its fields, once
+  per session. It is information and nothing is checked against it.
+- What the trials showed about hooks at low effort: a finding that names a
+  file, a line and what disagrees is acted on almost every time; advice and a
+  list of files the session had not opened were read and changed nothing. The
+  list of unopened files was tried and is not part of this release.
+
+Launch validator (`scripts/launch_validator.py`):
+
+- `IfCondition('use_rviz')` and `UnlessCondition('use_rviz')` are errors. The
+  text is evaluated as it stands, it is not the value of the launch argument
+  with that name, and launch accepts only `true`, `false`, `1` and `0`. A
+  literal `'true'` or `'false'` stays a warning.
+
+Validation and CI:
+
+- `tests/test_workspace_checks.py` exercises every check three ways: the
+  defect is reported, the corrected input is silent, and input that cannot be
+  decided is silent. `tests/test_workspace_hook.py`,
+  `tests/test_hook_protocol.py` and `tests/test_message_conventions.py` cover
+  the report, the limits, the transport, the per-session record and the
+  handover.
+- `scripts/validate_skill.py` and both installers know the three hook events,
+  and a test runs the validator on this checkout, which the synthetic bundle
+  of the other tests could not notice drifting.
+- `skill_workspace_hook` and `workspace_checks` join the per-module 90%
+  coverage gate in `.github/workflows/test.yml`.
+
+References and sources:
+
+- `docs/SKILL_CONTRACT.md` describes what is compared, what cannot be seen,
+  why the findings come at the end, the modes and the limits.
+  `docs/CLIENT_COMPATIBILITY.md` and `README.md` list three hooks and the
+  manual command for other clients.
+- Fourteen entries in `docs/sources.json`, each read on 2026-11-20: the rclpy
+  endpoint, timer and parameter signatures on five distributions, how
+  subscription and timer callbacks are called, launch condition evaluation,
+  the deadlock of a synchronous service call in a callback, launch file
+  installation, parameter file sections, wildcards and the namespace form, the
+  unconfigured state of a managed node, `package.xml` as the source of rosdep's
+  dependencies, the slots of generated message classes, and the SessionStart
+  and Stop hook contracts. Seven more were read on 2026-11-23: that packages
+  of an overlay override those of the underlay, the `raw` parameter of
+  `create_subscription`, the CycloneDDS 0.10 configuration reference, the
+  Fast DDS rule for past samples, the QoS design of `rmw_zenoh_cpp`, the XML
+  profile rules of `rmw_fastrtps`, and the wildcards of parameter files.
+
 ## 1.8.1 - 2026-11-12
 
 Source bundle version 1.8.1. Three checks gave a wrong answer on inputs the test
