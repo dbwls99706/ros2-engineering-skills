@@ -287,6 +287,40 @@ def untested_packages(payload, state, report, pending=()):
     return changed + fixing
 
 
+# Where pytest looks for its settings, in its own order, with the section each file needs.
+PYTEST_CONFIGS = (('pytest.ini', ''), ('pyproject.toml', '[tool.pytest.ini_options]'),
+                  ('tox.ini', '[pytest]'), ('setup.cfg', '[tool:pytest]'))
+
+
+def pytest_command(root, package_path, tests):
+    """One plain pytest command for a package's tests, run from the workspace root.
+
+    The package directory has to be on the import path, as it is when colcon
+    runs the tests from there. `-o pythonpath=<package>` alone stops pytest 7
+    before any test runs when the workspace has no configuration file (the
+    relative path is resolved against that file), so the package's own file is
+    named with -c and the path is given relative to it. A package without one
+    gets the command without the path: its tests then need the built workspace.
+    """
+    folder = os.path.join(root or '', package_path)
+    present = [(name, section) for name, section in PYTEST_CONFIGS if os.path.isfile(os.path.join(folder, name))]
+    chosen = None
+    for name, section in present:
+        try:
+            with open(os.path.join(folder, name), encoding='utf-8', errors='replace') as handle:
+                if section in handle.read(200000):
+                    chosen = name
+                    break
+        except OSError:
+            continue
+    if chosen is None and present:
+        chosen = present[-1][0]
+    if chosen is None:
+        return 'python3 -m pytest {tests} -q'.format(tests=tests)
+    return 'python3 -m pytest {tests} -q -c {path}/{config} -o pythonpath=.'.format(
+        tests=tests, path=package_path, config=chosen)
+
+
 def _finding_key(issue):
     """Identity of a finding across the session: its line number may move, its text may not."""
     text = repr((issue.get('file'), issue.get('check'), issue.get('message')))
@@ -356,7 +390,8 @@ def remember_workspace(payload):
 def workspace_handover(payload):
     """Stop: (output, note). Output is the hook result when this Stop is used up by the check."""
     path, state = _read_workspace_state(payload)
-    report, why = workspace_report(payload, workspace_root(payload, state))
+    root = workspace_root(payload, state)
+    report, why = workspace_report(payload, root)
     if report is None:
         return None, 'skipped: workspace check could not run (' + why + ').'
     if not report.get('packages'):
@@ -382,10 +417,11 @@ def workspace_handover(payload):
     text = '\n'.join(lines)[:HANDOVER_FEEDBACK]
     tests = ''
     if untested:
-        # One plain command, so that a permission rule for pytest matches it; the package
-        # directory goes on the import path, as it is when colcon runs the tests from there.
-        named = ['{name}: `python3 -m pytest {tests} -q -o pythonpath={path}` (in a built workspace: '
-                 '`colcon test --packages-select {name}`)'.format(name=name, path=package_path, tests=tests_dir)
+        # One plain command, so that a permission rule for pytest matches it and the shell
+        # stays in the workspace root.
+        base = os.environ.get('SKILL_WORKSPACE') or root
+        named = ['{name}: `{command}` (in a built workspace: `colcon test --packages-select {name}`)'.format(
+                     name=name, command=pytest_command(base, package_path, tests_dir))
                  for package_path, name, tests_dir in untested[:HANDOVER_TEST_PACKAGES]]
         if len(untested) > HANDOVER_TEST_PACKAGES:
             named.append('and %d more packages with tests' % (len(untested) - HANDOVER_TEST_PACKAGES))
