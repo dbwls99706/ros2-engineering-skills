@@ -2,6 +2,36 @@
 
 All notable changes are documented here.
 
+## 1.9.1 - 2026-11-23
+
+Source bundle version 1.9.1. One message of the workspace check let a real
+defect pass as a difference between releases; it was reproduced before it was
+changed. No new capability. The hook-report contract stays at 1.7.0;
+`workspace_checks.py` is 0.1.1. Not run for this release: the Docker ROS jobs
+locally (CI runs them), the preregistered model benchmark, and the `ask`
+confirmation prompt in a real client.
+
+Workspace check (`scripts/workspace_checks.py`):
+
+- `import-name` against an installed module said that either the name is wrong
+  or the code is written for another release, and gave nothing to decide by.
+  For `from launch_ros.substitutions import FileContent`, a class that
+  `launch.substitutions` of the same installation defines, sessions with
+  ROS 2 Kilted installed took the second reading, left the launch file as it
+  was and told the user the code was right for a newer release.
+- The finding now says where the name is defined when the module of the same
+  path of another package in use defines it: here, that `launch.substitutions`
+  of the installed launch defines `FileContent`, and to import it from there
+  unless the code is written for a release of `launch_ros` that has the name.
+  Packages in use are those the file imports and those `package.xml`
+  declares. Only the module of the same path is read, so
+  `from launch.actions import Node` is answered with `launch_ros.actions`; no
+  module is searched for a similar name.
+- A name that no such module defines keeps the earlier text with both
+  readings, and the severity does not change: a warning against an installed
+  module, an error against a module of the workspace, where the sentence is
+  added as well.
+
 ## 1.9.0 - 2026-11-23
 
 Source bundle version 1.9.0. One new capability: the Claude Code plugin checks

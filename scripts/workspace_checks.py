@@ -39,7 +39,7 @@ try:
 except ImportError:  # pragma: no cover - PyYAML is a declared runtime dependency
     HAS_YAML = False
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 SKIP_DIRS = {"build", "install", "log", ".git", "__pycache__", "node_modules", ".venv", "venv",
              ".tox", ".pytest_cache", ".mypy_cache"}
@@ -1175,6 +1175,30 @@ _OTHER_RELEASE = (" Either the name is wrong here or this code is written for an
                   "{top}; in the second case it is the installation that differs, not this file.")
 
 
+def _defined_elsewhere(roots: tuple, package: Package, tree: ast.AST, module: str, name: str) -> Optional[str]:
+    """Where *name* is defined instead: the module of the same path under another package in use.
+
+    `from launch_ros.substitutions import FileContent` names a class that
+    launch.substitutions defines. Only packages this file imports or the
+    package declares are looked at, and only the module of the same path, so
+    what is said is a fact that was read, not a search for a similar name.
+    """
+    top, _, rest = module.partition(".")
+    tops = set(package.depends)
+    for node in _nodes(tree):
+        if isinstance(node, ast.Import):
+            tops.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            tops.add(node.module.split(".")[0])
+    for other in sorted(tops - {top}):
+        sibling = other + ("." + rest if rest else "")
+        target = _resolve_module(roots, sibling)
+        if target is not None and name in (_module_names(target) or ()):
+            release = _installed_release(roots, target, other)
+            return f"`{sibling}` of {'the installed ' + release if release else 'this workspace'}"
+    return None
+
+
 def _note_repeats(seen: dict) -> None:
     """Say on the one finding kept for an installed module how many more imports repeat it."""
     for issue, repeats in seen.values():
@@ -1443,9 +1467,12 @@ def check_imports(roots: tuple, package: Package, path: Path, seen: Optional[dic
         when = "when this file is loaded" if id(node) in loaded else "when this line runs"
         top = (node.module or "").split(".")[0]
         release = None if node.level else _installed_release(roots, target, top)
+        elsewhere = (_defined_elsewhere(roots, package, tree, node.module, key)
+                     if key and node.module and not node.level else None)
         if release is None:
             issues.append(_issue(package, path, node.lineno, "error", "import-name",
-                                 f"{workspace}; the import raises {error} {when}."))
+                                 f"{workspace}; the import raises {error} {when}."
+                                 + (f" {elsewhere} defines `{key}`." if elsewhere else "")))
             return
         if (node.module, key) in seen:
             seen[(node.module, key)][1] += 1
@@ -1453,7 +1480,9 @@ def check_imports(roots: tuple, package: Package, path: Path, seen: Optional[dic
         issue = _issue(package, path, node.lineno, "warning", "import-name",
                        installed.format(release=release)
                        + f"; under that installation the import raises {error} {when}."
-                       + _OTHER_RELEASE.format(top=top))
+                       + (f" {elsewhere} defines `{key}`: unless this code is written for a release of "
+                          f"{top} that has the name, import it from there." if elsewhere
+                          else _OTHER_RELEASE.format(top=top)))
         seen[(node.module, key)] = [issue, 0]
         issues.append(issue)
 
