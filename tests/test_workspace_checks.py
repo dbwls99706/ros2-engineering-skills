@@ -425,9 +425,40 @@ class TestParameterFiles:
 
     def test_parameters_of_a_namespaced_section_are_compared(self, tmp_path):
         text = "robot1:\n  driver:\n    ros__parameters:\n      rate: 20.0\n      rate_hz: 50.0\n"
-        make_package(tmp_path, files={"launch/demo.launch.py": with_parameters(), "config/params.yaml": text})
+        make_package(tmp_path, files={
+            "launch/demo.launch.py": with_parameters(name="name='driver', namespace='/robot1', "),
+            "config/params.yaml": text})
         issue, = found(tmp_path, "parameter-name")
         assert "section 'robot1/driver' sets 'rate_hz'" in issue["message"] and issue["line"] == 5
+
+    @pytest.mark.parametrize("namespace,section,compared", [
+        # a section that applies to the node as it is written is read for its parameter names
+        (None, "driver", True), (None, "/**", True), (None, "/**/driver", True),
+        ("group", "group/driver", True), ("group", "/**/group/driver", True),
+        ("/robot1", "/robot1/driver", True), ("/robot1", "/*/driver", True),
+        # one that applies only under a pushed namespace may be another robot's
+        (None, "robot1/driver", False), (None, "/*/driver", False),
+        ("group", "/robot1/group/driver", False), ("group", "/robot2/group/driver", False),
+        ("", "/robot1/driver", False),
+    ])
+    def test_only_a_section_that_applies_as_written_is_read_for_parameter_names(
+            self, tmp_path, namespace, section, compared):
+        given = "" if namespace is None else f"namespace='{namespace}', "
+        make_package(tmp_path, files={
+            "launch/demo.launch.py": with_parameters(name=f"name='driver', {given}"),
+            "config/params.yaml": f'"{section}":\n  ros__parameters:\n    rate_hz: 50.0\n'})
+        assert found(tmp_path, "parameter-section") == []
+        assert bool(found(tmp_path, "parameter-name")) is compared
+
+    def test_shared_file_under_a_pushed_namespace_is_not_held_against_the_node(self, tmp_path):
+        # PushRosNamespace('robot1') around a node in `group`: which robot's section is this
+        # node's cannot be read off the node, so neither is compared.
+        text = ('"/robot1/group/driver":\n  ros__parameters:\n    rate: 20.0\n'
+                '"/robot2/group/driver":\n  ros__parameters:\n    gain: 1.0\n')
+        make_package(tmp_path, files={
+            "launch/demo.launch.py": with_parameters(name="name='driver', namespace='group', "),
+            "config/params.yaml": text})
+        assert found(tmp_path) == []
 
     def test_name_is_taken_from_the_source_when_the_launch_gives_none(self, tmp_path):
         make_package(tmp_path, files={

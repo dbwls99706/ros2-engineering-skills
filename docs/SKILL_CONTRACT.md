@@ -118,8 +118,12 @@ and no test command of the session reached it, the handover names the tests
 the way colcon runs them, with pytest started in the package directory. A
 test command is `pytest`, `python -m pytest`, `python -m unittest`,
 `launch_test` or `colcon test` as the command of a shell line, not as a word
-in `echo` or `grep`; it reaches a package when it is started in the package,
-given a path in or above it, or selects it by name. The record is made when
+in `echo` or `grep`, and not with an option that only collects or lists
+(`--collect-only`, `--help`, `--fixtures` and the like); it reaches a package
+when it is started in the package, given a path in or above it, or selects it
+by name, and not when it leaves the package out (`--packages-skip`,
+`--ignore`) or chooses packages in a way that is not worked out here, such as
+a pattern. The record is made when
 the command is issued: whether it was allowed to run, and what it showed, is
 not known to the hook. The command named is
 `cd <package> && python3 -m pytest test -q`. From there the package is on the
@@ -151,7 +155,7 @@ their Python launch files:
 | `launch-executable` | A launch `Node` of the package names an executable that is not one of its console scripts |
 | `entry-point` | A console script points at a module or function the package does not contain |
 | `parameter-section` | A parameter file given to a node, directly or as the default of the launch argument it reads, has no section that applies to the node. A section applies to the node whose fully qualified name it matches: `demo` is `/demo` and does not apply to `/robot1/demo`, `*` stands for one token and `**` for any number. A `namespace` written with a leading slash is taken as the whole namespace; a relative one, or none, may sit under namespaces pushed around the node, which is allowed for |
-| `parameter-name` | A section sets a parameter the node's source does not declare |
+| `parameter-name` | A section that applies to the node as it is written sets a parameter the node's source does not declare. A section that would apply only under a pushed namespace may belong to another robot and is not read for this |
 | `dependencies` | The code imports a ROS package that `package.xml` does not declare, or an `ament_python` package imports, unconditionally at module level, one of a fixed list of third-party modules (`serial`, `cv2`, `scipy`, `requests` and others) and declares nothing that provides it. `yaml` and `numpy` are not reported for a package that declares `rclpy`, which brings both |
 | `missing-qos` | `create_publisher` or `create_subscription` is called without the QoS argument |
 | `timer-period` | A literal `create_timer` period contradicts the rate written in the comment on that call |

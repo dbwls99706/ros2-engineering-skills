@@ -861,6 +861,9 @@ def test_tests_follow_the_findings_in_one_handover(state):
     'PYTHONPATH=src/demo timeout 120 python3 -m pytest src/demo/test', 'sudo -E env A=1 pytest src/demo',
     'colcon test --packages-select other demo --event-handlers console_direct+',
     'colcon build\ncolcon test --packages-up-to demo', 'cd /workspace/src/demo; python3.12 -m pytest',
+    'colcon test --packages-skip other', 'colcon test --packages-select=demo --return-code-on-test-failure',
+    'colcon test --event-handlers console_direct+ --pytest-args -k fast', 'pytest --ignore=src/other src',
+    'python3 -m pytest -s src/demo/test', 'pytest --ignore src/demo/test/slow src/demo/test/test_driver.py',
     'echo start && /usr/bin/python3 -m pytest -o cache_dir=/tmp/c src/demo/test'])
 def test_tests_the_session_ran_are_not_asked_for(state, command):
     state('SessionStart', start_payload(), workspace(package_state=states()))
@@ -879,7 +882,19 @@ def test_tests_the_session_ran_are_not_asked_for(state, command):
     'python3 -m pytest src/other/test -q', 'cd src/other && python3 -m pytest test -q',
     'colcon test --packages-select other', 'cd /elsewhere && pytest', 'launch_test test/launch.py',
     # a line that cannot be split into words is not read
-    'pytest "src/demo'])
+    'pytest "src/demo',
+    # collecting or listing runs no test
+    'pytest --collect-only src/demo/test', 'python3 -m pytest --co -q', 'cd src/demo && pytest --collect-only -q',
+    'pytest --help', 'python3 -m pytest --version', 'pytest --fixtures src/demo/test', 'pytest --setup-plan',
+    'colcon test --help', 'python3 -m unittest -h',
+    # the package is left out of the run
+    'colcon test --packages-skip demo', 'colcon test --packages-skip other demo',
+    'colcon test --packages-skip=demo', 'python3 -m pytest --ignore=src/demo', 'pytest --ignore src/demo/test src',
+    'pytest --ignore=src', 'pytest --ignore-glob="*demo*"',
+    # a selection that is not worked out leaves the tests asked for
+    'colcon test --packages-select-regex "de.*"', 'colcon test --packages-skip-regex other',
+    'colcon test --packages-select-by-dep rclpy', 'colcon test --base-paths src/other',
+    'colcon test --packages-select-test-failures'])
 def test_other_commands_are_not_a_test_run(state, command):
     state('SessionStart', start_payload(), workspace(package_state=states()))
     state('PreToolUse', tool_payload('Bash', command=command), completed())

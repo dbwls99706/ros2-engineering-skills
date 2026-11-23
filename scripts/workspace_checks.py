@@ -653,7 +653,10 @@ def check_parameter_files(package: Package, nodes: list) -> tuple:
                 declared = _declared_parameters(source, tree) if tree is not None and source else None
                 if declared is None or source_path is None:
                     continue
-                for key in matching:
+                # A section that applies only under a pushed namespace may belong to
+                # another robot that runs a node of this name: its parameters are not
+                # held against this node.
+                for key in [key for key in matching if _section_matches(key, name, node.namespace, 0)]:
                     values = sections[key]["ros__parameters"]
                     if not isinstance(values, dict):
                         continue
@@ -699,20 +702,23 @@ def _tokens_match(pattern: list, path: list) -> bool:
         rest, path[1:])
 
 
-def _section_matches(key: str, name: str, namespace: Optional[str] = None) -> bool:
+def _section_matches(key: str, name: str, namespace: Optional[str] = None,
+                     pushed: Optional[int] = None) -> bool:
     """Whether the section *key* can apply to the node *name* in *namespace*.
 
     A section applies to a node whose fully qualified name it matches: `demo`
     is `/demo` and does not apply to `/robot1/demo`. A namespace written with a
     leading slash is the whole namespace. A relative one, or none, may be
     preceded by namespaces pushed around the node, which a launch file does
-    not show at the node, so none to six unknown tokens are tried in front.
+    not show at the node: *pushed* is how many such tokens to assume, and None
+    tries none to six.
     """
     pattern = [token for token in key.split("/") if token]
     tail = [token for token in (namespace or "").split("/") if token] + [name]
     if namespace is not None and namespace.startswith("/"):
         return _tokens_match(pattern, tail)
-    return any(_tokens_match(pattern, [None] * pushed + tail) for pushed in range(7))
+    counts = range(7) if pushed is None else (pushed,)
+    return any(_tokens_match(pattern, [None] * count + tail) for count in counts)
 
 
 def _is_test(path: Path) -> bool:

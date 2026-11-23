@@ -59,6 +59,9 @@ COMMAND_PREFIXES = ('sudo', 'time', 'nice', 'env', 'exec', 'command', 'timeout',
 TEST_OPTION_VALUES = ('-k', '-m', '-o', '-c', '-p', '-n', '-W', '-t', '--rootdir', '--deselect', '--ignore',
                       '--timeout', '--maxfail', '--junitxml', '--cov', '--cov-report', '--durations')
 PACKAGE_SELECTORS = ('--packages-select', '--packages-up-to', '--packages-above')
+# Options with which pytest, unittest or colcon run no test at all.
+NOT_A_TEST_RUN = ('--collect-only', '--co', '--help', '-h', '--version', '-V', '--fixtures',
+                  '--fixtures-per-test', '--markers', '--setup-plan', '--setup-only')
 MAX_TEST_RUNS = 200
 # "handover" (default) continues the turn once with the findings; "advise"
 # only shows them to the user; "off" does not run the check. Unknown values
@@ -307,8 +310,8 @@ def _test_run(words, cwd):
         module = args[args.index('-m') + 1:args.index('-m') + 2]
         if module in (['pytest'], ['unittest']):
             kind, args = 'pytest', args[args.index('-m') + 2:]
-    if kind is None:
-        return [], cwd
+    if kind is None or any(word in NOT_A_TEST_RUN for word in args):
+        return [], cwd  # collecting or listing is not running
     return [{'cwd': cwd if isinstance(cwd, str) else None, 'kind': kind,
              'args': [word[:300] for word in args[:60]]}], cwd
 
@@ -328,7 +331,7 @@ def note_test_run(payload):
         _log_append(log, [json.dumps(run, sort_keys=True) for run in runs])
 
 
-def _covers(run, root, package_path, name):
+def _covers(run, root, package_path, name, tests=None):
     """Whether a recorded test command reaches the package: by its directory, a path, or its name."""
     if run == 'run':
         return True  # the record of an earlier release: some test command was issued
@@ -338,31 +341,62 @@ def _covers(run, root, package_path, name):
     except (ValueError, TypeError, KeyError):
         return False
     if kind == 'colcon':
-        selected, chosen = [], False
-        for word in args:
-            if word in PACKAGE_SELECTORS:
-                chosen = True
-                continue
-            if word.startswith('-'):
-                chosen = False
-            elif chosen:
-                selected.append(word)
-        return name in selected if any(word in PACKAGE_SELECTORS for word in args) else True
+        return _colcon_selects(args, name)
     base = cwd if isinstance(cwd, str) else root
     if not isinstance(base, str) or not isinstance(root, str):
         return True  # nothing to place the command with: do not ask again
     package = os.path.normpath(os.path.join(root, package_path))
-    targets, skip = [], False
+    targets, ignored, option = [], [], None
     for word in args:
-        if skip or word.startswith('-') or word == 'discover':
-            skip = word in TEST_OPTION_VALUES
-            continue
-        targets.append(os.path.normpath(os.path.join(base, word.split('::')[0])))
-    for target in targets or [os.path.normpath(base)]:
-        if target == package or target.startswith(package + os.sep) or package.startswith(
-                target.rstrip(os.sep) + os.sep):
-            return True
-    return False
+        if option == '--ignore':
+            ignored.append(word)
+        elif word.startswith('--ignore-glob'):
+            return False  # which paths a pattern leaves out is not worked out here
+        elif word.startswith('--ignore='):
+            ignored.append(word.split('=', 1)[1])
+        elif option is None and not word.startswith('-') and word != 'discover':
+            targets.append(word.split('::')[0])
+        option = word if word in TEST_OPTION_VALUES else None
+
+    def inside(path, folder):
+        return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+    def place(word):
+        return os.path.normpath(os.path.join(base, word))
+
+    own_tests = os.path.normpath(os.path.join(root, tests)) if isinstance(tests, str) else package
+    if any(inside(own_tests, place(word)) for word in ignored):
+        return False
+    return any(inside(target, package) or inside(package, target)
+               for target in [place(word) for word in targets] or [os.path.normpath(base)])
+
+
+def _colcon_selects(args, name):
+    """Whether `colcon test` with these arguments tests the package *name*.
+
+    Without a selection every package is tested. A package named after
+    --packages-select, --packages-up-to or --packages-above is, one named after
+    --packages-skip is not, and any other way of choosing packages (a pattern,
+    a dependency, a path, earlier results) is not worked out: the package is
+    then taken as not tested, so that its tests are still asked for.
+    """
+    groups, option = {}, None
+    for word in args:
+        if word.startswith('-'):
+            option = word.split('=', 1)[0]
+            groups.setdefault(option, [])
+            if '=' in word:
+                groups[option].append(word.split('=', 1)[1])
+        elif option is not None:
+            groups[option].append(word)
+    choosing = [option for option in groups
+                if option.startswith(('--packages-', '--paths', '--base-paths'))]
+    if name in groups.get('--packages-skip', []):
+        return False
+    if any(option not in PACKAGE_SELECTORS + ('--packages-skip',) for option in choosing):
+        return False
+    selectors = [option for option in choosing if option in PACKAGE_SELECTORS]
+    return any(name in groups[option] for option in selectors) if selectors else True
 
 
 def untested_packages(payload, state, report, pending=()):
@@ -385,7 +419,7 @@ def untested_packages(payload, state, report, pending=()):
     touched = {str(issue.get('file', '')).split('/')[0] for issue in pending}
     changed, fixing = [], []
     for path, (name, fingerprint, tests) in sorted(_package_states(report).items()):
-        if not tests or path in told or any(_covers(run, root, path, name) for run in runs):
+        if not tests or path in told or any(_covers(run, root, path, name, tests) for run in runs):
             continue
         if before.get(path) != fingerprint:
             changed.append((path, name, tests))

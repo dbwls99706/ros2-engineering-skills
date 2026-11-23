@@ -57,7 +57,9 @@ Workspace check (`scripts/workspace_checks.py`, new):
   node, as a running node does it (measured on Kilted): `demo` applies to
   `/demo` only, `*` stands for one token and `**` for any number. Before, a
   section for `/robot2/demo` counted as one for `/robot1/demo`, and its
-  parameters were compared with that node's declarations.
+  parameters were compared with that node's declarations. A section that
+  would apply only under a pushed namespace still counts as a section for the
+  node, and its parameter names are left alone: it may be another robot's.
 - With an installed distribution in the environment (`AMENT_PREFIX_PATH`,
   `PYTHONPATH`), run against ROS 2 Kilted and source of a newer release: a
   module the workspace provides is read from the workspace and not from the
@@ -199,9 +201,10 @@ Hooks (`scripts/claude_hook.py`, `scripts/skill_workspace_hook.py`,
   of the session reached it: `pytest`, `python -m pytest`, `python -m
   unittest`, `launch_test` or `colcon test` in command position, started in
   the package, given a path in or above it, or selecting it by name. `echo
-  pytest` is not a test run, and tests of one package do not answer for
-  another. The record is made when the command is issued, not from its
-  result. The static check does not see most logic defects; a package's own
+  pytest` and `pytest --collect-only` are not test runs, tests of one package
+  do not answer for another, and neither does a command that skips or
+  ignores the package. The record is made when the command is issued, not
+  from its result. The static check does not see most logic defects; a package's own
   tests are where they show.
 - Why at the end. Given the findings when the conversation starts, a model
   fixes what is listed and stops reading the rest of the workspace. In
