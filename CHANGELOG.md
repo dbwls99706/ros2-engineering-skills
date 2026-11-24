@@ -2,7 +2,7 @@
 
 All notable changes are documented here.
 
-## 1.9.1 - 2026-11-23
+## 1.9.1 - 2026-11-24
 
 Source bundle version 1.9.1. One message of the workspace check let a real
 defect pass as a difference between releases; it was reproduced before it was
@@ -26,7 +26,8 @@ Workspace check (`scripts/workspace_checks.py`):
   Packages in use are those the file imports and those `package.xml`
   declares. Only the module of the same path is read, so
   `from launch.actions import Node` is answered with `launch_ros.actions`; no
-  module is searched for a similar name.
+  module is searched for a similar name. A module that has the name only by
+  importing it from the module that lacks it fails with it and is not named.
 - A name that no such module defines keeps the earlier text with both
   readings, and the severity does not change: a warning against an installed
   module, an error against a module of the workspace, where the sentence is

@@ -1182,6 +1182,8 @@ def _defined_elsewhere(roots: tuple, package: Package, tree: ast.AST, module: st
     launch.substitutions defines. Only packages this file imports or the
     package declares are looked at, and only the module of the same path, so
     what is said is a fact that was read, not a search for a similar name.
+    A module that has the name by importing it from *module* fails with it
+    and is not a place to import it from.
     """
     top, _, rest = module.partition(".")
     tops = set(package.depends)
@@ -1193,7 +1195,12 @@ def _defined_elsewhere(roots: tuple, package: Package, tree: ast.AST, module: st
     for other in sorted(tops - {top}):
         sibling = other + ("." + rest if rest else "")
         target = _resolve_module(roots, sibling)
-        if target is not None and name in (_module_names(target) or ()):
+        if target is None or name not in (_module_names(target) or ()):
+            continue
+        passed_on = any(isinstance(node, ast.ImportFrom) and node.module == module and not node.level
+                        and any((alias.asname or alias.name) == name for alias in node.names)
+                        for node in _nodes(_parse(_read(target))))
+        if not passed_on:
             release = _installed_release(roots, target, other)
             return f"`{sibling}` of {'the installed ' + release if release else 'this workspace'}"
     return None

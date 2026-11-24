@@ -1846,6 +1846,8 @@ class TestDefinedElsewhere:
             "launch_ros/substitutions/find_package.py": "class FindPackageShare:\n    pass\n",
             "opaque/__init__.py": "",
             "opaque/substitutions.py": "def __getattr__(name):\n    return name\n",
+            "alpha/__init__.py": "",
+            "alpha/substitutions.py": "from launch_ros.substitutions import FileContent as Content, FileContent\n",
         }
         for relative, text in files.items():
             (site / relative).parent.mkdir(parents=True, exist_ok=True)
@@ -1901,6 +1903,13 @@ class TestDefinedElsewhere:
         assert issue["message"].endswith("the import raises ImportError when this file is loaded. "
                                          "`common.units` of this workspace defines `to_si`.")
 
+    def test_module_that_takes_the_name_from_the_same_place_is_passed_over(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch)
+        issue, = self.finding(tmp_path, "import alpha\nimport launch\n"
+                                        "from launch_ros.substitutions import FileContent\n")
+        assert "`launch.substitutions` of the installed launch 3.8.10" in issue["message"]
+        assert "alpha" not in issue["message"]
+
     def test_corrected_import_is_silent(self, tmp_path, monkeypatch):
         self.site(tmp_path, monkeypatch)
         assert self.finding(tmp_path, "from launch import LaunchDescription\n"
@@ -1915,6 +1924,8 @@ class TestDefinedElsewhere:
         ("from launch_ros.substitutions import FileContent\n", ("rclpy",)),
         # the module of the same path cannot be read off its file
         ("import opaque\nfrom launch_ros.substitutions import FileContent\n", ("rclpy",)),
+        # the module of the same path has the name only by importing it from the module that lacks it
+        ("import alpha\nfrom launch_ros.substitutions import FileContent\n", ("rclpy",)),
     ])
     def test_what_is_not_read_elsewhere_keeps_both_possibilities(self, tmp_path, monkeypatch, source, depends):
         self.site(tmp_path, monkeypatch)
