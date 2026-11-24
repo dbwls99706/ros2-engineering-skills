@@ -1175,15 +1175,43 @@ _OTHER_RELEASE = (" Either the name is wrong here or this code is written for an
                   "{top}; in the second case it is the installation that differs, not this file.")
 
 
-def _defined_elsewhere(roots: tuple, package: Package, tree: ast.AST, module: str, name: str) -> Optional[str]:
-    """Where *name* is defined instead: the module of the same path under another package in use.
+def _binds_at_top(target: Path, module: str, name: str) -> bool:
+    """True when the file at *target* binds *name* at its top level whichever branch is taken.
+
+    A name bound under `if TYPE_CHECKING:`, in a `try`, a loop or a `with`
+    need not exist once the module is imported, and one imported from
+    *module* fails together with the import that is being reported.
+    """
+    bound = False
+    for node in getattr(_parse(_read(target)), "body", []):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = {node.name}
+        elif isinstance(node, ast.Assign) or (isinstance(node, ast.AnnAssign) and node.value is not None):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = {item.id for target_node in targets for item in ast.walk(target_node)
+                     if isinstance(item, ast.Name)}
+        elif isinstance(node, ast.Import):
+            names = {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and not (node.module == module and not node.level):
+            names = {alias.asname or alias.name for alias in node.names}
+        elif isinstance(node, ast.Delete):
+            if any(isinstance(item, ast.Name) and item.id == name for item in node.targets):
+                bound = False
+            continue
+        else:
+            continue
+        bound = bound or name in names
+    return bound
+
+
+def _defined_elsewhere(roots: tuple, package: Package, tree: ast.AST, module: str, name: str) -> list:
+    """Where *name* is defined instead: the modules of the same path under other packages in use.
 
     `from launch_ros.substitutions import FileContent` names a class that
     launch.substitutions defines. Only packages this file imports or the
     package declares are looked at, and only the module of the same path, so
     what is said is a fact that was read, not a search for a similar name.
-    A module that has the name by importing it from *module* fails with it
-    and is not a place to import it from.
+    Every such module is returned: which of several is meant is not known.
     """
     top, _, rest = module.partition(".")
     tops = set(package.depends)
@@ -1192,26 +1220,39 @@ def _defined_elsewhere(roots: tuple, package: Package, tree: ast.AST, module: st
             tops.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             tops.add(node.module.split(".")[0])
+    places = []
     for other in sorted(tops - {top}):
         sibling = other + ("." + rest if rest else "")
         target = _resolve_module(roots, sibling)
-        if target is None or name not in (_module_names(target) or ()):
-            continue
-        passed_on = any(isinstance(node, ast.ImportFrom) and node.module == module and not node.level
-                        and any((alias.asname or alias.name) == name for alias in node.names)
-                        for node in _nodes(_parse(_read(target))))
-        if not passed_on:
+        if target is not None and _module_names(target) is not None and _binds_at_top(target, module, name):
             release = _installed_release(roots, target, other)
-            return f"`{sibling}` of {'the installed ' + release if release else 'this workspace'}"
-    return None
+            places.append(f"`{sibling}` of {'the installed ' + release if release else 'this workspace'}")
+    return places
+
+
+def _elsewhere(places: list, name: str, top: Optional[str] = None) -> str:
+    """The sentence that says where *name* is defined; with *top*, for a module of an installation."""
+    listed = places[0] if len(places) == 1 else ", ".join(places[:-1]) + " and " + places[-1]
+    text = f" {listed} {'defines' if len(places) == 1 else 'each define'} `{name}`"
+    if top is None:
+        return text + "."
+    return (f"{text}: unless this code is written for a release of {top} that has the name, import it "
+            f"from {'there' if len(places) == 1 else 'the one of them that is meant'}.")
 
 
 def _note_repeats(seen: dict) -> None:
-    """Say on the one finding kept for an installed module how many more imports repeat it."""
-    for issue, repeats in seen.values():
-        if repeats:
-            issue["message"] += (f" The same import is in {repeats} more "
-                                 f"place{'s' if repeats > 1 else ''} of this package.")
+    """Finish the one finding kept for an installed module from all the imports of the package.
+
+    Where the name is defined is taken from every file that repeats the
+    import, not only from the first, and the number of repeats is said.
+    """
+    for entry in seen.values():
+        places = sorted(entry["places"])
+        entry["issue"]["message"] = entry["base"] + (
+            _elsewhere(places, entry["name"], entry["top"]) if places else _OTHER_RELEASE.format(top=entry["top"]))
+        if entry["repeats"]:
+            entry["issue"]["message"] += (f" The same import is in {entry['repeats']} more "
+                                          f"place{'s' if entry['repeats'] > 1 else ''} of this package.")
     seen.clear()
 
 
@@ -1474,23 +1515,21 @@ def check_imports(roots: tuple, package: Package, path: Path, seen: Optional[dic
         when = "when this file is loaded" if id(node) in loaded else "when this line runs"
         top = (node.module or "").split(".")[0]
         release = None if node.level else _installed_release(roots, target, top)
-        elsewhere = (_defined_elsewhere(roots, package, tree, node.module, key)
-                     if key and node.module and not node.level else None)
+        places = (_defined_elsewhere(roots, package, tree, node.module, key)
+                  if key and node.module and not node.level else [])
         if release is None:
             issues.append(_issue(package, path, node.lineno, "error", "import-name",
                                  f"{workspace}; the import raises {error} {when}."
-                                 + (f" {elsewhere} defines `{key}`." if elsewhere else "")))
+                                 + (_elsewhere(places, key) if places else "")))
             return
         if (node.module, key) in seen:
-            seen[(node.module, key)][1] += 1
+            seen[(node.module, key)]["repeats"] += 1
+            seen[(node.module, key)]["places"].update(places)
             return
-        issue = _issue(package, path, node.lineno, "warning", "import-name",
-                       installed.format(release=release)
-                       + f"; under that installation the import raises {error} {when}."
-                       + (f" {elsewhere} defines `{key}`: unless this code is written for a release of "
-                          f"{top} that has the name, import it from there." if elsewhere
-                          else _OTHER_RELEASE.format(top=top)))
-        seen[(node.module, key)] = [issue, 0]
+        base = installed.format(release=release) + f"; under that installation the import raises {error} {when}."
+        issue = _issue(package, path, node.lineno, "warning", "import-name", base)
+        seen[(node.module, key)] = {"issue": issue, "repeats": 0, "base": base, "top": top, "name": key,
+                                    "places": set(places)}
         issues.append(issue)
 
     for node in imports:

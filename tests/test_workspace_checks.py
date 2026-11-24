@@ -1829,7 +1829,7 @@ class TestInstalledRelease:
 class TestDefinedElsewhere:
     """A name missing from a module is looked up in the module of the same path of another package in use."""
 
-    def site(self, tmp_path, monkeypatch):
+    def site(self, tmp_path, monkeypatch, extra=None):
         prefix = tmp_path / "opt" / "ros" / "kilted"
         site = prefix / "lib" / "python3.12" / "site-packages"
         files = {
@@ -1849,7 +1849,7 @@ class TestDefinedElsewhere:
             "alpha/__init__.py": "",
             "alpha/substitutions.py": "from launch_ros.substitutions import FileContent as Content, FileContent\n",
         }
-        for relative, text in files.items():
+        for relative, text in {**files, **(extra or {})}.items():
             (site / relative).parent.mkdir(parents=True, exist_ok=True)
             (site / relative).write_text(text)
         for name, version in (("launch", "3.8.10"), ("launch_ros", "0.28.7")):
@@ -1909,6 +1909,86 @@ class TestDefinedElsewhere:
                                         "from launch_ros.substitutions import FileContent\n")
         assert "`launch.substitutions` of the installed launch 3.8.10" in issue["message"]
         assert "alpha" not in issue["message"]
+
+    @pytest.mark.parametrize("body", [
+        "class FileContent:\n    pass\n",
+        "def FileContent(path):\n    return path\n",
+        "import os\n\nFileContent = os.path.basename\n",
+        "FileContent: type = str\n",
+        "from launch.substitutions import FileContent\n",
+        "import launch.substitutions as FileContent\n",
+        "class FileContent:\n    pass\n\n\ndel FileContent\nFileContent = str\n",
+    ])
+    def test_name_bound_at_the_top_of_the_module_whatever_runs(self, tmp_path, monkeypatch, body):
+        self.site(tmp_path, monkeypatch, extra={"other/__init__.py": "", "other/substitutions.py": body})
+        issue, = self.finding(tmp_path, "import other\nfrom launch_ros.substitutions import FileContent\n")
+        assert "`other.substitutions` of the installed other (" in issue["message"]
+        assert "defines `FileContent`: unless this code" in issue["message"]
+
+    @pytest.mark.parametrize("body", [
+        # bound for a type checker only: the import fails when the program runs
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from launch.substitutions import FileContent\n",
+        "try:\n    from launch.substitutions import FileContent\nexcept ImportError:\n    pass\n",
+        "for FileContent in ():\n    pass\n",
+        "def build():\n    class FileContent:\n        pass\n    return FileContent\n",
+        "class FileContent:\n    pass\n\n\ndel FileContent\n",
+        "FileContent: type\n",
+        "from .content import *\n",
+    ])
+    def test_name_that_need_not_exist_after_import_is_not_named(self, tmp_path, monkeypatch, body):
+        self.site(tmp_path, monkeypatch, extra={"other/__init__.py": "", "other/substitutions.py": body,
+                                                "other/content.py": "class FileContent:\n    pass\n"})
+        issue, = self.finding(tmp_path, "import other\nfrom launch_ros.substitutions import FileContent\n")
+        assert "other.substitutions" not in issue["message"]
+        assert "Either the name is wrong here or this code is written for another release" in issue["message"]
+
+    def test_two_modules_that_define_the_name_are_both_named(self, tmp_path, monkeypatch):
+        prefix = self.site(tmp_path, monkeypatch, extra={
+            "other/__init__.py": "", "other/substitutions.py": "class FileContent:\n    pass\n"})
+        issue, = self.finding(tmp_path, "import launch\nimport other\n"
+                                        "from launch_ros.substitutions import FileContent\n")
+        site = prefix / "lib" / "python3.12" / "site-packages"
+        assert issue["message"].endswith(
+            f"`launch.substitutions` of the installed launch 3.8.10 ({prefix}) and `other.substitutions` of the "
+            f"installed other ({site}) each define `FileContent`: unless this code is written for a release of "
+            "launch_ros that has the name, import it from the one of them that is meant.")
+
+    def test_three_modules_of_the_workspace(self, tmp_path):
+        for name in ("alpha", "beta", "gamma"):
+            make_package(tmp_path, name=name, files={f"{name}/units.py": "def to_si(value):\n    return value\n"})
+        make_package(tmp_path, name="shared", files={"shared/units.py": "LIMIT = 3\n"})
+        make_package(tmp_path, depends=("alpha", "beta", "gamma"),
+                     files={"demo/tools.py": "from shared.units import to_si\n"})
+        issue, = found(tmp_path, "import-name")
+        assert issue["message"].endswith("`alpha.units` of this workspace, `beta.units` of this workspace and "
+                                         "`gamma.units` of this workspace each define `to_si`.")
+
+    @pytest.mark.parametrize("first, second", [
+        ("", "import launch\n"),
+        ("import launch\n", ""),
+    ])
+    def test_one_finding_takes_the_place_from_any_file_of_the_package(self, tmp_path, monkeypatch, first, second):
+        self.site(tmp_path, monkeypatch)
+        wrong = "from launch_ros.substitutions import FileContent\n"
+        make_package(tmp_path / "ws", depends=("rclpy",), files={
+            "launch/a.launch.py": first + wrong, "launch/b.launch.py": second + wrong})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert issue["file"] == "demo/launch/a.launch.py"
+        assert "`launch.substitutions` of the installed launch 3.8.10" in issue["message"]
+        assert "Either the name is wrong here" not in issue["message"]
+        assert issue["message"].endswith("import it from there. The same import is in 1 more place of this package.")
+
+    def test_places_of_several_files_are_put_together(self, tmp_path, monkeypatch):
+        self.site(tmp_path, monkeypatch, extra={
+            "other/__init__.py": "", "other/substitutions.py": "class FileContent:\n    pass\n"})
+        wrong = "from launch_ros.substitutions import FileContent\n"
+        make_package(tmp_path / "ws", depends=("rclpy",), files={
+            "launch/a.launch.py": "import other\n" + wrong, "launch/b.launch.py": "import launch\n" + wrong,
+            "launch/c.launch.py": "import launch\n" + wrong})
+        issue, = found(tmp_path / "ws", "import-name")
+        assert "`launch.substitutions` of the installed launch 3.8.10" in issue["message"]
+        assert "and `other.substitutions` of the installed other" in issue["message"]
+        assert issue["message"].endswith("The same import is in 2 more places of this package.")
 
     def test_corrected_import_is_silent(self, tmp_path, monkeypatch):
         self.site(tmp_path, monkeypatch)

@@ -26,8 +26,15 @@ Workspace check (`scripts/workspace_checks.py`):
   Packages in use are those the file imports and those `package.xml`
   declares. Only the module of the same path is read, so
   `from launch.actions import Node` is answered with `launch_ros.actions`; no
-  module is searched for a similar name. A module that has the name only by
-  importing it from the module that lacks it fails with it and is not named.
+  module is searched for a similar name.
+- A module is named only when it binds the name at its top level whichever
+  branch runs. A name bound under `if TYPE_CHECKING:`, in a `try` or a loop,
+  deleted again, or imported from the module that lacks it is not a place to
+  import it from. When several modules define the name, all are named and none
+  is chosen.
+- The finding is still made once per package. Where the name is defined is
+  taken from every file of the package that repeats the import, not only from
+  the first.
 - A name that no such module defines keeps the earlier text with both
   readings, and the severity does not change: a warning against an installed
   module, an error against a module of the workspace, where the sentence is
